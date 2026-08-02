@@ -91,7 +91,25 @@ importers:
         specifier: ^15.0.0
         version: 15.0.0
 
+  forge/packages/compiler:
+    dependencies:
+      '@forge/ir':
+        specifier: workspace:*
+        version: link:../ir
+      '@forge/types':
+        specifier: workspace:*
+        version: link:../types
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
   forge/packages/config: {}
+
+  forge/packages/ir:
+    dependencies:
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   forge/packages/manifest:
     dependencies:
