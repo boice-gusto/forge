@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { redact } from "@forge/observability";
@@ -10,7 +11,9 @@ import {
   jsonResult,
 } from "../output.js";
 
-const LOCAL_COMPOSE_FILE = "forge/infra/local/compose.yaml";
+const LOCAL_COMPOSE_FILE = fileURLToPath(
+  new URL("../../../../../forge/infra/local/compose.yaml", import.meta.url),
+);
 const LOCAL_SERVICES = ["redis", "postgres", "otel"] as const;
 const executeFile = promisify(execFile);
 

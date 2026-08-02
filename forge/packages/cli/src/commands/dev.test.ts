@@ -11,18 +11,19 @@ describe("runLocalComposition", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(calls).toEqual([
-      [
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(
+      expect.arrayContaining([
         "compose",
         "-f",
-        "forge/infra/local/compose.yaml",
         "up",
         "--detach",
         "redis",
         "postgres",
         "otel",
-      ],
-    ]);
+      ]),
+    );
+    expect(calls[0]?.[2]).toMatch(/forge\/infra\/local\/compose\.yaml$/);
   });
 
   test("redacts failed local-composition diagnostics", async () => {

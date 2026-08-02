@@ -27,7 +27,7 @@ Expected result: all commands exit `0`; the test suite reports 23 passing tests 
 
 ## Local stack
 
-`forge dev up` manages only the resources declared in `forge/infra/local/compose.yaml`: Redis, Postgres, and OTel. It fails closed with exit `1` when Docker is unavailable. It does not start arbitrary containers, remove volumes, or target a host-wide teardown.
+`forge dev up` manages only the resources declared in `forge/infra/local/compose.yaml`: Redis, Postgres, and OTel. Its defaults avoid common host collisions: Redis `16379`, Postgres `15432`, and OTel `14318`; `FORGE_REDIS_PORT`, `FORGE_POSTGRES_PORT`, and `FORGE_OTEL_PORT` may override them. It fails closed with exit `1` when Docker is unavailable. It does not start arbitrary containers, remove volumes, or target a host-wide teardown.
 
 After starting a Docker daemon:
 
