@@ -20,3 +20,6 @@ coverage
 /forge.acme/
 /forge.gusto/
 /forge.buzz/
+
+# Isolated implementation worktrees
+/.worktrees/
