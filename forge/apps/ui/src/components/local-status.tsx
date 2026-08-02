@@ -8,16 +8,21 @@ export interface LocalDependency {
 
 export interface LocalStatusProps {
   readonly dependencies: readonly LocalDependency[];
+  readonly loading?: boolean;
 }
 
 function safeDetail(detail: string | undefined): string | undefined {
   return detail === undefined ? undefined : String(redact(detail));
 }
 
-export function LocalStatus({ dependencies }: LocalStatusProps) {
+export function LocalStatus({
+  dependencies,
+  loading = false,
+}: LocalStatusProps) {
   return (
     <section aria-label="Local Forge status" className="rounded-lg border p-4">
       <h2 className="text-lg font-semibold">Local status</h2>
+      {loading ? <p className="mt-3">Loading local status…</p> : null}
       <ul className="mt-3 space-y-2">
         {dependencies.map((dependency) => (
           <li key={dependency.name} className="flex justify-between gap-4">
