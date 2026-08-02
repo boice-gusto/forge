@@ -3,4 +3,3 @@ packages:
   - "forge/packages/*"
   - "forge/apps/*"
   - "forge/examples/*"
-  - "forge.gusto"
