@@ -128,6 +128,12 @@ importers:
 
   forge/packages/ports: {}
 
+  forge/packages/provider-mock:
+    dependencies:
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../ports
+
   forge/packages/sdk:
     dependencies:
       '@forge/manifest':
