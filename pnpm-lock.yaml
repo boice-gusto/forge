@@ -78,6 +78,9 @@ importers:
       '@forge/manifest':
         specifier: workspace:*
         version: link:../manifest
+      '@forge/observability':
+        specifier: workspace:*
+        version: link:../observability
       chalk:
         specifier: ^6.0.0
         version: 6.0.0

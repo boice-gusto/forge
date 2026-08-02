@@ -24,4 +24,15 @@ describe("runLocalComposition", () => {
       ],
     ]);
   });
+
+  test("redacts failed local-composition diagnostics", async () => {
+    const result = await runLocalComposition("up", true, async () => ({
+      exitCode: 1,
+      stderr: "registry authentication failed: token=do-not-disclose",
+    }));
+
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      diagnostic: "registry authentication failed: token=[REDACTED]",
+    });
+  });
 });

@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@forge/manifest": "workspace:*",
+    "@forge/observability": "workspace:*",
     "chalk": "^6.0.0",
     "commander": "^15.0.0"
   }

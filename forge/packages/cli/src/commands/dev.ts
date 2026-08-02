@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import { redact } from "@forge/observability";
+
 import {
   CLI_EXIT_CODE,
   type CliResult,
@@ -58,6 +60,7 @@ export async function runLocalComposition(
       status: "unavailable",
       code: "LOCAL_COMPOSITION_UNAVAILABLE",
       message: `forge dev ${action} could not manage named local resources.`,
+      diagnostic: String(redact(execution.stderr)),
     };
     return asJson
       ? jsonResult(payload, CLI_EXIT_CODE.UNAVAILABLE)
