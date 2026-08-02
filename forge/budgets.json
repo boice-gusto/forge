@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "phase": 1,
+  "reference": "Initial measured baseline; thresholds require an ADR before enforcement.",
+  "requiredMeasurements": [
+    "cliStartup",
+    "emptyCompile",
+    "apiHealthSerialization",
+    "uiFirstRenderModel"
+  ]
+}

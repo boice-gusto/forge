@@ -12,6 +12,9 @@
     "build": "turbo run build",
     "docs:list": "ls -1 forge/docs/*.md",
     "lint": "biome check .",
+    "measure:phase1": "node forge/scripts/measure-phase1.mjs",
+    "security:licenses": "node forge/scripts/check-licenses.mjs",
+    "security:secrets": "node forge/scripts/check-secrets.mjs",
     "test": "vitest run",
     "test:architecture": "vitest run forge/tooling/architecture.test.ts",
     "typecheck": "turbo run typecheck"
