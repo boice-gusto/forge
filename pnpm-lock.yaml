@@ -27,6 +27,26 @@ importers:
         specifier: ^4.1.0
         version: 4.1.10(@types/node@25.9.5)(vite@8.2.0(@types/node@25.9.5))
 
+  forge/packages/manifest:
+    dependencies:
+      '@forge/types':
+        specifier: workspace:*
+        version: link:../types
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
+  forge/packages/sdk:
+    dependencies:
+      '@forge/manifest':
+        specifier: workspace:*
+        version: link:../manifest
+      '@forge/types':
+        specifier: workspace:*
+        version: link:../types
+
+  forge/packages/types: {}
+
 packages:
 
   '@biomejs/biome@2.5.6':
@@ -711,6 +731,9 @@ packages:
     engines: {node: '>=8'}
     hasBin: true
 
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
 snapshots:
 
   '@biomejs/biome@2.5.6':
@@ -1246,3 +1269,5 @@ snapshots:
     dependencies:
       siginfo: 2.0.0
       stackback: 0.0.2
+
+  zod@4.4.3: {}
