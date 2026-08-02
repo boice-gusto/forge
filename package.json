@@ -1,0 +1,13 @@
+{
+  "name": "forge-workspace",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Forge AI workflow platform monorepo (Phase 0 — specification)",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "docs:list": "ls -1 forge/docs/*.md"
+  }
+}

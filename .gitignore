@@ -1,0 +1,22 @@
+.DS_Store
+.env
+.env.*
+!.env.sample
+node_modules
+dist
+build
+.next
+.nuxt
+.vercel
+.logs
+.tmp
+.vscode
+coverage
+*.log
+.turbo
+.pnpm-store
+
+# Independent Forge extension repositories
+/forge.acme/
+/forge.gusto/
+/forge.buzz/

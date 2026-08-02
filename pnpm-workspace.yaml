@@ -1,0 +1,6 @@
+# Forge monorepo workspace (Phase 0 scaffold — packages not yet created)
+packages:
+  - "forge/packages/*"
+  - "forge/apps/*"
+  - "forge/examples/*"
+  - "forge.gusto"
