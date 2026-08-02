@@ -1,4 +1,4 @@
-import { localDevUnavailable } from "./commands/dev.js";
+import { runLocalComposition } from "./commands/dev.js";
 import { promptsUnavailable } from "./commands/prompts.js";
 import { doctorProviders } from "./commands/providers.js";
 import { runtimeUnavailable } from "./commands/run.js";
@@ -41,7 +41,7 @@ export async function runCli(args: readonly string[]): Promise<CliResult> {
   if (first === "prompts" && second === "check")
     return promptsUnavailable(asJson);
   if (first === "dev" && (second === "up" || second === "down")) {
-    return localDevUnavailable(second, asJson);
+    return runLocalComposition(second, asJson);
   }
   if (first === "workflow" && second === "run")
     return runtimeUnavailable(asJson);
