@@ -9,8 +9,8 @@ const program = new Command()
   .allowUnknownOption(true)
   .allowExcessArguments(true)
   .argument("[command...]", "Forge command")
-  .action(async (command: string[]) => {
-    const result = await runCli(command);
+  .action(async () => {
+    const result = await runCli(process.argv.slice(2));
     process.stdout.write(result.stdout);
     process.stderr.write(result.stderr);
     process.exitCode = result.exitCode;

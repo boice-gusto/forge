@@ -3,6 +3,25 @@ import { describe, expect, test } from "vitest";
 import { runCli } from "./program.js";
 
 describe("runCli", () => {
+  test("preserves --json when the executable is invoked through Commander", () => {
+    const output = execFileSync(
+      "pnpm",
+      [
+        "--filter",
+        "@forge/cli",
+        "exec",
+        "tsx",
+        "src/main.ts",
+        "providers",
+        "doctor",
+        "--json",
+      ],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+
+    expect(JSON.parse(output)).toMatchObject({ status: "ready" });
+  });
+
   test("writes exactly one JSON result to stdout for provider diagnostics", async () => {
     const result = await runCli(["providers", "doctor", "--json"]);
 
@@ -39,3 +58,5 @@ describe("runCli", () => {
     });
   });
 });
+
+import { execFileSync } from "node:child_process";
