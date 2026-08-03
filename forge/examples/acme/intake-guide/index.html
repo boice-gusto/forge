@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="A local engineering briefing for Forge's controlled intake-to-merge flow."
+    />
+    <title>From intake to merge — Forge at Acme</title>
+    <style>
+      :root {
+        --paper: #f7f2e8;
+        --ink: #14243a;
+        --cobalt: #165dcc;
+        --muted: #627487;
+        --rule: #c7a76c;
+        --surface: #fffdf8;
+      }
+
+      * { box-sizing: border-box; }
+
+      html { background: var(--paper); color: var(--ink); }
+
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 16px;
+        line-height: 1.55;
+      }
+
+      main { max-width: 1180px; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+
+      .eyebrow, .step-number, dt, .kicker {
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: .72rem;
+        font-weight: 700;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+      }
+
+      header {
+        border-top: 5px solid var(--cobalt);
+        border-bottom: 1px solid var(--rule);
+        padding: 1.1rem 0 2.25rem;
+      }
+
+      h1, h2, h3 { font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif; line-height: 1.08; }
+      h1 { font-size: clamp(2.65rem, 8vw, 5.8rem); font-weight: 500; letter-spacing: -.055em; margin: .45rem 0 1rem; max-width: 11ch; }
+      h2 { font-size: clamp(1.75rem, 3vw, 2.7rem); font-weight: 500; letter-spacing: -.035em; margin: 0 0 .75rem; }
+      h3 { font-size: 1.38rem; font-weight: 600; margin: .35rem 0 .7rem; }
+      p { max-width: 70ch; margin: 0 0 1rem; }
+      .lede { color: #32465d; font-size: clamp(1.1rem, 2vw, 1.38rem); max-width: 58ch; }
+      .operating-note { color: var(--muted); font-size: .9rem; margin-top: 1.4rem; }
+
+      section { border-bottom: 1px solid var(--rule); padding: 2.8rem 0; }
+      section:last-child { border-bottom: 0; }
+
+      .flow {
+        counter-reset: steps;
+        display: grid;
+        gap: 0;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        list-style: none;
+        margin: 2rem 0 0;
+        padding: 0;
+      }
+
+      .flow li { border-left: 1px solid var(--rule); min-height: 15.5rem; padding: 1rem .9rem 1rem 1rem; position: relative; }
+      .flow li:last-child { border-right: 1px solid var(--rule); }
+      .flow li::before { background: var(--cobalt); content: ""; height: 5px; left: -1px; position: absolute; right: -1px; top: 0; }
+      .flow li::after { color: var(--cobalt); content: counter(steps, decimal-leading-zero); counter-increment: steps; display: block; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .75rem; font-weight: 700; letter-spacing: .06em; margin-bottom: 1.5rem; }
+      .flow strong { display: block; font-family: ui-serif, Georgia, Cambria, serif; font-size: 1.16rem; line-height: 1.15; margin-bottom: .65rem; }
+      .flow span { color: #4e6072; display: block; font-size: .9rem; line-height: 1.42; }
+
+      .examples { display: grid; gap: 2rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 1.75rem; }
+      .example { background: var(--surface); border-top: 4px solid var(--cobalt); padding: 1.35rem 1.4rem 1.4rem; }
+      dl { border-top: 1px solid var(--rule); margin: 1.25rem 0; padding-top: .75rem; }
+      dt { clear: left; float: left; width: 8.5rem; }
+      dd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; margin: 0 0 .5rem 8.8rem; overflow-wrap: anywhere; }
+      .control { border-left: 3px solid var(--rule); color: #3d5165; font-size: .94rem; padding-left: .8rem; }
+      a { color: var(--cobalt); text-decoration-thickness: 1px; text-underline-offset: .18em; }
+      a:hover { color: var(--ink); }
+      a:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 3px; }
+
+      .benefits { display: grid; gap: 1.2rem 2rem; grid-template-columns: repeat(2, minmax(0, 1fr)); list-style: none; margin: 1.5rem 0 0; padding: 0; }
+      .benefits li { border-top: 1px solid var(--rule); padding-top: .85rem; }
+      .benefits strong { display: block; font-family: ui-serif, Georgia, Cambria, serif; font-size: 1.22rem; margin-bottom: .35rem; }
+      .boundary { background: var(--ink); color: #eef3f8; margin: 2.8rem -1.5rem -4rem; padding: 2.5rem max(1.5rem, calc((100vw - 1180px) / 2)); }
+      .boundary h2 { color: #fffdf8; }
+      .boundary p { color: #d4dee8; }
+      .boundary a { color: #a8cbff; }
+
+      @media (max-width: 759px) {
+        main { padding-top: 1.5rem; }
+        .flow { display: block; margin-top: 1.5rem; }
+        .flow li, .flow li:last-child { border-bottom: 1px solid var(--rule); border-left: 1px solid var(--rule); border-right: 0; min-height: 0; padding: 1rem 1rem 1.2rem 4.25rem; }
+        .flow li::before { bottom: -1px; height: auto; left: 0; right: auto; top: -1px; width: 5px; }
+        .flow li::after { left: 1rem; margin: 0; position: absolute; top: 1rem; }
+        .examples, .benefits { grid-template-columns: 1fr; }
+        .boundary { margin-top: 2rem; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Acme / Forge operating brief</p>
+        <h1>From intake to merge.</h1>
+        <p class="lede">Turn an ambiguous inbound request into a reviewable, policy-controlled, traceable change—without treating a chat message or issue as permission to act.</p>
+        <p class="operating-note">A local engineering briefing for the path between an incoming request and the normal repository review and merge process.</p>
+      </header>
+
+      <section aria-labelledby="flow-title">
+        <p class="kicker">The control path</p>
+        <h2 id="flow-title">Six deliberate transitions</h2>
+        <ol class="flow">
+          <li><strong>Normalize intake</strong><span>A Slack message or Jira issue becomes a typed <code>WorkflowRequest</code>.</span></li>
+          <li><strong>Validate & authenticate</strong><span>The API validates the DTO, authenticates the boundary, and applies allowlisting plus idempotency.</span></li>
+          <li><strong>Policy decision</strong><span>The runtime passes trusted context to policy before sensitive work continues.</span></li>
+          <li><strong>Human approval</strong><span>A checkpoint makes the accountable decision explicit and reviewable.</span></li>
+          <li><strong>Durable effect</strong><span>An outbox dispatches the approved effect exactly once, with recovery built in.</span></li>
+          <li><strong>Review & merge</strong><span>An engineering brief and evidence enter the normal repository review and merge process.</span></li>
+        </ol>
+      </section>
+
+      <section aria-labelledby="examples-title">
+        <p class="kicker">Concrete routes</p>
+        <h2 id="examples-title">Two finite intake examples</h2>
+        <div class="examples">
+          <article class="example" aria-labelledby="slack-title">
+            <p class="eyebrow">Slack fixture</p>
+            <h3 id="slack-title">Campaign request</h3>
+            <dl>
+              <dt>Source</dt><dd>marketing-launches</dd>
+              <dt>Workflow</dt><dd>marketing.campaign-brief</dd>
+              <dt>Normalized</dt><dd>slack:marketing-launches:1710000000.000100</dd>
+            </dl>
+            <p class="control">The fixture accepts one known channel, supplies a stable idempotency key, then pauses for the required approval.</p>
+            <a href="../intake/slack.fixture.ts">Read the Slack fixture source</a>
+          </article>
+          <article class="example" aria-labelledby="jira-title">
+            <p class="eyebrow">Jira fixture</p>
+            <h3 id="jira-title">Engineering change</h3>
+            <dl>
+              <dt>Source</dt><dd>ENG-42</dd>
+              <dt>Workflow</dt><dd>engineering.change-brief</dd>
+              <dt>Normalized</dt><dd>jira:ENG-42</dd>
+            </dl>
+            <p class="control">The fixture permits the known project, preserves issue evidence, and routes only to an allowlisted engineering workflow.</p>
+            <a href="../intake/jira.fixture.ts">Read the Jira fixture source</a>
+          </article>
+        </div>
+      </section>
+
+      <section aria-labelledby="benefits-title">
+        <p class="kicker">Why these controls matter</p>
+        <h2 id="benefits-title">Automation with an accountable trail</h2>
+        <ul class="benefits">
+          <li><strong>Fewer handoffs</strong>Incoming work gains a consistent shape instead of a bespoke interpretation at every boundary.</li>
+          <li><strong>Safer automation</strong>Authentication, allowlisting, and policy decisions set limits before work creates an effect.</li>
+          <li><strong>Durable recovery</strong>Idempotency, checkpoints, and the outbox make interrupted work recoverable without duplication.</li>
+          <li><strong>Auditable approvals</strong>Human decisions attach to a specific run, evidence set, and resulting engineering brief.</li>
+        </ul>
+      </section>
+
+      <section class="boundary" aria-labelledby="boundary-title">
+        <p class="kicker">Simulation boundary</p>
+        <h2 id="boundary-title">These are deterministic simulations.</h2>
+        <p>The examples are local, finite fixtures. They do not contact Slack, Jira, GitHub, or a production merge service; they require no network and no credentials. The executable acceptance test proves the routing and approval behavior.</p>
+        <a href="../intake/intake-routing.acceptance.test.ts">Read the intake routing acceptance test</a>
+      </section>
+    </main>
+  </body>
+</html>
