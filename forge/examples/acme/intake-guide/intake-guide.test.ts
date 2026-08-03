@@ -2,8 +2,13 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("intake guide", () => {
-  it("documents the intake-to-merge flow with local source links", async () => {
+  it("presents every intake-to-merge stage as an explanatory slide", async () => {
     const html = await readFile(new URL("./index.html", import.meta.url), "utf8");
+
+    expect(html).toContain('class="deck"');
+    expect(html.match(/class="slide(?: |\")/g)?.length).toBeGreaterThanOrEqual(
+      8,
+    );
 
     for (const text of [
       "Normalize intake",
@@ -20,6 +25,12 @@ describe("intake guide", () => {
     ]) {
       expect(html).toContain(text);
     }
+
+    expect(html.match(/What happens/g)?.length).toBeGreaterThanOrEqual(6);
+    expect(html.match(/Why it matters/g)?.length).toBeGreaterThanOrEqual(6);
+    expect(html.match(/Benefit/g)?.length).toBeGreaterThanOrEqual(6);
+    expect(html).toContain("ArrowRight");
+    expect(html).toContain("ArrowLeft");
 
     for (const link of [
       "../intake/slack.fixture.ts",
