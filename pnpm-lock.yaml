@@ -114,6 +114,15 @@ importers:
 
   forge/packages/config: {}
 
+  forge/packages/engine-memory:
+    dependencies:
+      '@forge/ir':
+        specifier: workspace:*
+        version: link:../ir
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../ports
+
   forge/packages/ir:
     dependencies:
       zod:
@@ -135,6 +144,12 @@ importers:
         specifier: ^10.3.1
         version: 10.3.1
 
+  forge/packages/policy-memory:
+    dependencies:
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../ports
+
   forge/packages/ports: {}
 
   forge/packages/provider-mock:
@@ -144,6 +159,30 @@ importers:
         version: link:../ports
 
   forge/packages/queue-memory: {}
+
+  forge/packages/runtime:
+    dependencies:
+      '@forge/checkpoint-memory':
+        specifier: workspace:*
+        version: link:../checkpoint-memory
+      '@forge/compiler':
+        specifier: workspace:*
+        version: link:../compiler
+      '@forge/engine-memory':
+        specifier: workspace:*
+        version: link:../engine-memory
+      '@forge/ir':
+        specifier: workspace:*
+        version: link:../ir
+      '@forge/policy-memory':
+        specifier: workspace:*
+        version: link:../policy-memory
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../ports
+      '@forge/types':
+        specifier: workspace:*
+        version: link:../types
 
   forge/packages/sandbox: {}
 
