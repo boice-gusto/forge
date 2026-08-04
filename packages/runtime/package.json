@@ -13,7 +13,8 @@
     "@forge/types": "workspace:*",
     "@forge/compiler": "workspace:*",
     "@forge/engine-memory": "workspace:*",
-    "@forge/policy-memory": "workspace:*"
+    "@forge/policy-memory": "workspace:*",
+    "@forge/approval-memory": "workspace:*"
   },
   "scripts": {
     "build": "tsc --noEmit",

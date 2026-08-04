@@ -1,8 +1,9 @@
+import { createMemoryApprovalStore } from "@forge/approval-memory";
 import { createMemoryCheckpointStore } from "@forge/checkpoint-memory";
 import { compileWorkflow } from "@forge/compiler";
 import { createMemoryGraphEngine } from "@forge/engine-memory";
 import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
-import { createFixedClock, createSequentialIds } from "@forge/ports";
+import { createSequentialIds } from "@forge/ports";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -73,18 +74,27 @@ function harness(
       dispatched.push(effect);
     },
   };
+  let instant = new Date("2026-08-04T00:00:00.000Z");
+  const clock = { now: () => new Date(instant) };
+  const advance = (ms: number) => {
+    instant = new Date(instant.getTime() + ms);
+  };
+  const ids = createSequentialIds();
+  const approvals = createMemoryApprovalStore(clock, ids);
   const checkpoints = createMemoryCheckpointStore();
   const runtime = createRuntime({
     engine: createMemoryGraphEngine(),
     policy: createMemoryPolicy({ rules, grants, failEvaluation }),
     effects,
     checkpoints,
-    clock: createFixedClock("2026-08-04T00:00:00.000Z"),
-    ids: createSequentialIds(),
+    approvals,
+    clock,
+    ids,
     actor: "svc.forge.worker",
     environment: "production",
+    approvalTtlMs: 7 * 24 * 60 * 60 * 1000,
   });
-  return { runtime, dispatched, checkpoints };
+  return { runtime, dispatched, checkpoints, approvals, advance };
 }
 
 describe("run lifecycle", () => {
@@ -106,7 +116,7 @@ describe("run lifecycle", () => {
       artifact: artifact(),
       capabilities: ["slack.write"],
     });
-    const approval = runtime.getApproval(run.pendingApprovalId as string);
+    const approval = await runtime.getApproval(run.pendingApprovalId as string);
 
     expect(approval?.nodeId).toBe("publish");
     expect(approval?.effect).toBe("slack.post");
@@ -185,7 +195,7 @@ describe("run lifecycle", () => {
 
     expect(after.status).toBe("FAILED");
     expect(dispatched).toEqual([]);
-    expect(runtime.getApproval(approvalId)?.status).toBe("REJECTED");
+    expect((await runtime.getApproval(approvalId))?.status).toBe("REJECTED");
   });
 });
 
@@ -377,7 +387,7 @@ describe("durability and binding", () => {
     expect(saved).toHaveLength(1);
     expect(saved[0]?.stepId).toBe("publish");
     expect(saved[0]?.resumeToken).toBe(
-      runtime.getApproval(run.pendingApprovalId as string)?.effectHash,
+      (await runtime.getApproval(run.pendingApprovalId as string))?.effectHash,
     );
   });
 
@@ -403,11 +413,11 @@ describe("durability and binding", () => {
       artifact: artifact(),
       capabilities: ["slack.write"],
     });
-    const approval = runtime.getApproval(run.pendingApprovalId as string);
+    const approval = await runtime.getApproval(run.pendingApprovalId as string);
 
     // Simulate an approval that survived a recompile: the stored binding no
     // longer agrees with the action under the current fingerprint.
-    (approval as { effectHash: string }).effectHash = "sha256:stale";
+    (approval as unknown as { effectHash: string }).effectHash = "sha256:stale";
 
     await expect(
       runtime.decide(
@@ -497,5 +507,132 @@ describe("policy_check is enforced at runtime", () => {
     });
 
     expect(await checkpoints.listByRun(run.runId)).toEqual([]);
+  });
+});
+
+describe("expiry and amendment", () => {
+  test("an approval carries an expiry derived from the configured TTL", async () => {
+    const { runtime } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const approval = await runtime.getApproval(run.pendingApprovalId as string);
+
+    expect(approval?.expiresAt).toBe("2026-08-11T00:00:00.000Z");
+  });
+
+  test("an expired gate is not a slow yes", async () => {
+    const { runtime, dispatched, advance } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+
+    advance(8 * 24 * 60 * 60 * 1000);
+    const after = await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(after.status).toBe("FAILED");
+    expect(after.error).toContain("expired");
+    expect(dispatched).toEqual([]);
+    expect(
+      (await runtime.getApproval(run.pendingApprovalId as string))?.status,
+    ).toBe("TIMED_OUT");
+  });
+
+  test("deciding just inside the window still works", async () => {
+    const { runtime, dispatched, advance } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+
+    advance(6 * 24 * 60 * 60 * 1000);
+    const after = await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(after.status).toBe("SUCCEEDED");
+    expect(dispatched).toEqual(["slack.post"]);
+  });
+
+  test("an explicit timeout decision fails the run without dispatching", async () => {
+    const { runtime, dispatched } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const after = await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "timeout" },
+      "sweeper",
+    );
+
+    expect(after.status).toBe("FAILED");
+    expect(after.error).toContain("timed out");
+    expect(dispatched).toEqual([]);
+  });
+
+  test("an edit authorises nothing and reissues the gate", async () => {
+    const { runtime, dispatched } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const first = run.pendingApprovalId as string;
+
+    const after = await runtime.decide(
+      first,
+      { kind: "edit", patch: { copy: "reworded" } },
+      "marketing-lead",
+    );
+
+    expect(after.status).toBe("AWAITING_APPROVAL");
+    expect(after.pendingApprovalId).not.toBe(first);
+    expect(dispatched).toEqual([]);
+    expect((await runtime.getApproval(first))?.status).toBe("EDITED");
+  });
+
+  test("the reissued gate can then be approved, dispatching once", async () => {
+    const { runtime, dispatched } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const edited = await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "edit", patch: {} },
+      "marketing-lead",
+    );
+    const done = await runtime.decide(
+      edited.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(done.status).toBe("SUCCEEDED");
+    expect(dispatched).toEqual(["slack.post"]);
+  });
+
+  test("getPending reflects only the live gate", async () => {
+    const { runtime, approvals } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+
+    expect(await approvals.getPending(run.runId)).toHaveLength(1);
+    await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+    expect(await approvals.getPending(run.runId)).toEqual([]);
   });
 });

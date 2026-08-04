@@ -1,6 +1,8 @@
+export type {
+  ApprovalDecision,
+  ApprovalRecord,
+} from "@forge/ports";
 export {
-  type ApprovalDecision,
-  type ApprovalRecord,
   createRuntime,
   type EffectSink,
   effectHash,

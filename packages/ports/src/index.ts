@@ -1,7 +1,9 @@
 export {
+  type ApprovalDecision,
   type ApprovalPort,
-  type ApprovalProposal,
-  createApprovalProposal,
+  type ApprovalRecord,
+  type ApprovalRequest,
+  type ApprovalStatus,
 } from "./approval.js";
 export {
   type CheckpointInput,

@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 
 import type { ForgeIr } from "@forge/ir";
 import type {
+  ApprovalDecision,
+  ApprovalPort,
+  ApprovalRecord,
   CheckpointStorePort,
   ClockPort,
   GraphEnginePort,
@@ -25,24 +28,6 @@ export type RunStatus =
   | "SUCCEEDED"
   | "FAILED"
   | "CANCELLED";
-
-export type ApprovalDecision =
-  | { readonly kind: "approve" }
-  | { readonly kind: "reject"; readonly reason: string };
-
-export interface ApprovalRecord {
-  readonly approvalId: string;
-  readonly runId: string;
-  readonly nodeId: string;
-  readonly effect: string;
-  /** Binds the decision to this exact action (006 §6.4). */
-  readonly effectHash: string;
-  readonly policyId: string;
-  readonly approvers: readonly string[];
-  readonly status: "PENDING" | "APPROVED" | "REJECTED";
-  readonly decidedBy?: string | undefined;
-  readonly createdAt: string;
-}
 
 export interface RunRecord {
   readonly runId: string;
@@ -68,12 +53,15 @@ export interface SealedArtifact {
 export interface RuntimeOptions {
   readonly engine: GraphEnginePort;
   readonly policy: PolicyPort;
+  readonly approvals: ApprovalPort;
   readonly effects: EffectSink;
   readonly checkpoints: CheckpointStorePort;
   readonly clock: ClockPort;
   readonly ids: IdPort;
   readonly actor: string;
   readonly environment: string;
+  /** How long an approval stays actionable before it expires. */
+  readonly approvalTtlMs: number;
 }
 
 export interface StartInput {
@@ -104,7 +92,7 @@ export interface Runtime {
   ): Promise<RunRecord>;
   cancel(runId: string): Promise<RunRecord>;
   getRun(runId: string): RunRecord | undefined;
-  getApproval(approvalId: string): ApprovalRecord | undefined;
+  getApproval(approvalId: string): Promise<ApprovalRecord | undefined>;
   /** Effects actually dispatched, in order. Used to prove exactly-once. */
   ledger(runId: string): readonly string[];
 }
@@ -118,7 +106,6 @@ interface RunState {
 
 export function createRuntime(options: RuntimeOptions): Runtime {
   const runs = new Map<string, RunState>();
-  const approvals = new Map<string, ApprovalRecord>();
   const ledgers = new Map<string, string[]>();
 
   const update = (state: RunState, patch: Partial<RunRecord>): RunRecord => {
@@ -204,22 +191,21 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       resumeToken: binding,
     });
 
-    const approvalId = options.ids.next("approval");
-    approvals.set(approvalId, {
-      approvalId,
+    const approval = await options.approvals.request({
       runId: state.record.runId,
       nodeId: result.nodeId,
       effect: result.effect,
       effectHash: binding,
       policyId: decision.policyId,
       approvers: decision.approvers,
-      status: "PENDING",
-      createdAt: options.clock.now().toISOString(),
+      expiresAt: new Date(
+        options.clock.now().getTime() + options.approvalTtlMs,
+      ).toISOString(),
     });
 
     return update(state, {
       status: "AWAITING_APPROVAL",
-      pendingApprovalId: approvalId,
+      pendingApprovalId: approval.approvalId,
       performedEffects: [...ledger],
     });
   }
@@ -248,7 +234,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     },
 
     async decide(approvalId, decision, principal) {
-      const approval = approvals.get(approvalId);
+      const approval = await options.approvals.get(approvalId);
       if (approval === undefined) throw new Error("Unknown approval.");
       const state = runs.get(approval.runId);
       if (state === undefined) throw new Error("Unknown run.");
@@ -256,8 +242,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       if (state.record.status === "CANCELLED")
         throw new Error("Run is cancelled.");
 
-      // At-least-once delivery: deciding the same approval twice must not
-      // dispatch the effect twice (006 §8).
+      // Single-use, enforced by the port. A repeat delivery is a no-op.
       if (approval.status !== "PENDING") return state.record;
 
       // The decision authorises one action under one compiled version. If the
@@ -275,12 +260,24 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         );
       }
 
-      if (decision.kind === "reject") {
-        approvals.set(approvalId, {
-          ...approval,
-          status: "REJECTED",
-          decidedBy: principal,
+      // An expired gate is not a slow yes. It times out rather than being
+      // honoured late (006 §9).
+      if (options.clock.now() > new Date(approval.expiresAt)) {
+        await options.approvals.decide(
+          approvalId,
+          { kind: "timeout" },
+          principal,
+        );
+        return update(state, {
+          status: "FAILED",
+          error: `Approval ${approvalId} expired before a decision was recorded.`,
+          pendingApprovalId: undefined,
         });
+      }
+
+      await options.approvals.decide(approvalId, decision, principal);
+
+      if (decision.kind === "reject") {
         return update(state, {
           status: "FAILED",
           error: `Rejected by ${principal}: ${decision.reason}`,
@@ -288,11 +285,35 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         });
       }
 
-      approvals.set(approvalId, {
-        ...approval,
-        status: "APPROVED",
-        decidedBy: principal,
-      });
+      if (decision.kind === "timeout") {
+        return update(state, {
+          status: "FAILED",
+          error: `Approval ${approvalId} timed out.`,
+          pendingApprovalId: undefined,
+        });
+      }
+
+      if (decision.kind === "edit") {
+        // Amending the action changes what was proposed, so the original
+        // binding no longer describes it. The edit does not authorise
+        // anything; it asks for a fresh decision on the new action.
+        const reissued = await options.approvals.request({
+          runId: approval.runId,
+          nodeId: approval.nodeId,
+          effect: approval.effect,
+          effectHash: approval.effectHash,
+          policyId: approval.policyId,
+          approvers: approval.approvers,
+          expiresAt: new Date(
+            options.clock.now().getTime() + options.approvalTtlMs,
+          ).toISOString(),
+        });
+        return update(state, {
+          status: "AWAITING_APPROVAL",
+          pendingApprovalId: reissued.approvalId,
+        });
+      }
+
       // The approval authorises exactly the node it was bound to.
       state.authorised.add(approval.nodeId);
       update(state, {
@@ -319,7 +340,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     },
 
     getRun: (runId) => runs.get(runId)?.record,
-    getApproval: (approvalId) => approvals.get(approvalId),
+    getApproval: (approvalId) => options.approvals.get(approvalId),
     ledger: (runId) => [...(ledgers.get(runId) ?? [])],
   };
 }
