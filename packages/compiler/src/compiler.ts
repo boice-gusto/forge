@@ -179,6 +179,46 @@ function checkBranches(
 }
 
 /**
+ * A node with no path from the entry node is dead, and dead nodes defeat the
+ * approval analysis: an effect that cannot be reached at all trivially cannot
+ * be reached while bypassing its gate, so the gate check passes vacuously.
+ * Refuse the shape instead of reasoning about it.
+ */
+function checkReachability(
+  nodes: readonly IrNode[],
+  edges: readonly IrEdge[],
+): Diagnostic[] {
+  const entry = nodes.find((node) => node.kind === "input") ?? nodes[0];
+  if (entry === undefined) return [];
+
+  const outgoing = new Map<string, string[]>(
+    nodes.map((node) => [node.id, [] as string[]]),
+  );
+  for (const edge of edges) outgoing.get(edge.from)?.push(edge.to);
+
+  const seen = new Set([entry.id]);
+  const queue = [entry.id];
+  while (queue.length > 0) {
+    const id = queue.shift() as string;
+    for (const next of outgoing.get(id) ?? []) {
+      if (seen.has(next)) continue;
+      seen.add(next);
+      queue.push(next);
+    }
+  }
+
+  return nodes
+    .filter((node) => !seen.has(node.id))
+    .map((node) => ({
+      code: "WF_UNREACHABLE_NODE",
+      message: `Node "${node.id}" has no path from "${entry.id}".`,
+      path: ["nodes", node.id],
+      suggestion:
+        "Connect it with an edge, or remove it. A dead node cannot be gated.",
+    }));
+}
+
+/**
  * Every side effect must sit behind an approval that names it.
  *
  * A generic approval earlier in the graph does not authorise an unrelated
@@ -270,6 +310,13 @@ export function compileWorkflow(source: unknown): WorkflowCompilation {
   if (hasCycle(parsed.data.nodes, parsed.data.edges)) {
     return diagnostic("WF_CYCLE", "Workflow graph must be acyclic.", ["edges"]);
   }
+
+  const reachabilityDiagnostics = checkReachability(
+    parsed.data.nodes,
+    parsed.data.edges,
+  );
+  if (reachabilityDiagnostics.length > 0)
+    return { ok: false, diagnostics: reachabilityDiagnostics };
 
   const roleDiagnostics = checkRoles(
     parsed.data.nodes,

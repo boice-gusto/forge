@@ -171,6 +171,9 @@ importers:
 
   packages/engine-memory:
     dependencies:
+      '@forge/compiler':
+        specifier: workspace:*
+        version: link:../compiler
       '@forge/ir':
         specifier: workspace:*
         version: link:../ir

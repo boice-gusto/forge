@@ -28,6 +28,26 @@ interface MaterializedPlan {
 
 const plans = new WeakMap<object, MaterializedPlan>();
 
+/** Nodes reachable from the entry node, following edges. */
+function reachableFrom(ir: ForgeIr, entryId: string): ReadonlySet<string> {
+  const outgoing = new Map<string, string[]>(
+    ir.nodes.map((node) => [node.id, [] as string[]]),
+  );
+  for (const edge of ir.edges) outgoing.get(edge.from)?.push(edge.to);
+
+  const seen = new Set([entryId]);
+  const queue = [entryId];
+  while (queue.length > 0) {
+    const id = queue.shift() as string;
+    for (const next of outgoing.get(id) ?? []) {
+      if (seen.has(next)) continue;
+      seen.add(next);
+      queue.push(next);
+    }
+  }
+  return seen;
+}
+
 function topologicalOrder(ir: ForgeIr): readonly IrNode[] {
   const byId = new Map(ir.nodes.map((node) => [node.id, node]));
   const indegree = new Map(ir.nodes.map((node) => [node.id, 0]));
@@ -80,10 +100,21 @@ export function createMemoryGraphEngine(): GraphEnginePort {
   return {
     async materialize(ir: unknown): Promise<EnginePlan> {
       const typed = ir as ForgeIr;
+      // Execution follows edges. A node with no path from the entry node is
+      // not "later in the order" — it is not part of this workflow's
+      // execution at all, and running it would let graph shape decide what
+      // happens instead of the graph.
+      const entry =
+        typed.nodes.find((node) => node.kind === "input") ?? typed.nodes[0];
+      const reachable =
+        entry === undefined
+          ? new Set<string>()
+          : reachableFrom(typed, entry.id);
+
       const token = {} as EnginePlan;
       plans.set(token as unknown as object, {
         ir: typed,
-        order: topologicalOrder(typed),
+        order: topologicalOrder(typed).filter((node) => reachable.has(node.id)),
         gatesFor: gateIndex(typed),
       });
       return token;

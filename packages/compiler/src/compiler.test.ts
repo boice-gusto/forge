@@ -278,10 +278,18 @@ describe("branch exhaustiveness", () => {
   });
 
   test("WF_UNTYPED_EDGE when a declared condition has no arm", () => {
+    // Declare a third condition without adding an arm for it. Deleting an
+    // existing arm would also orphan its target, which is a different defect.
     const result = compileWorkflow({
       ...branching,
-      edges: branching.edges.filter(
-        (edge) => !(edge.from === "route" && edge.to === "slow"),
+      nodes: branching.nodes.map((node) =>
+        node.id === "route"
+          ? {
+              id: "route",
+              kind: "branch",
+              conditionIds: ["urgent", "routine", "escalate"],
+            }
+          : node,
       ),
     });
 
@@ -447,5 +455,65 @@ describe("roles and capability closure", () => {
     expect(result).toMatchObject({ ok: true });
     if (!result.ok) throw new Error("Expected valid compilation.");
     expect(result.value.ir.roles).toEqual({});
+  });
+});
+
+describe("reachability", () => {
+  test("WF_UNREACHABLE_NODE — a dead node cannot be gated, so it is refused", () => {
+    const result = compileWorkflow({
+      id: "acme.orphan",
+      version: "1.0.0",
+      sideEffects: ["prod.write"],
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1" },
+        { id: "result", kind: "output", schemaRef: "s@1" },
+        {
+          id: "gate",
+          kind: "approval",
+          gateSchemaRef: "g@1",
+          gates: ["orphan"],
+        },
+        { id: "orphan", kind: "tool", skillRef: "t@1", effect: "prod.write" },
+      ],
+      edges: [
+        { from: "intake", to: "result" },
+        { from: "gate", to: "orphan" },
+      ],
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    const codes = result.diagnostics.map((entry) => entry.code);
+    expect(codes).toContain("WF_UNREACHABLE_NODE");
+    // Both the gate and the orphan are unreachable from intake.
+    expect(result.diagnostics.map((entry) => entry.path[1]).sort()).toEqual([
+      "gate",
+      "orphan",
+    ]);
+  });
+
+  test("an orphaned effect cannot hide behind a vacuous approval check", () => {
+    // WF_MISSING_APPROVAL asks whether an effect is reachable while bypassing
+    // its gate. For an unreachable node that is trivially false, so the gate
+    // check alone would pass. Reachability has to be checked first.
+    const result = compileWorkflow({
+      id: "acme.vacuous",
+      version: "1.0.0",
+      sideEffects: ["prod.write"],
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1" },
+        { id: "result", kind: "output", schemaRef: "s@1" },
+        { id: "sneaky", kind: "tool", skillRef: "t@1", effect: "prod.write" },
+      ],
+      edges: [{ from: "intake", to: "result" }],
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_UNREACHABLE_NODE");
+  });
+
+  test("a fully connected workflow reports no reachability diagnostic", () => {
+    const result = compileWorkflow(gatedWorkflow);
+    expect(result).toMatchObject({ ok: true });
   });
 });

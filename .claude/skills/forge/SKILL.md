@@ -76,7 +76,7 @@ that is the exact mistake the boundary exists to prevent.
 
 ## Reading a diagnostic
 
-Eight codes, all in `docs/007-workflow-compiler.md` §11. The ones that carry real
+Nine codes; eight are in `docs/007-workflow-compiler.md` §11 and `WF_UNREACHABLE_NODE` was added after a red-team pass found that graph shape could bypass a gate. The ones that carry real
 meaning:
 
 | Code | What it actually means |
@@ -86,6 +86,7 @@ meaning:
 | `WF_UNTYPED_EDGE` | A branch arm is unlabelled, uses an undeclared `conditionId`, or a declared condition has no arm. |
 | `WF_UNDECLARED_EFFECT` | A node causes an effect missing from `sideEffects[]`. |
 | `WF_UNKNOWN_ROLE` | A node names a role that is not declared. |
+| `WF_UNREACHABLE_NODE` | A node has no path from the input node. A dead node cannot be gated, so it is refused rather than reasoned about. |
 | `WF_CYCLE`, `WF_DUPLICATE_NODE`, `WF_UNKNOWN_REF` | Graph structure. |
 
 **Fix the declaration, not the check.** If `WF_MISSING_APPROVAL` fires, add the gate
@@ -107,6 +108,9 @@ change pass, that is the signal to stop.
   so the effect ledger is what prevents a repeat.
 - **An expired gate is not a slow yes.** It times out.
 - **An edit authorises nothing.** It reissues the gate on the amended action.
+- **Execution follows edges.** A node with no path from the input node is not
+  executed. Both the compiler and the engine enforce this independently —
+  either layer alone once let an orphaned effect run.
 - **Everything fails closed.** Policy evaluator errors deny. Judge errors escalate.
   An unmatched action denies by default.
 

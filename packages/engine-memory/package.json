@@ -8,7 +8,8 @@
   },
   "dependencies": {
     "@forge/ir": "workspace:*",
-    "@forge/ports": "workspace:*"
+    "@forge/ports": "workspace:*",
+    "@forge/compiler": "workspace:*"
   },
   "scripts": {
     "build": "tsc --noEmit",
