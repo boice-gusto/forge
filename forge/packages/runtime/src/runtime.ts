@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { ForgeIr } from "@forge/ir";
 import type {
+  CheckpointStorePort,
   ClockPort,
   GraphEnginePort,
   IdPort,
@@ -58,15 +59,6 @@ export interface EffectSink {
   perform(runId: string, nodeId: string, effect: string): Promise<void>;
 }
 
-export interface CheckpointSink {
-  save(input: {
-    readonly runId: string;
-    readonly stepId: string;
-    readonly stateVersion: number;
-    readonly resumeToken: string;
-  }): Promise<{ readonly checkpointId: string }>;
-}
-
 export interface SealedArtifact {
   readonly workflowId: string;
   readonly fingerprint: string;
@@ -77,7 +69,7 @@ export interface RuntimeOptions {
   readonly engine: GraphEnginePort;
   readonly policy: PolicyPort;
   readonly effects: EffectSink;
-  readonly checkpoints: CheckpointSink;
+  readonly checkpoints: CheckpointStorePort;
   readonly clock: ClockPort;
   readonly ids: IdPort;
   readonly actor: string;

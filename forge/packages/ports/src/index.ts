@@ -4,6 +4,11 @@ export {
   createApprovalProposal,
 } from "./approval.js";
 export {
+  type CheckpointInput,
+  type CheckpointRecord,
+  type CheckpointStorePort,
+} from "./checkpoint.js";
+export {
   type ClockPort,
   createFixedClock,
   createSequentialIds,

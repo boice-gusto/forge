@@ -1,7 +1,6 @@
 export {
   type ApprovalDecision,
   type ApprovalRecord,
-  type CheckpointSink,
   createRuntime,
   type EffectSink,
   effectHash,

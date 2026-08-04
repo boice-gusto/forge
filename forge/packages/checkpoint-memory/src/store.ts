@@ -1,21 +1,6 @@
-export interface CheckpointInput {
-  readonly runId: string;
-  readonly stepId: string;
-  readonly stateVersion: number;
-  readonly resumeToken: string;
-}
+import type { CheckpointRecord, CheckpointStorePort } from "@forge/ports";
 
-export interface CheckpointRecord extends CheckpointInput {
-  readonly checkpointId: string;
-}
-
-export interface MemoryCheckpointStore {
-  save(input: CheckpointInput): Promise<CheckpointRecord>;
-  load(checkpointId: string): Promise<CheckpointRecord | undefined>;
-  listByRun(runId: string): Promise<readonly CheckpointRecord[]>;
-}
-
-export function createMemoryCheckpointStore(): MemoryCheckpointStore {
+export function createMemoryCheckpointStore(): CheckpointStorePort {
   const records = new Map<string, CheckpointRecord>();
   let nextCheckpoint = 1;
 

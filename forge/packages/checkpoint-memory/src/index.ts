@@ -1,6 +1,1 @@
-export {
-  type CheckpointInput,
-  type CheckpointRecord,
-  createMemoryCheckpointStore,
-  type MemoryCheckpointStore,
-} from "./store.js";
+export { createMemoryCheckpointStore } from "./store.js";
