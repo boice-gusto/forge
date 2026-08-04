@@ -133,6 +133,14 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       state.plan as never,
       {
         runId: state.record.runId,
+        assertCapability: async (_nodeId, capability) => {
+          const granted = await options.policy.grantedCapabilities();
+          if (!granted.includes(capability)) {
+            throw new Error(
+              `Capability "${capability}" is outside the granted closure.`,
+            );
+          }
+        },
         perform: async (nodeId, effect) => {
           // Replay safety: a resumed attempt re-walks pre-interrupt nodes, so
           // an already-dispatched effect must not fire twice (006 §8).

@@ -71,6 +71,59 @@ function reachableAvoiding(
 
 type ApprovalNode = Extract<IrNode, { kind: "approval" }>;
 type ToolNode = Extract<IrNode, { kind: "tool" }>;
+type BranchNode = Extract<IrNode, { kind: "branch" }>;
+
+/**
+ * A branch must be exhaustive and every arm must be labelled. An unlabelled
+ * arm makes control flow ambiguous; an unhandled condition makes it
+ * incomplete. Both are WF_UNTYPED_EDGE (007 §11).
+ */
+function checkBranches(
+  nodes: readonly IrNode[],
+  edges: readonly IrEdge[],
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const branches = nodes.filter(
+    (node): node is BranchNode => node.kind === "branch",
+  );
+
+  for (const branch of branches) {
+    const outgoing = edges.filter((edge) => edge.from === branch.id);
+    const declared = new Set(branch.conditionIds);
+    const covered = new Set<string>();
+
+    for (const edge of outgoing) {
+      if (edge.conditionId === undefined) {
+        diagnostics.push({
+          code: "WF_UNTYPED_EDGE",
+          message: `Edge ${branch.id} -> ${edge.to} leaves a branch without a conditionId.`,
+          path: ["edges", branch.id, edge.to],
+        });
+        continue;
+      }
+      if (!declared.has(edge.conditionId)) {
+        diagnostics.push({
+          code: "WF_UNTYPED_EDGE",
+          message: `Edge ${branch.id} -> ${edge.to} uses conditionId "${edge.conditionId}", which the branch does not declare.`,
+          path: ["edges", branch.id, edge.to],
+        });
+        continue;
+      }
+      covered.add(edge.conditionId);
+    }
+
+    const unhandled = [...declared].filter((id) => !covered.has(id));
+    if (unhandled.length > 0) {
+      diagnostics.push({
+        code: "WF_UNTYPED_EDGE",
+        message: `Branch "${branch.id}" is not exhaustive; no edge handles ${unhandled.join(", ")}.`,
+        path: ["nodes", branch.id],
+      });
+    }
+  }
+
+  return diagnostics;
+}
 
 /**
  * Every side effect must sit behind an approval that names it.
@@ -164,6 +217,10 @@ export function compileWorkflow(source: unknown): WorkflowCompilation {
   if (hasCycle(parsed.data.nodes, parsed.data.edges)) {
     return diagnostic("WF_CYCLE", "Workflow graph must be acyclic.", ["edges"]);
   }
+
+  const branchDiagnostics = checkBranches(parsed.data.nodes, parsed.data.edges);
+  if (branchDiagnostics.length > 0)
+    return { ok: false, diagnostics: branchDiagnostics };
 
   const effectDiagnostics = checkSideEffects(
     parsed.data.nodes,

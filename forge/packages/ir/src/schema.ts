@@ -53,6 +53,44 @@ export const IrNodeSchema = z.discriminatedUnion("kind", [
       gates: z.array(NodeIdSchema).default([]),
     })
     .strict(),
+  z
+    .object({
+      id: NodeIdSchema,
+      kind: z.literal("transform"),
+      transformRef: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      id: NodeIdSchema,
+      kind: z.literal("branch"),
+      // Every outgoing edge must carry one of these, and every one of these
+      // must be carried by an outgoing edge (007 §11 WF_UNTYPED_EDGE).
+      conditionIds: z.array(z.string().min(1)).min(1),
+    })
+    .strict(),
+  z
+    .object({
+      id: NodeIdSchema,
+      kind: z.literal("parallel"),
+      branches: z.array(NodeIdSchema).min(2),
+    })
+    .strict(),
+  z
+    .object({
+      id: NodeIdSchema,
+      kind: z.literal("policy_check"),
+      // Asserted against the policy closure before a privileged step.
+      capability: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      id: NodeIdSchema,
+      kind: z.literal("sandbox"),
+      profile: z.string().min(1),
+    })
+    .strict(),
 ]);
 
 export const IrEdgeSchema = z

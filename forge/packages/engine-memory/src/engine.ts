@@ -108,6 +108,20 @@ export function createMemoryGraphEngine(): GraphEnginePort {
       for (const node of materialized.order) {
         visited.push(node.id);
 
+        if (node.kind === "policy_check") {
+          try {
+            await context.assertCapability(node.id, node.capability);
+          } catch (error) {
+            return {
+              kind: "failed",
+              nodeId: node.id,
+              reason: error instanceof Error ? error.message : String(error),
+              retryable: false,
+            };
+          }
+          continue;
+        }
+
         if (node.kind !== "tool" || node.effect === undefined) continue;
 
         if (!authorised.has(node.id)) {

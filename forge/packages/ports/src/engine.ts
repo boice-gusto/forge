@@ -32,6 +32,11 @@ export interface EngineRunContext {
    * The runtime only supplies a sink for effects it has authorised.
    */
   perform(nodeId: string, effect: string): Promise<void>;
+  /**
+   * Assert a capability before a privileged step. Rejecting stops the walk;
+   * the engine never proceeds past a failed assertion.
+   */
+  assertCapability(nodeId: string, capability: string): Promise<void>;
 }
 
 export interface GraphEnginePort {
