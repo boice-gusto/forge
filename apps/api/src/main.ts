@@ -7,11 +7,14 @@ import {
   createHealthSnapshot,
   type DependencyStatus,
 } from "./health.js";
+import { registerRunRoutes } from "./runs.js";
 
 export interface ApiOptions {
   readonly build: BuildInfo;
   readonly dependencies: Readonly<Record<string, DependencyStatus>>;
   readonly adminToken: string;
+  /** Principal attributed to an authenticated caller. */
+  readonly principal?: string;
 }
 
 export function createApiApp(options: ApiOptions): FastifyInstance {
@@ -39,6 +42,14 @@ export function createApiApp(options: ApiOptions): FastifyInstance {
       return reply.code(401).send({ status: "unauthorized" });
     }
     return reply.send(snapshot());
+  });
+
+  registerRunRoutes(app, {
+    // The boundary decides who is acting. A body field never does.
+    principalFor: (authorization) =>
+      authorization === `Bearer ${options.adminToken}`
+        ? (options.principal ?? "local-operator")
+        : undefined,
   });
 
   return app;

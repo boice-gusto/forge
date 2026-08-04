@@ -1,11 +1,11 @@
 import { runLocalComposition } from "./commands/dev.js";
 import { promptsUnavailable } from "./commands/prompts.js";
 import { doctorProviders } from "./commands/providers.js";
-import { runtimeUnavailable } from "./commands/run.js";
 import {
   invalidManifestResult,
   validateManifest,
 } from "./commands/validate.js";
+import { compileWorkflowFile, runWorkflowFile } from "./commands/workflow.js";
 import { CLI_EXIT_CODE, type CliResult, humanResult } from "./output.js";
 
 function usesJson(args: readonly string[]): boolean {
@@ -43,11 +43,22 @@ export async function runCli(args: readonly string[]): Promise<CliResult> {
   if (first === "dev" && (second === "up" || second === "down")) {
     return runLocalComposition(second, asJson);
   }
+  if (first === "workflow" && second === "compile")
+    return compileWorkflowFile(inputPath(args), asJson);
   if (first === "workflow" && second === "run")
-    return runtimeUnavailable(asJson);
+    return runWorkflowFile(inputPath(args), asJson);
 
   return humanResult(
-    "Usage: forge {dev|providers|validate|prompts|workflow} ...",
+    [
+      "Usage: forge <command> [--json]",
+      "",
+      "  dev up | dev down            manage the declared local stack",
+      "  providers doctor             report provider availability",
+      "  validate --input <file>      validate a company manifest",
+      "  prompts check                verify prompt asset pins",
+      "  workflow compile --input <f> compile a workflow to a sealed artifact",
+      "  workflow run --input <f>     compile and execute until done or gated",
+    ].join("\n"),
     CLI_EXIT_CODE.USAGE,
   );
 }

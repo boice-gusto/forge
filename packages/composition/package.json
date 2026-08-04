@@ -1,0 +1,24 @@
+{
+  "name": "@forge/composition",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@forge/approval-memory": "workspace:*",
+    "@forge/checkpoint-memory": "workspace:*",
+    "@forge/compiler": "workspace:*",
+    "@forge/engine-memory": "workspace:*",
+    "@forge/ir": "workspace:*",
+    "@forge/policy-memory": "workspace:*",
+    "@forge/ports": "workspace:*",
+    "@forge/runtime": "workspace:*",
+    "@forge/types": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  }
+}

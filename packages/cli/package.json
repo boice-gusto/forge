@@ -17,7 +17,9 @@
     "@forge/manifest": "workspace:*",
     "@forge/observability": "workspace:*",
     "chalk": "^6.0.0",
-    "commander": "^15.0.0"
+    "commander": "^15.0.0",
+    "@forge/composition": "workspace:*",
+    "@forge/policy-memory": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.23.4"

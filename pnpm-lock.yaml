@@ -29,6 +29,12 @@ importers:
 
   apps/api:
     dependencies:
+      '@forge/composition':
+        specifier: workspace:*
+        version: link:../../packages/composition
+      '@forge/policy-memory':
+        specifier: workspace:*
+        version: link:../../packages/policy-memory
       fastify:
         specifier: ^5.11.0
         version: 5.11.0
@@ -93,12 +99,18 @@ importers:
 
   packages/cli:
     dependencies:
+      '@forge/composition':
+        specifier: workspace:*
+        version: link:../composition
       '@forge/manifest':
         specifier: workspace:*
         version: link:../manifest
       '@forge/observability':
         specifier: workspace:*
         version: link:../observability
+      '@forge/policy-memory':
+        specifier: workspace:*
+        version: link:../policy-memory
       chalk:
         specifier: ^6.0.0
         version: 6.0.0
@@ -121,6 +133,36 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+
+  packages/composition:
+    dependencies:
+      '@forge/approval-memory':
+        specifier: workspace:*
+        version: link:../approval-memory
+      '@forge/checkpoint-memory':
+        specifier: workspace:*
+        version: link:../checkpoint-memory
+      '@forge/compiler':
+        specifier: workspace:*
+        version: link:../compiler
+      '@forge/engine-memory':
+        specifier: workspace:*
+        version: link:../engine-memory
+      '@forge/ir':
+        specifier: workspace:*
+        version: link:../ir
+      '@forge/policy-memory':
+        specifier: workspace:*
+        version: link:../policy-memory
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../ports
+      '@forge/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      '@forge/types':
+        specifier: workspace:*
+        version: link:../types
 
   packages/config: {}
 

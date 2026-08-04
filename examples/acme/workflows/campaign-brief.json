@@ -1,0 +1,101 @@
+{
+  "workflow": {
+    "id": "acme.marketing.campaign-brief",
+    "version": "1.2.0",
+    "sideEffects": ["slack.post"],
+    "grantedCapabilities": ["repo.read", "docs.write", "slack.write"],
+    "roles": {
+      "marketing-writer": {
+        "version": "1.0.0",
+        "capabilities": {
+          "requires": ["docs.write"],
+          "forbids": ["repo.merge", "flag.set"]
+        },
+        "review": { "weight": 1, "blocking": false }
+      },
+      "brand-reviewer": {
+        "version": "1.1.0",
+        "capabilities": {
+          "requires": ["repo.read"],
+          "forbids": ["repo.merge"]
+        },
+        "review": { "weight": 2, "blocking": true },
+        "summon": { "anyPathMatches": ["**/brand/**"] }
+      }
+    },
+    "nodes": [
+      { "id": "intake", "kind": "input", "schemaRef": "acme.campaign.input@1" },
+      {
+        "id": "assert-write",
+        "kind": "policy_check",
+        "capability": "docs.write"
+      },
+      {
+        "id": "draft",
+        "kind": "agent",
+        "promptRef": "acme.marketing.draft@1.2.0",
+        "role": "marketing-writer"
+      },
+      {
+        "id": "panel",
+        "kind": "judge",
+        "judgeRef": "acme.marketing.review@1.1.0"
+      },
+      {
+        "id": "route",
+        "kind": "branch",
+        "conditionIds": ["clean", "needs-work"]
+      },
+      {
+        "id": "revise",
+        "kind": "transform",
+        "transformRef": "acme.marketing.revise@1"
+      },
+      {
+        "id": "gate",
+        "kind": "approval",
+        "gateSchemaRef": "acme.campaign.gate@1",
+        "gates": ["publish"]
+      },
+      {
+        "id": "publish",
+        "kind": "tool",
+        "skillRef": "slack.post@1",
+        "effect": "slack.post",
+        "role": "marketing-writer"
+      },
+      {
+        "id": "result",
+        "kind": "output",
+        "schemaRef": "acme.campaign.output@1"
+      }
+    ],
+    "edges": [
+      { "from": "intake", "to": "assert-write" },
+      { "from": "assert-write", "to": "draft" },
+      { "from": "draft", "to": "panel" },
+      { "from": "panel", "to": "route" },
+      { "from": "route", "to": "gate", "conditionId": "clean" },
+      { "from": "route", "to": "revise", "conditionId": "needs-work" },
+      { "from": "revise", "to": "gate" },
+      { "from": "gate", "to": "publish" },
+      { "from": "publish", "to": "result" }
+    ]
+  },
+  "capabilities": ["docs.write", "slack.write"],
+  "environment": "production",
+  "actor": "svc.forge.worker",
+  "policy": {
+    "grants": ["repo.read", "docs.write", "slack.write"],
+    "rules": [
+      {
+        "id": "acme.marketing.external-publish",
+        "action": "slack.post",
+        "environment": "production",
+        "decision": "require-approval",
+        "reason": "Publishing externally is a human call.",
+        "approvers": ["marketing-lead"]
+      }
+    ]
+  }
+}
