@@ -17,6 +17,9 @@ importers:
       dependency-cruiser:
         specifier: ^18.1.0
         version: 18.1.0
+      tsx:
+        specifier: ^4.23.4
+        version: 4.23.4
       turbo:
         specifier: ^2.7.0
         version: 2.10.8
@@ -195,6 +198,12 @@ importers:
       pino:
         specifier: ^10.3.1
         version: 10.3.1
+
+  packages/panel:
+    dependencies:
+      '@forge/ir':
+        specifier: workspace:*
+        version: link:../ir
 
   packages/policy-memory:
     dependencies:

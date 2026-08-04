@@ -4,10 +4,14 @@ import { describe, expect, test } from "vitest";
 
 describe("Phase 1 measurement baseline", () => {
   test("emits every required measurement with percentile samples", () => {
-    const output = execFileSync("node", ["scripts/measure-phase1.mjs"], {
-      cwd: process.cwd(),
-      encoding: "utf8",
-    });
+    const output = execFileSync(
+      "pnpm",
+      ["exec", "tsx", "scripts/measure-phase1.ts"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+      },
+    );
     const result: unknown = JSON.parse(output);
 
     expect(result).toMatchObject({ schemaVersion: 1, phase: 1 });

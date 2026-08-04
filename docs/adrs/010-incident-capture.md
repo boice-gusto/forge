@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-08-04
 - **Deciders:** Forge architects
-- **Evidence:** `docs/research/prototypes/config-compiler/` — `WF_BYPASSABLE_REQUIRED_NODE`
+- **Evidence:** `packages/compiler` — `WF_UNTYPED_EDGE`, `WF_MISSING_APPROVAL` as the graduation examples
 
 ## Context
 
@@ -137,4 +137,4 @@ behaviour unreproducible. Restart against a new compile instead.
 - [007 — Workflow compiler](../007-workflow-compiler.md) §11 diagnostics catalog
 - [011 — Observability](../011-observability.md) — audit events
 - [ADR-009 — Agent roles](./009-agent-roles.md) — what an incident attributes to
-- `docs/research/prototypes/config-compiler/` — `WF_BYPASSABLE_REQUIRED_NODE` and its fixture
+- `packages/panel/` — `WF_BYPASSABLE_REQUIRED_NODE` and its fixture

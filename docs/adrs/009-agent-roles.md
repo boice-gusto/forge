@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-08-04
 - **Deciders:** Forge architects
-- **Evidence:** `docs/research/prototypes/config-compiler/` (20 passing tests)
+- **Evidence:** `packages/compiler` (capability closure, `WF_CAPABILITY_UNBOUND`) and `packages/panel` (composition, weighted fail-closed verdicts)
 
 ## Context
 
@@ -109,4 +109,4 @@ panel, so they are decided together.
 - [009 — Plugin SDK](../009-plugin-sdk.md) §7 capability model and closure
 - [ADR-007 — Policy](./007-policy.md) — fail-closed evaluation
 - [ADR-008 — Extension repository topology](./008-extension-repository-topology.md) — core generic, company specific
-- `docs/research/prototypes/config-compiler/` — working proof of the three checks
+- `packages/panel/` — working proof of the three checks

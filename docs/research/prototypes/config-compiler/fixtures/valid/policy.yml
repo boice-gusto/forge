@@ -1,3 +1,0 @@
-grants:
-  - id: fullsend.base
-    capabilities: [repo.read, repo.write, docs.write, sandbox.exec]
