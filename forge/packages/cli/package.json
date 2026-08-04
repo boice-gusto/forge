@@ -1,0 +1,22 @@
+{
+  "name": "@forge/cli",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "forge": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@forge/manifest": "workspace:*",
+    "@forge/observability": "workspace:*",
+    "chalk": "^6.0.0",
+    "commander": "^15.0.0"
+  }
+}

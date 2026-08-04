@@ -1,0 +1,9 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.6/schema.json",
+  "files": { "includes": ["**", "!forge/docs/**", "!**/dist/**"] },
+  "linter": {
+    "enabled": true,
+    "rules": { "preset": "none" }
+  },
+  "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2 }
+}

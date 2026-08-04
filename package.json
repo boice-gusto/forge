@@ -1,6 +1,7 @@
 {
   "name": "forge-workspace",
   "private": true,
+  "type": "module",
   "version": "0.0.0",
   "description": "Forge AI workflow platform monorepo (Phase 0 — specification)",
   "packageManager": "pnpm@9.15.0",
@@ -8,6 +9,22 @@
     "node": ">=20"
   },
   "scripts": {
-    "docs:list": "ls -1 forge/docs/*.md"
+    "build": "turbo run build",
+    "docs:list": "ls -1 forge/docs/*.md",
+    "lint": "biome check .",
+    "measure:phase1": "node forge/scripts/measure-phase1.mjs",
+    "security:licenses": "node forge/scripts/check-licenses.mjs",
+    "security:secrets": "node forge/scripts/check-secrets.mjs",
+    "test": "vitest run",
+    "test:architecture": "vitest run forge/tooling/architecture.test.ts",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.16",
+    "@types/node": "^25.0.0",
+    "dependency-cruiser": "^18.1.0",
+    "turbo": "^2.7.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
   }
 }

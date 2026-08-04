@@ -52,6 +52,7 @@ Full normative list: [003-project-constitution.md](./003-project-constitution.md
 | 15 | [015-phases.md](./015-phases.md) | Phase 0 → production |
 | 16 | [016-demo-scenarios.md](./016-demo-scenarios.md) | Acme + Gusto acceptance demos |
 | 17 | [017-vision-validation.md](./017-vision-validation.md) | Phase −1 traceability and flagship proof |
+| 18 | [018-vision-traceability.md](./018-vision-traceability.md) | Phase −1 package-to-outcome matrix |
 
 **ADRs:** [adrs/](./adrs/) (001 monorepo … 008 extension repository topology).  
 **Research provenance:** [research/](./research/) (not binding; ADRs + numbered docs win).
