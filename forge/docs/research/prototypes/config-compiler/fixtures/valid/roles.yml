@@ -1,0 +1,36 @@
+architect:
+  capabilities:
+    requires: [repo.read, docs.write]
+    forbids: [repo.merge, flag.set]
+  review:
+    weight: 1.5
+builder:
+  capabilities:
+    requires: [repo.read, repo.write]
+    forbids: [repo.merge]
+  review:
+    weight: 1
+domain-qa:
+  capabilities:
+    requires: [repo.read, sandbox.exec]
+  review:
+    weight: 2
+security-reviewer:
+  capabilities:
+    requires: [repo.read]
+    forbids: [repo.merge, flag.set, prod.write]
+  summon:
+    when:
+      anyPathMatches: ["**/namedCredentials/**", "**/*Callout*"]
+  review:
+    weight: 2
+    blocking: true
+migration-reviewer:
+  capabilities:
+    requires: [repo.read]
+  summon:
+    when:
+      declares: [backfill]
+  review:
+    weight: 1.5
+    blocking: true

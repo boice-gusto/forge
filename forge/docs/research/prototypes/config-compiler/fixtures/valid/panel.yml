@@ -1,0 +1,5 @@
+standing: [architect, domain-qa]
+summonable: [security-reviewer, migration-reviewer]
+quorum:
+  weighted: 0.66
+onError: review

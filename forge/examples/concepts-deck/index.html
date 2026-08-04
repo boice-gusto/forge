@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="The Forge concept vocabulary: what each term means, where it sits in the pipeline, and the example that makes it concrete." />
+    <title>The Forge vocabulary — concepts, flow, and example use</title>
+    <style>
+      :root { --paper:#faf8f4; --ink:#15202c; --teal:#0f6d68; --amber:#bf5f1c; --rule:#d9d2c4; --mist:#e6efee; --night:#0f1c26; --muted:#5d6b7a; }
+      * { box-sizing:border-box; }
+      html { background:var(--paper); color:var(--ink); scroll-behavior:smooth; }
+      body { margin:0; font:16px/1.55 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+      .deck { min-height:100svh; }
+      @supports (scroll-snap-type:y mandatory) { .deck { scroll-snap-type:y mandatory; } }
+      .slide { align-items:center; border-bottom:1px solid var(--rule); display:grid; min-height:100svh; padding:4.6rem max(1.75rem,calc((100vw - 1200px)/2)); scroll-snap-align:start; }
+      .content { max-width:1140px; width:100%; }
+      .eyebrow,.index,.label,kbd { color:var(--teal); font:700 .72rem/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; letter-spacing:.1em; text-transform:uppercase; }
+      .index { margin:0 0 1.1rem; }
+      h1,h2,h3 { font-family:ui-serif,Georgia,Cambria,"Times New Roman",serif; letter-spacing:-.045em; line-height:1.03; }
+      h1 { font-size:clamp(3.2rem,8.5vw,7.2rem); font-weight:500; margin:.4rem 0 1.3rem; max-width:12ch; }
+      h2 { font-size:clamp(2.1rem,4.4vw,3.6rem); font-weight:500; margin:.3rem 0 1rem; max-width:19ch; }
+      p { margin:0 0 1rem; max-width:66ch; }
+      .lede { color:#3c4b5c; font-size:clamp(1.04rem,1.5vw,1.26rem); max-width:70ch; }
+      .cover { background:linear-gradient(135deg,var(--paper) 0 66%,var(--mist) 66%); border-top:6px solid var(--teal); }
+      .cover h1 { max-width:14ch; }
+      .cover-note { border-top:1px solid var(--rule); color:var(--muted); margin-top:2.8rem; padding-top:1rem; }
+
+      .cards { display:grid; gap:1.15rem; grid-template-columns:repeat(2,minmax(0,1fr)); margin-top:2rem; }
+      .cards--three { grid-template-columns:repeat(3,minmax(0,1fr)); }
+      .card { border-top:3px solid var(--teal); padding-top:.85rem; }
+      .card h3 { font-size:1.12rem; letter-spacing:-.02em; margin:0 0 .4rem; }
+      .card p { color:#42505f; font-size:.93rem; line-height:1.5; margin:0; max-width:52ch; }
+      .card .eg { border-left:2px solid var(--amber); color:var(--muted); font-size:.88rem; margin-top:.65rem; padding-left:.75rem; }
+      .card .eg b { color:var(--amber); font:700 .68rem/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; display:block; letter-spacing:.09em; text-transform:uppercase; }
+      code { color:var(--teal); font:700 .85em/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; overflow-wrap:anywhere; }
+      .card .eg code { color:#9a4d14; }
+
+      .pipe { display:grid; gap:.55rem; grid-template-columns:repeat(5,minmax(0,1fr)); margin:1.9rem 0 .5rem; }
+      .pipe__stage { background:#fff; border:1px solid var(--rule); border-top:3px solid var(--teal); padding:.9rem .95rem; position:relative; }
+      .pipe__stage h3 { font-size:1rem; margin:0 0 .35rem; }
+      .pipe__stage p { color:#42505f; font-size:.85rem; line-height:1.45; margin:0; max-width:none; }
+      .pipe__stage .when { color:var(--muted); display:block; font:700 .64rem/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; letter-spacing:.09em; margin-bottom:.35rem; text-transform:uppercase; }
+      .pipe__stage::after { color:var(--rule); content:"▸"; font-size:1.15rem; position:absolute; right:-.52rem; top:50%; transform:translateY(-50%); z-index:1; }
+      .pipe__stage:last-child::after { content:none; }
+      .pipe--run .pipe__stage { border-top-color:var(--amber); }
+      .seam { background:var(--mist); border-left:3px solid var(--teal); font-size:.94rem; margin:1.5rem 0 0; padding:.85rem 1rem; }
+
+      .matrix { border-top:1px solid var(--rule); margin-top:1.7rem; width:100%; }
+      .row { border-bottom:1px solid var(--rule); display:grid; gap:1.1rem; grid-template-columns:11rem 7rem minmax(0,1fr); padding:.62rem 0; }
+      .row--head { border-bottom:2px solid var(--ink); }
+      .row--head span { color:var(--muted); font:700 .68rem/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; letter-spacing:.09em; text-transform:uppercase; }
+      .row code { font-size:.88rem; }
+      .row p { color:#42505f; font-size:.9rem; margin:0; max-width:none; }
+      .det { font:700 .7rem/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; letter-spacing:.06em; text-transform:uppercase; }
+      .det--yes { color:var(--teal); }
+      .det--no { color:var(--amber); }
+      .det--mixed { color:var(--muted); }
+
+      .states { display:grid; gap:.6rem; grid-template-columns:repeat(5,minmax(0,1fr)); margin:2rem 0 1.4rem; }
+      .state { border:1px solid var(--rule); border-left:4px solid var(--teal); padding:.8rem .9rem; }
+      .state h3 { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.78rem; letter-spacing:.06em; margin:0 0 .4rem; }
+      .state p { color:#42505f; font-size:.83rem; line-height:1.45; margin:0; max-width:none; }
+      .state--wait { border-left-color:var(--amber); background:#fdf6ef; }
+      .state--end { border-left-color:var(--muted); }
+      .terminal { display:grid; gap:.6rem; grid-template-columns:repeat(3,minmax(0,1fr)); }
+
+      .conflate { display:grid; gap:1.1rem; grid-template-columns:repeat(2,minmax(0,1fr)); margin-top:1.9rem; }
+      .pair { border-top:3px solid var(--amber); padding-top:.8rem; }
+      .pair h3 { font-size:1.05rem; margin:0 0 .4rem; }
+      .pair p { color:#42505f; font-size:.91rem; line-height:1.5; margin:0; max-width:54ch; }
+
+      .trace { border-left:1px solid var(--rule); counter-reset:t; display:grid; gap:.95rem; list-style:none; margin:1.7rem 0 0; padding-left:1.6rem; }
+      .trace li { position:relative; }
+      .trace li::before { background:var(--teal); color:#fff; content:counter(t); counter-increment:t; font:700 .66rem/1.3rem ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; height:1.3rem; left:-2.25rem; position:absolute; text-align:center; top:.05rem; width:1.3rem; }
+      .trace h3 { font-family:inherit; font-size:.95rem; font-weight:400; letter-spacing:0; line-height:1.5; margin:0; max-width:82ch; }
+      .trace b { color:var(--teal); font-weight:700; }
+
+      .closing { background:var(--night); color:#eef5f4; }
+      .closing .index,.closing .eyebrow { color:#7fc9c3; }
+      .closing h2 { color:#fff; }
+      .closing p { color:#c6d5d9; }
+      .closing code { color:#7fc9c3; }
+      .owns { display:grid; gap:1.1rem; grid-template-columns:repeat(2,minmax(0,1fr)); margin-top:2rem; }
+      .own { background:#f4faf9; color:var(--ink); padding:1.3rem; }
+      .own h3 { font-size:1.06rem; margin:0 0 .45rem; }
+      .own p { color:#42505f; font-size:.92rem; margin:0; }
+      .boundary { color:#93a7ae; font-size:.9rem; margin-top:1.9rem; max-width:80ch; }
+
+      a { color:inherit; text-decoration-color:var(--amber); text-decoration-thickness:2px; text-underline-offset:.18em; }
+      a:focus-visible,button:focus-visible { outline:3px solid var(--amber); outline-offset:4px; }
+      .nav { bottom:1.25rem; display:flex; gap:.6rem; position:fixed; right:1.25rem; z-index:3; }
+      .nav button { background:var(--night); border:1px solid #4a5c66; color:#fff; cursor:pointer; font:700 .7rem/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; letter-spacing:.06em; padding:.78rem .92rem; text-transform:uppercase; }
+      .nav button:hover { background:var(--teal); }
+
+      @media (max-width:900px) { .pipe,.states,.terminal { grid-template-columns:1fr; } .pipe__stage::after { content:none; } .cards,.cards--three,.conflate,.owns { grid-template-columns:1fr; } .row { grid-template-columns:1fr; gap:.25rem; } .row--head { display:none; } }
+      @media (max-width:760px) { .deck { scroll-snap-type:none; } .slide { min-height:auto; padding:4.2rem 1.4rem; } .cover { min-height:100svh; } .nav { bottom:1rem; right:1rem; } }
+      @media print { .slide { break-after:page; min-height:100vh; } .nav { display:none; } }
+    </style>
+  </head>
+  <body>
+    <main class="deck" aria-label="Forge concept vocabulary deck">
+
+      <section class="slide cover" id="slide-1">
+        <div class="content">
+          <p class="eyebrow">Forge platform / concept reference</p>
+          <h1>The vocabulary, and where each word applies.</h1>
+          <p class="lede">Forge runs on a small number of load-bearing concepts. Most confusion about the platform is really confusion between two of them. This deck names each concept, places it in the pipeline, and attaches the example that makes it concrete.</p>
+          <p class="cover-note">Twelve slides · use <kbd>←</kbd> and <kbd>→</kbd>, the controls, or scrolling. Terms follow the Forge handbook; examples come from the documented Acme and Gusto demo scenarios.</p>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-2">
+        <div class="content">
+          <p class="index">01 / The spine</p>
+          <h2>Eight rules the vocabulary exists to serve.</h2>
+          <p class="lede">Every concept that follows is downstream of one of these. When a design question is genuinely hard, the answer is usually that two of these rules are in tension.</p>
+          <div class="cards cards--three">
+            <article class="card"><h3>Compile. Don't configure.</h3><p>Workflows are lowered into a sealed artifact, not assembled from runtime config.</p></article>
+            <article class="card"><h3>Deterministic infrastructure. Intelligent execution.</h3><p>Policy, queues, sandboxes, and approvals are predictable. Only the agent steps are not.</p></article>
+            <article class="card"><h3>Extension over replacement.</h3><p>Companies add packages. Nobody forks the core.</p></article>
+            <article class="card"><h3>Adapters at every boundary.</h3><p>No vendor type crosses into application or public code.</p></article>
+            <article class="card"><h3>Prompts are versioned assets.</h3><p>Content-addressed, semver-pinned, immutable once published.</p></article>
+            <article class="card"><h3>Policies before permissions.</h3><p>Authorization is evaluated, never inferred from wording.</p></article>
+            <article class="card"><h3>Humans own the final decision.</h3><p>AI recommends. A person approves anything that leaves the system.</p></article>
+            <article class="card"><h3>Research before implementation.</h3><p>Significant work starts with notes and an ADR, not a branch.</p></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-3">
+        <div class="content">
+          <p class="index">02 / The master flow</p>
+          <h2>Two pipelines meeting at one seam.</h2>
+          <p class="lede">Everything in Forge sits on one side of the artifact or the other. The left half is a pure function. The right half is stateful, durable, and allowed to touch the world.</p>
+          <div class="pipe">
+            <div class="pipe__stage"><span class="when">Authoring</span><h3>Manifest</h3><p>A typed workflow declaration, written with <code>defineWorkflow</code>.</p></div>
+            <div class="pipe__stage"><span class="when">Compile</span><h3>Resolve</h3><p>Validate the manifest; pin every prompt, skill, and policy reference.</p></div>
+            <div class="pipe__stage"><span class="when">Compile</span><h3>Forge IR</h3><p>An engine-agnostic graph of typed nodes and edges.</p></div>
+            <div class="pipe__stage"><span class="when">Compile</span><h3>EnginePlan</h3><p>Lowered by one adapter into an opaque, branded value.</p></div>
+            <div class="pipe__stage"><span class="when">Seal</span><h3>Artifact</h3><p>IR, plan, public surface, and a fingerprint over all of it.</p></div>
+          </div>
+          <div class="pipe pipe--run">
+            <div class="pipe__stage"><span class="when">Runtime</span><h3>Run</h3><p>One execution of one sealed <code>workflowVersionId</code>.</p></div>
+            <div class="pipe__stage"><span class="when">Runtime</span><h3>Checkpoint</h3><p>A durable snapshot written at each node boundary.</p></div>
+            <div class="pipe__stage"><span class="when">Runtime</span><h3>Approval</h3><p>An interrupt that waits on a person, holding no worker lock.</p></div>
+            <div class="pipe__stage"><span class="when">Runtime</span><h3>Resume</h3><p>A typed decision re-enters the graph as a fresh job.</p></div>
+            <div class="pipe__stage"><span class="when">Runtime</span><h3>Effect</h3><p>The approved side effect dispatches exactly once.</p></div>
+          </div>
+          <p class="seam"><b>The seam is the artifact.</b> The compiler may not touch Redis, HTTP, an LLM, the filesystem, or the clock. The runtime may do all of those, but may never re-parse a manifest. Production refuses to execute anything that is not sealed and fingerprinted.</p>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-4">
+        <div class="content">
+          <p class="index">03 / Authoring concepts</p>
+          <h2>What a company package actually writes.</h2>
+          <p class="lede">Four things, all typed, all versioned. Nothing here imports an engine, a queue, or a provider.</p>
+          <div class="cards">
+            <article class="card">
+              <h3>Manifest</h3>
+              <p>A workflow declared with <code>defineWorkflow</code>: id, semver, input and output schemas, nodes, and an explicit <code>sideEffects[]</code> list. The only path to a runnable graph.</p>
+              <p class="eg"><b>Example use</b>The Acme campaign workflow <code>marketing.campaign-brief</code> declares a draft step, an approval gate, and exactly one publish side effect.</p>
+            </article>
+            <article class="card">
+              <h3>Prompt asset</h3>
+              <p>A prompt registered with <code>definePrompt</code> — typed input, typed output, semver identity, immutable once published. Workflows reference it; the compiler pins the exact version.</p>
+              <p class="eg"><b>Example use</b><code>acme.marketing.draft.v1</code>. Bumping it from 1.2.0 to 1.3.0 changes the artifact fingerprint, so the runtime will not pick it up until a recompile.</p>
+            </article>
+            <article class="card">
+              <h3>Skill</h3>
+              <p>A named handler registered with <code>defineSkill</code>, declaring the capabilities it needs. The compiler checks those against the static policy closure before anything runs.</p>
+              <p class="eg"><b>Example use</b>A Gusto knowledge-base retrieval skill that requires <code>benefits.kb.read</code> and nothing else. Asking for more fails compile with <code>WF_CAPABILITY_UNBOUND</code>.</p>
+            </article>
+            <article class="card">
+              <h3>Policy pack</h3>
+              <p>Authorization rules evaluated by the policy engine, versioned alongside the company package. Rules may narrow platform constraints; they may never widen them.</p>
+              <p class="eg"><b>Example use</b><code>benefits.advice.regulated</code> returns <em>RequireApproval</em> before any member-facing message on a regulated topic.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-5">
+        <div class="content">
+          <p class="index">04 / Compile concepts</p>
+          <h2>One pure function, five outputs.</h2>
+          <p class="lede">The compiler proves static properties and then gets out of the way. Same manifest bytes plus same compiler version produce a byte-identical fingerprint, every time.</p>
+          <div class="cards cards--three">
+            <article class="card">
+              <h3>Compiler</h3>
+              <p>Pure and deterministic. No network, no Redis, no LLM, no filesystem writes, no clock-dependent control flow.</p>
+              <p class="eg"><b>Example use</b>Compiler unit tests run with nothing else booted.</p>
+            </article>
+            <article class="card">
+              <h3>Forge IR</h3>
+              <p>A Zod-validated discriminated union of node kinds and typed edges. Engine-agnostic on purpose — it is not shaped like any vendor graph.</p>
+              <p class="eg"><b>Example use</b>Golden IR snapshots are checked into CI for a linear, a branching, and a parallel workflow.</p>
+            </article>
+            <article class="card">
+              <h3>EnginePlan</h3>
+              <p>An opaque branded type. Exactly one adapter may read it; it is never serialized to a client, and the runtime cannot introspect it.</p>
+              <p class="eg"><b>Example use</b>TypeScript brands make <code>plan.nodes</code> a compile error outside the lowering adapter.</p>
+            </article>
+            <article class="card">
+              <h3>Sealed artifact</h3>
+              <p>IR, engine plan, and a public surface — input schema, output schema, approval gates, required capabilities — bound together and fingerprinted.</p>
+              <p class="eg"><b>Example use</b>The operator UI reads the public surface to render gates; it never sees the plan.</p>
+            </article>
+            <article class="card">
+              <h3>Fingerprint</h3>
+              <p>A hash over the canonical manifest, compiler version, pinned prompt versions, pinned policy versions, and IR schema version.</p>
+              <p class="eg"><b>Example use</b>Workers cache a materialized graph keyed by fingerprint, so a prompt bump invalidates cleanly.</p>
+            </article>
+            <article class="card">
+              <h3>Diagnostic</h3>
+              <p>A structured failure with a stable code, a path, and often a suggestion. Not a thrown string.</p>
+              <p class="eg"><b>Example use</b><code>WF_MISSING_APPROVAL</code> fires when a declared side effect has no gate in front of it.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-6">
+        <div class="content">
+          <p class="index">05 / IR node taxonomy</p>
+          <h2>Eleven node kinds, and which ones can surprise you.</h2>
+          <p class="lede">Determinism is a property of the node kind, not of the workflow. Only three kinds can produce a different result on identical input — which is exactly why the gates sit around them.</p>
+          <div class="matrix">
+            <div class="row row--head"><span>Kind</span><span>Deterministic</span><span>Purpose</span></div>
+            <div class="row"><code>input</code><span class="det det--yes">Yes</span><p>Validate the run input against the declared schema.</p></div>
+            <div class="row"><code>agent</code><span class="det det--no">No</span><p>Call the provider with a pinned prompt and typed input and output schemas.</p></div>
+            <div class="row"><code>tool</code><span class="det det--mixed">Mostly</span><p>Invoke a registered skill. Always policy-gated.</p></div>
+            <div class="row"><code>transform</code><span class="det det--yes">Yes</span><p>A pure mapping over typed state.</p></div>
+            <div class="row"><code>branch</code><span class="det det--yes">Yes</span><p>Predicate on typed state; non-exhaustive branches fail compile.</p></div>
+            <div class="row"><code>parallel</code><span class="det det--yes">Yes</span><p>Fan out, then rejoin at a barrier.</p></div>
+            <div class="row"><code>approval</code><span class="det det--yes">Yes (wait)</span><p>Interrupt until a human decision arrives with a schema-valid payload.</p></div>
+            <div class="row"><code>policy_check</code><span class="det det--yes">Yes</span><p>Assert a capability before a privileged step. Fails closed.</p></div>
+            <div class="row"><code>sandbox</code><span class="det det--mixed">Infra</span><p>Run untrusted work in disposable compute.</p></div>
+            <div class="row"><code>judge</code><span class="det det--mixed">Mixed</span><p>Score or classify an artifact and emit a structured verdict.</p></div>
+            <div class="row"><code>output</code><span class="det det--yes">Yes</span><p>Validate and return the final typed result.</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-7">
+        <div class="content">
+          <p class="index">06 / Runtime concepts</p>
+          <h2>Six nouns that carry the whole execution model.</h2>
+          <p class="lede">These are Forge-owned entities, not vendor mechanisms wearing a Forge label. An operator never sees an engine interrupt or a queue job.</p>
+          <div class="cards cards--three">
+            <article class="card">
+              <h3>Run</h3>
+              <p>One execution instance of one sealed workflow version, with a client-visible id that is unique and safe to retry against.</p>
+              <p class="eg"><b>Example use</b>Two members asking the same benefits question produce two runs with separate audit trails.</p>
+            </article>
+            <article class="card">
+              <h3>Checkpoint</h3>
+              <p>A durable snapshot taken at a well-defined boundary — node completion or interrupt. Survives a process restart.</p>
+              <p class="eg"><b>Example use</b>A worker crashing mid-run resumes from the last boundary rather than starting over.</p>
+            </article>
+            <article class="card">
+              <h3>Approval gate</h3>
+              <p>The IR node that interrupts. Bound to a run, an action, an argument hash, and an expiry, so a decision cannot drift onto changed input.</p>
+              <p class="eg"><b>Example use</b>Editing the draft after approval invalidates the decision; it does not silently authorize the new text.</p>
+            </article>
+            <article class="card">
+              <h3>Approval record</h3>
+              <p>The durable entity behind the gate: status, approvers, deadlines, the decision, any edit diff, and the policy id that triggered review.</p>
+              <p class="eg"><b>Example use</b>An auditor reconstructs who approved what, when, and under which rule.</p>
+            </article>
+            <article class="card">
+              <h3>Resume payload</h3>
+              <p>The typed decision that re-enters the graph — approve, reject, edit with a patch, or timeout — validated against that gate's schema.</p>
+              <p class="eg"><b>Example use</b>An edit-then-approve decision carries the amended fields and continues with the edited state.</p>
+            </article>
+            <article class="card">
+              <h3>ForgeJob</h3>
+              <p>A schema-validated queue message. Execute, resume, or cancel. A vendor job object never reaches domain code.</p>
+              <p class="eg"><b>Example use</b>Workers re-validate every payload before calling the runtime, so a malformed message fails at the edge.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-8">
+        <div class="content">
+          <p class="index">07 / Run lifecycle</p>
+          <h2>Waiting on a human is a state, not a held lock.</h2>
+          <p class="lede">The most consequential design decision in the runtime is what happens when a workflow needs a person. Forge treats that wait as durable state, so human time never consumes a worker.</p>
+          <div class="states">
+            <div class="state"><h3>PENDING</h3><p>The run exists; the execute job has not been picked up yet.</p></div>
+            <div class="state"><h3>RUNNING</h3><p>A worker is actively executing, or a bounded transport retry is in flight.</p></div>
+            <div class="state state--wait"><h3>AWAITING_APPROVAL</h3><p>A durable interrupt. The job is acked, the worker is released, and the wait is persisted.</p></div>
+            <div class="state"><h3>RUNNING</h3><p>A separate resume job picks the run back up with the typed decision.</p></div>
+            <div class="state state--end"><h3>SUCCEEDED</h3><p>Terminal. Output validated against the artifact's output schema.</p></div>
+          </div>
+          <div class="terminal">
+            <div class="state state--end"><h3>FAILED</h3><p>Terminal, with a structured error code and the node that produced it.</p></div>
+            <div class="state state--end"><h3>CANCELLED</h3><p>Terminal, by explicit cancel or by policy timeout.</p></div>
+            <div class="state state--wait"><h3>RETRYING</h3><p>Not a separate state. The run stays RUNNING and the attempt counter increments.</p></div>
+          </div>
+          <p class="seam"><b>The rule that makes it work:</b> a worker must never hold a queue lock across human time. On interrupt the runtime checkpoints, acks the job, and releases the worker. Resume arrives later as an entirely new job.</p>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-9">
+        <div class="content">
+          <p class="index">08 / Ports and adapters</p>
+          <h2>Every boundary is an interface someone else implements.</h2>
+          <p class="lede">Dependencies point inward. The application layer knows only port interfaces; concrete adapters are bound in exactly two places, and no vendor type travels upward.</p>
+          <div class="matrix">
+            <div class="row row--head"><span>Port</span><span>Layer</span><span>What it abstracts</span></div>
+            <div class="row"><code>GraphEnginePort</code><span class="det det--mixed">Contract</span><p>Materializing and executing an opaque engine plan; start and resume.</p></div>
+            <div class="row"><code>QueuePort</code><span class="det det--mixed">Contract</span><p>Transport and worker scheduling. Not the workflow engine.</p></div>
+            <div class="row"><code>CheckpointStorePort</code><span class="det det--mixed">Contract</span><p>Forge-level checkpoint metadata. Engine blobs stay inside the adapter.</p></div>
+            <div class="row"><code>ApprovalPort</code><span class="det det--mixed">Contract</span><p>Request, decide, and list human gates as first-class records.</p></div>
+            <div class="row"><code>ProviderPort</code><span class="det det--mixed">Contract</span><p>Agent and model sessions, always inside a sandbox workspace.</p></div>
+            <div class="row"><code>PolicyPort</code><span class="det det--mixed">Contract</span><p>Allow, deny, or require approval before a gated step. Fails closed.</p></div>
+            <div class="row"><code>SandboxPort</code><span class="det det--mixed">Contract</span><p>Disposable compute for tool and code execution.</p></div>
+            <div class="row"><code>ObservabilityPort</code><span class="det det--mixed">Contract</span><p>Run and step spans plus structured audit events.</p></div>
+            <div class="row"><code>ClockPort</code>, <code>IdPort</code><span class="det det--mixed">Contract</span><p>Time and identity, injected so tests stay deterministic.</p></div>
+          </div>
+          <p class="seam"><b>Composition roots are the only wiring points.</b> The API app and the worker app bind real adapters; integration tests bind fakes. A fitness test fails the build if a public package reaches a vendor library.</p>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-10">
+        <div class="content">
+          <p class="index">09 / Distinctions that matter</p>
+          <h2>Six pairs people collapse, and shouldn't.</h2>
+          <p class="lede">Nearly every design argument about Forge turns out to be one of these six. Naming the pair usually settles it.</p>
+          <div class="conflate">
+            <article class="pair"><h3>Transport retry is not workflow retry</h3><p>A Redis blip or a crashed worker is infrastructure, retried inside the queue adapter. A provider timeout is a workflow concern, governed by the node's declared retry policy and checkpointed before each attempt.</p></article>
+            <article class="pair"><h3>A judge is not a policy</h3><p>A judge scores an artifact and emits a verdict with reasons and evidence. It recommends. Policy decides. A judge that errors returns <em>review</em> and escalates — it never grants a permission.</p></article>
+            <article class="pair"><h3>A prompt is not a capability</h3><p>Prompt text can ask for anything. It expands nothing. The capability set is fixed at compile time and enforced at runtime, so an injected instruction cannot authorize an effect that policy denies.</p></article>
+            <article class="pair"><h3>An interrupt is not an approval</h3><p>An interrupt is an engine mechanism the lowering adapter maps internally. An approval is a Forge record with approvers, a deadline, an audit trail, and a policy reason. Operators only ever see the latter.</p></article>
+            <article class="pair"><h3>The compiler is not the runtime</h3><p>The compiler is pure and may not touch the world. The runtime is stateful and may not re-parse a manifest. Every ambiguous responsibility resolves by asking which of those two constraints would break.</p></article>
+            <article class="pair"><h3>A request is not permission</h3><p>Work arriving through a connector carries a claim about who is asking. Authorization comes from the authenticated boundary and the policy evaluation — never from a field in the request body.</p></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" id="slide-11">
+        <div class="content">
+          <p class="index">10 / Worked example</p>
+          <h2>One run, touching every concept in order.</h2>
+          <p class="lede">The Acme campaign scenario, traced end to end. Each step names the concept it exercises, so the vocabulary lands against something concrete.</p>
+          <ol class="trace">
+            <li><h3>A launch brief arrives from a connector and is normalized into a <b>workflow request</b> — title, evidence, source, principal, classification, and an idempotency key.</h3></li>
+            <li><h3>The API authenticates the caller, validates the shape, and checks the workflow against an <b>allowlist</b>. Identity comes from the boundary, not the payload.</h3></li>
+            <li><h3>The runtime loads the <b>sealed artifact</b> for that workflow version. Nothing is parsed or compiled at execution time.</h3></li>
+            <li><h3>An <b>agent node</b> drafts copy using a pinned <b>prompt asset</b>. The output is validated against the node's declared schema before it can influence a branch.</h3></li>
+            <li><h3>A <b>judge node</b> scores the draft and returns a verdict with reasons and evidence. It recommends; it does not decide.</h3></li>
+            <li><h3>A <b>policy check</b> evaluates the trusted actor, source, classification, and action hash. Publishing externally resolves to <em>RequireApproval</em>.</h3></li>
+            <li><h3>The engine reports an interrupt. The runtime writes a <b>checkpoint</b>, creates an <b>approval record</b>, sets the run to <code>AWAITING_APPROVAL</code>, and acks the job — releasing the worker before human time begins.</h3></li>
+            <li><h3>A marketing lead sees the draft, the citations, the policy reason, and the exact parameters of the proposed action, then approves. The <b>resume payload</b> is validated against that gate's schema.</h3></li>
+            <li><h3>A fresh <b>resume job</b> re-enters the graph. The approval is bound to this run and this action hash, so it cannot authorize anything else.</h3></li>
+            <li><h3>The declared <b>side effect</b> is recorded, then dispatched through the durable outbox under a stable operation key — exactly one publish, even across a restart.</h3></li>
+            <li><h3>The run reaches <code>SUCCEEDED</code>. Spans, the policy decision, the judge verdict, and the approval record reconcile into one audit trail.</h3></li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="slide closing" id="slide-12">
+        <div class="content">
+          <p class="index">Boundary / what belongs where</p>
+          <h2>The core stays generic. The company package stays specific.</h2>
+          <div class="owns">
+            <article class="own">
+              <h3>A company package owns</h3>
+              <p>Domain vocabulary, workflows, prompt assets, skills, policy packs, fixtures, intake profiles, and presentation. It narrows the public contracts for its domain and never imports a private runtime internal.</p>
+            </article>
+            <article class="own">
+              <h3>The core owns</h3>
+              <p>Compilation, workflow execution, approval binding, durable effects, policy evaluation, sandboxing, and observability. The same controls serve every company package; only configuration differs.</p>
+            </article>
+          </div>
+          <p class="boundary">The proof that this separation is real: one runtime executes both the Acme demos and the Gusto domain workflows, and the difference between them is which packages are installed — not which engine was rewritten. If a company concept ever needs a core change to work, that is the signal to write an ADR rather than a branch.</p>
+        </div>
+      </section>
+
+    </main>
+    <nav class="nav" aria-label="Slide controls"><button type="button" data-previous>Previous</button><button type="button" data-next>Next</button></nav>
+    <script>
+      const slides = [...document.querySelectorAll(".slide")];
+      const currentIndex = () => slides.reduce((best, slide, index) => Math.abs(slide.getBoundingClientRect().top) < Math.abs(slides[best].getBoundingClientRect().top) ? index : best, 0);
+      const move = (delta) => { const index = Math.max(0, Math.min(slides.length - 1, currentIndex() + delta)); slides[index].scrollIntoView({ behavior: "smooth", block: "start" }); };
+      document.querySelector("[data-previous]").addEventListener("click", () => move(-1));
+      document.querySelector("[data-next]").addEventListener("click", () => move(1));
+      document.addEventListener("keydown", (event) => { if (event.altKey || event.ctrlKey || event.metaKey || ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) return; if (event.key === "ArrowRight" || event.key === "PageDown") { event.preventDefault(); move(1); } if (event.key === "ArrowLeft" || event.key === "PageUp") { event.preventDefault(); move(-1); } });
+    </script>
+  </body>
+</html>
