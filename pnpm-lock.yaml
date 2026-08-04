@@ -63,6 +63,9 @@ importers:
       tailwindcss:
         specifier: ^4.2.0
         version: 4.3.3
+      tsx:
+        specifier: ^4.23.4
+        version: 4.23.4
       vite:
         specifier: ^8.2.0
         version: 8.2.0(@types/node@25.9.5)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.4)
@@ -75,6 +78,8 @@ importers:
       tsx:
         specifier: ^4.23.4
         version: 4.23.4
+
+  forge/packages/checkpoint-memory: {}
 
   forge/packages/cli:
     dependencies:
@@ -90,6 +95,10 @@ importers:
       commander:
         specifier: ^15.0.0
         version: 15.0.0
+    devDependencies:
+      tsx:
+        specifier: ^4.23.4
+        version: 4.23.4
 
   forge/packages/compiler:
     dependencies:
@@ -133,6 +142,10 @@ importers:
       '@forge/ports':
         specifier: workspace:*
         version: link:../ports
+
+  forge/packages/queue-memory: {}
+
+  forge/packages/sandbox: {}
 
   forge/packages/sdk:
     dependencies:

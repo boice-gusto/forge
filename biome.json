@@ -1,9 +1,22 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.6/schema.json",
-  "files": { "includes": ["**", "!forge/docs/**", "!**/dist/**"] },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": ["**", "!forge/docs/**", "!**/dist/**"]
+  },
   "linter": {
     "enabled": true,
-    "rules": { "preset": "none" }
+    "rules": {
+      "preset": "none"
+    }
   },
-  "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2 }
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  }
 }
