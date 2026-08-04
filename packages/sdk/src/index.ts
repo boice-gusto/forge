@@ -3,9 +3,17 @@ export {
   type ManifestLoadResult,
   safeLoadCompanyManifest,
 } from "@forge/manifest";
+export { createRunId, type Result, type RunId } from "@forge/types";
 export {
-  createRunId,
-  type Diagnostic,
-  type Result,
-  type RunId,
-} from "@forge/types";
+  type ApprovalView,
+  type CompiledView,
+  createForgeClient,
+  type Decision,
+  type Diagnostic as ForgeDiagnostic,
+  type ForgeClient,
+  type ForgeClientOptions,
+  type ForgeResult,
+  type RunStatus,
+  type RunView,
+  type StartRunInput,
+} from "./client.js";

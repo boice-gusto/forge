@@ -44,7 +44,11 @@ export {
   type ProviderSession,
   type ResumeProviderSessionInput,
 } from "./provider.js";
-export { type QueuePort } from "./queue.js";
+export {
+  type ForgeJob,
+  operationKey,
+  type QueuePort,
+} from "./queue.js";
 export {
   type SandboxError,
   type SandboxPort,

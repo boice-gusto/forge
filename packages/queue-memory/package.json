@@ -9,5 +9,8 @@
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@forge/ports": "workspace:*"
   }
 }

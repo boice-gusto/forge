@@ -1,39 +1,45 @@
-export interface MemoryQueueJob {
-  readonly type: "workflow.execute" | "workflow.resume";
-  readonly runId: string;
-  readonly operationKey: string;
-}
+import { type ForgeJob, operationKey, type QueuePort } from "@forge/ports";
 
-export interface MemoryQueue {
-  enqueue(job: MemoryQueueJob): Promise<void>;
-  drain(handler: (job: MemoryQueueJob) => Promise<void>): Promise<void>;
-  size(): Promise<number>;
-}
+/**
+ * In-memory queue. Stands in for the BullMQ adapter (ADR-004) and exists to
+ * pin the one behaviour that matters at this layer: an operation delivered
+ * more than once must only be handled once.
+ */
+export function createMemoryQueue(): QueuePort {
+  const pending: ForgeJob[] = [];
+  const handled = new Set<string>();
+  let handler: ((job: ForgeJob) => Promise<void>) | undefined;
 
-export function createMemoryQueue(): MemoryQueue {
-  const pending: MemoryQueueJob[] = [];
-  const delivered = new Set<string>();
+  async function pump(): Promise<void> {
+    if (handler === undefined) return;
+    while (pending.length > 0) {
+      const job = pending.shift();
+      if (job === undefined) continue;
+      const key = operationKey(job);
+      if (handled.has(key)) continue;
+      handled.add(key);
+      await handler(job);
+    }
+  }
 
   return {
     async enqueue(job) {
-      if (
-        delivered.has(job.operationKey) ||
-        pending.some((queued) => queued.operationKey === job.operationKey)
-      ) {
-        return;
-      }
+      const key = operationKey(job);
+      if (handled.has(key)) return key;
+      if (pending.some((queued) => operationKey(queued) === key)) return key;
       pending.push(job);
+      await pump();
+      return key;
     },
-    async drain(handler) {
-      while (pending.length > 0) {
-        const job = pending.shift();
-        if (job === undefined || delivered.has(job.operationKey)) continue;
-        await handler(job);
-        delivered.add(job.operationKey);
-      }
+    async subscribe(next) {
+      handler = next;
+      await pump();
     },
-    async size() {
+    async depth() {
       return pending.length;
+    },
+    async health() {
+      return { available: true };
     },
   };
 }

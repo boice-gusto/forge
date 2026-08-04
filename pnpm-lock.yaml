@@ -84,6 +84,18 @@ importers:
 
   apps/worker:
     dependencies:
+      '@forge/composition':
+        specifier: workspace:*
+        version: link:../../packages/composition
+      '@forge/observability-memory':
+        specifier: workspace:*
+        version: link:../../packages/observability-memory
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../../packages/ports
+      '@forge/queue-memory':
+        specifier: workspace:*
+        version: link:../../packages/queue-memory
       fastify:
         specifier: ^5.11.0
         version: 5.11.0
@@ -243,7 +255,11 @@ importers:
         specifier: workspace:*
         version: link:../ports
 
-  packages/queue-memory: {}
+  packages/queue-memory:
+    dependencies:
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../ports
 
   packages/runtime:
     dependencies:
