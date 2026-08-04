@@ -37,6 +37,16 @@ export interface EngineRunContext {
    * the engine never proceeds past a failed assertion.
    */
   assertCapability(nodeId: string, capability: string): Promise<void>;
+  /** Run an agent step against the provider. Rejecting stops the walk. */
+  invokeAgent(
+    nodeId: string,
+    promptRef: string,
+    role: string | undefined,
+  ): Promise<void>;
+  /** Score an artifact. Fails closed: anything but pass stops the walk. */
+  judge(nodeId: string, judgeRef: string): Promise<JudgeVerdict>;
+  /** Acquire disposable compute. Unavailable means stop, never host fallback. */
+  enterSandbox(nodeId: string, profile: string): Promise<void>;
 }
 
 export interface GraphEnginePort {
@@ -52,3 +62,6 @@ export interface GraphEnginePort {
     authorised: AuthorisedEffects,
   ): Promise<EngineExecutionResult>;
 }
+
+/** Verdict a judge node returns. Anything other than pass stops the walk. */
+export type JudgeVerdict = "pass" | "fail" | "review";

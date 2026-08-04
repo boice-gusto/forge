@@ -35,6 +35,9 @@ importers:
       '@forge/composition':
         specifier: workspace:*
         version: link:../../packages/composition
+      '@forge/panel':
+        specifier: workspace:*
+        version: link:../../packages/panel
       '@forge/policy-memory':
         specifier: workspace:*
         version: link:../../packages/policy-memory
@@ -111,6 +114,9 @@ importers:
       '@forge/observability':
         specifier: workspace:*
         version: link:../observability
+      '@forge/panel':
+        specifier: workspace:*
+        version: link:../panel
       '@forge/policy-memory':
         specifier: workspace:*
         version: link:../policy-memory
@@ -154,12 +160,21 @@ importers:
       '@forge/ir':
         specifier: workspace:*
         version: link:../ir
+      '@forge/observability-memory':
+        specifier: workspace:*
+        version: link:../observability-memory
+      '@forge/panel':
+        specifier: workspace:*
+        version: link:../panel
       '@forge/policy-memory':
         specifier: workspace:*
         version: link:../policy-memory
       '@forge/ports':
         specifier: workspace:*
         version: link:../ports
+      '@forge/provider-mock':
+        specifier: workspace:*
+        version: link:../provider-mock
       '@forge/runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -202,6 +217,12 @@ importers:
         specifier: ^10.3.1
         version: 10.3.1
 
+  packages/observability-memory:
+    dependencies:
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../ports
+
   packages/panel:
     dependencies:
       '@forge/ir':
@@ -241,12 +262,21 @@ importers:
       '@forge/ir':
         specifier: workspace:*
         version: link:../ir
+      '@forge/observability-memory':
+        specifier: workspace:*
+        version: link:../observability-memory
+      '@forge/panel':
+        specifier: workspace:*
+        version: link:../panel
       '@forge/policy-memory':
         specifier: workspace:*
         version: link:../policy-memory
       '@forge/ports':
         specifier: workspace:*
         version: link:../ports
+      '@forge/provider-mock':
+        specifier: workspace:*
+        version: link:../provider-mock
       '@forge/types':
         specifier: workspace:*
         version: link:../types

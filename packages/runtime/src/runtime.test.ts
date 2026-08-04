@@ -2,16 +2,13 @@ import { createMemoryApprovalStore } from "@forge/approval-memory";
 import { createMemoryCheckpointStore } from "@forge/checkpoint-memory";
 import { compileWorkflow } from "@forge/compiler";
 import { createMemoryGraphEngine } from "@forge/engine-memory";
+import { createMemoryObservability } from "@forge/observability-memory";
 import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
 import { createSequentialIds } from "@forge/ports";
+import { createMockProvider } from "@forge/provider-mock";
 import { describe, expect, test } from "vitest";
 
-import {
-  createRuntime,
-  type EffectSink,
-  effectHash,
-  type SealedArtifact,
-} from "./runtime.js";
+import { createRuntime, effectHash, type SealedArtifact } from "./runtime.js";
 
 const source = {
   id: "acme.publish",
@@ -69,11 +66,6 @@ function harness(
   failEvaluation = false,
 ) {
   const dispatched: string[] = [];
-  const effects: EffectSink = {
-    async perform(_runId, _nodeId, effect) {
-      dispatched.push(effect);
-    },
-  };
   let instant = new Date("2026-08-04T00:00:00.000Z");
   const clock = { now: () => new Date(instant) };
   const advance = (ms: number) => {
@@ -82,19 +74,39 @@ function harness(
   const ids = createSequentialIds();
   const approvals = createMemoryApprovalStore(clock, ids);
   const checkpoints = createMemoryCheckpointStore();
+  const observability = createMemoryObservability();
+
   const runtime = createRuntime({
     engine: createMemoryGraphEngine(),
     policy: createMemoryPolicy({ rules, grants, failEvaluation }),
-    effects,
-    checkpoints,
     approvals,
+    provider: createMockProvider({
+      providerId: "mock",
+      events: [{ type: "completed" }],
+    }),
+    sandbox: { health: async () => ({ available: true }) },
+    observability,
+    panel: { standing: [], summonable: [], quorum: 0.5 },
+    effects: {
+      async perform(_runId, _nodeId, effect) {
+        dispatched.push(effect);
+      },
+    },
+    checkpoints,
     clock,
     ids,
     actor: "svc.forge.worker",
     environment: "production",
     approvalTtlMs: 7 * 24 * 60 * 60 * 1000,
   });
-  return { runtime, dispatched, checkpoints, approvals, advance };
+  return {
+    runtime,
+    dispatched,
+    checkpoints,
+    approvals,
+    advance,
+    observability,
+  };
 }
 
 describe("run lifecycle", () => {
@@ -634,5 +646,181 @@ describe("expiry and amendment", () => {
       "marketing-lead",
     );
     expect(await approvals.getPending(run.runId)).toEqual([]);
+  });
+});
+
+const reviewed = {
+  id: "acme.reviewed",
+  version: "1.0.0",
+  sideEffects: ["slack.post"],
+  roles: {
+    writer: {
+      version: "1.0.0",
+      capabilities: { requires: [], forbids: [] },
+      review: { weight: 1, blocking: false },
+    },
+    security: {
+      version: "1.0.0",
+      capabilities: { requires: [], forbids: [] },
+      review: { weight: 2, blocking: true },
+      summon: { anyPathMatches: ["**/credentials/**"] },
+    },
+  },
+  nodes: [
+    { id: "intake", kind: "input", schemaRef: "s@1" },
+    { id: "isolate", kind: "sandbox", profile: "docker" },
+    { id: "draft", kind: "agent", promptRef: "p@1", retry: { maxAttempts: 3 } },
+    { id: "panel", kind: "judge", judgeRef: "j@1" },
+    { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["publish"] },
+    { id: "publish", kind: "tool", skillRef: "t@1", effect: "slack.post" },
+    { id: "result", kind: "output", schemaRef: "s@1" },
+  ],
+  edges: [
+    { from: "intake", to: "isolate" },
+    { from: "isolate", to: "draft" },
+    { from: "draft", to: "panel" },
+    { from: "panel", to: "gate" },
+    { from: "gate", to: "publish" },
+    { from: "publish", to: "result" },
+  ],
+} as const;
+
+function reviewedArtifact(): SealedArtifact {
+  const compiled = compileWorkflow(reviewed);
+  if (!compiled.ok) throw new Error("Fixture must compile.");
+  return {
+    workflowId: compiled.value.ir.workflowId,
+    fingerprint: compiled.value.fingerprint,
+    ir: compiled.value.ir,
+  };
+}
+
+function reviewHarness(opts: {
+  votes?: Record<string, "pass" | "fail" | "error">;
+  paths?: string[];
+  sandboxAvailable?: boolean;
+  providerFails?: boolean;
+}) {
+  const dispatched: string[] = [];
+  const observability = createMemoryObservability();
+  const ids = createSequentialIds();
+  const clock = { now: () => new Date("2026-08-04T00:00:00.000Z") };
+
+  const runtime = createRuntime({
+    engine: createMemoryGraphEngine(),
+    policy: createMemoryPolicy({ rules: REQUIRE_APPROVAL, grants: [] }),
+    approvals: createMemoryApprovalStore(clock, ids),
+    provider: createMockProvider({
+      providerId: "mock",
+      events: opts.providerFails
+        ? [
+            {
+              type: "error",
+              code: "PROVIDER_TIMEOUT",
+              message: "timed out",
+              retryable: true,
+            },
+          ]
+        : [{ type: "completed" }],
+    }),
+    sandbox: {
+      health: async () => ({ available: opts.sandboxAvailable ?? true }),
+    },
+    observability,
+    panel: { standing: ["writer"], summonable: ["security"], quorum: 0.5 },
+    votesFor: () => opts.votes ?? {},
+    effects: {
+      async perform(_r, _n, effect) {
+        dispatched.push(effect);
+      },
+    },
+    checkpoints: createMemoryCheckpointStore(),
+    clock,
+    ids,
+    actor: "svc.forge.worker",
+    environment: "production",
+    approvalTtlMs: 1000,
+  });
+  return { runtime, dispatched, observability };
+}
+
+describe("agent, judge and sandbox nodes are live", () => {
+  test("a clean panel lets the run reach its gate", async () => {
+    const { runtime, dispatched } = reviewHarness({
+      votes: { writer: "pass" },
+    });
+    const run = await runtime.start({
+      artifact: reviewedArtifact(),
+      changedPaths: ["docs/x.md"],
+    });
+
+    expect(run.status).toBe("AWAITING_APPROVAL");
+    expect(dispatched).toEqual([]);
+  });
+
+  test("a summoned blocking role can veto the whole run", async () => {
+    const { runtime, dispatched } = reviewHarness({
+      votes: { writer: "pass", security: "fail" },
+      paths: ["app/credentials/key.xml"],
+    });
+    const run = await runtime.start({
+      artifact: reviewedArtifact(),
+      changedPaths: ["app/credentials/key.xml"],
+    });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("judge verdict fail");
+    expect(dispatched).toEqual([]);
+  });
+
+  test("no votes fails closed to review, never past the judge", async () => {
+    const { runtime } = reviewHarness({ votes: {} });
+    const run = await runtime.start({ artifact: reviewedArtifact() });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("judge verdict review");
+  });
+
+  test("an unavailable sandbox stops the walk with no host fallback", async () => {
+    const { runtime, dispatched } = reviewHarness({
+      votes: { writer: "pass" },
+      sandboxAvailable: false,
+    });
+    const run = await runtime.start({ artifact: reviewedArtifact() });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("host execution is not permitted");
+    expect(dispatched).toEqual([]);
+  });
+
+  test("a provider error retries up to the declared budget, then fails", async () => {
+    const { runtime, observability } = reviewHarness({
+      votes: { writer: "pass" },
+      providerFails: true,
+    });
+    const run = await runtime.start({ artifact: reviewedArtifact() });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("PROVIDER_TIMEOUT");
+    // maxAttempts 3 on the agent node: two retries then give up.
+    expect(run.attempt).toBe(3);
+    expect(
+      observability.events.filter((e) => e.name === "forge.run.retry"),
+    ).toHaveLength(2);
+  });
+
+  test("the run reports spans for itself and for each intelligent node", async () => {
+    const { runtime, observability } = reviewHarness({
+      votes: { writer: "pass" },
+    });
+    await runtime.start({ artifact: reviewedArtifact() });
+
+    expect(observability.names()).toContain("forge.run.start");
+    expect(observability.names()).toContain("forge.node.agent");
+    expect(observability.names()).toContain("forge.node.judge");
+    expect(observability.events.map((e) => e.name)).toContain(
+      "forge.node.sandbox",
+    );
+    expect(observability.spans.every((span) => span.ended)).toBe(true);
   });
 });

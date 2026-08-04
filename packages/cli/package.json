@@ -19,7 +19,8 @@
     "chalk": "^6.0.0",
     "commander": "^15.0.0",
     "@forge/composition": "workspace:*",
-    "@forge/policy-memory": "workspace:*"
+    "@forge/policy-memory": "workspace:*",
+    "@forge/panel": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.23.4"

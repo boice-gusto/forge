@@ -29,11 +29,7 @@ function app() {
   });
 }
 
-const startBody = {
-  workflow: fixture.workflow,
-  capabilities: fixture.capabilities,
-  policy: fixture.policy,
-};
+const startBody = fixture;
 
 describe("control plane", () => {
   test("compiles a workflow and exposes only its public surface", async () => {

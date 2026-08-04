@@ -2,8 +2,14 @@ import { createMemoryApprovalStore } from "@forge/approval-memory";
 import { createMemoryCheckpointStore } from "@forge/checkpoint-memory";
 import { compileWorkflow } from "@forge/compiler";
 import { createMemoryGraphEngine } from "@forge/engine-memory";
+import {
+  createMemoryObservability,
+  type MemoryObservability,
+} from "@forge/observability-memory";
+import type { PanelDefinition, Vote } from "@forge/panel";
 import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
 import type { ApprovalPort, ClockPort, IdPort } from "@forge/ports";
+import { createMockProvider } from "@forge/provider-mock";
 import {
   createRuntime,
   type EffectSink,
@@ -31,6 +37,15 @@ export interface LocalStackOptions {
   readonly startedAt?: string;
   /** Where dispatched effects land. Defaults to an in-memory recorder. */
   readonly effects?: EffectSink;
+  /** Which roles review every change, and which are summoned. */
+  readonly panel?: PanelDefinition;
+  /** Votes a judge returns, keyed by role name. */
+  readonly votesFor?: (
+    nodeId: string,
+    judgeRef: string,
+  ) => Readonly<Record<string, Vote>>;
+  /** Set false to prove a required sandbox failing closed. */
+  readonly sandboxAvailable?: boolean;
 }
 
 export interface LocalStack {
@@ -40,6 +55,7 @@ export interface LocalStack {
   readonly ids: IdPort;
   /** Effects dispatched, in order, when the default recorder is used. */
   readonly dispatched: readonly string[];
+  readonly observability: MemoryObservability;
   advanceClock(ms: number): void;
 }
 
@@ -66,6 +82,8 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
   };
 
   const approvals = createMemoryApprovalStore(clock, ids);
+  const observability = createMemoryObservability();
+  const sandboxAvailable = options.sandboxAvailable ?? true;
 
   const runtime = createRuntime({
     engine: createMemoryGraphEngine(),
@@ -74,6 +92,14 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
       grants: options.grants ?? [],
     }),
     approvals,
+    provider: createMockProvider({
+      providerId: "mock",
+      events: [{ type: "completed" }],
+    }),
+    sandbox: { health: async () => ({ available: sandboxAvailable }) },
+    observability,
+    panel: options.panel ?? { standing: [], summonable: [], quorum: 0.5 },
+    ...(options.votesFor === undefined ? {} : { votesFor: options.votesFor }),
     effects,
     checkpoints: createMemoryCheckpointStore(),
     clock,
@@ -89,6 +115,7 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
     clock,
     ids,
     dispatched,
+    observability,
     advanceClock(ms) {
       instant = new Date(instant.getTime() + ms);
     },

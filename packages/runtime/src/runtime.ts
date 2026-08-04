@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
 import type { ForgeIr } from "@forge/ir";
+import {
+  composePanel,
+  type PanelDefinition,
+  resolveVerdict,
+  type Vote,
+} from "@forge/panel";
 import type {
   ApprovalDecision,
   ApprovalPort,
@@ -9,7 +15,11 @@ import type {
   ClockPort,
   GraphEnginePort,
   IdPort,
+  JudgeVerdict,
+  ObservabilityPort,
   PolicyPort,
+  ProviderPort,
+  SandboxPort,
 } from "@forge/ports";
 
 /**
@@ -54,6 +64,16 @@ export interface RuntimeOptions {
   readonly engine: GraphEnginePort;
   readonly policy: PolicyPort;
   readonly approvals: ApprovalPort;
+  readonly provider: ProviderPort;
+  readonly sandbox: SandboxPort;
+  readonly observability: ObservabilityPort;
+  /** Which roles sit on every panel and which are summoned. */
+  readonly panel: PanelDefinition;
+  /** Votes a judge returns, keyed by role. Supplied by the review adapter. */
+  readonly votesFor?: (
+    nodeId: string,
+    judgeRef: string,
+  ) => Readonly<Record<string, Vote>>;
   readonly effects: EffectSink;
   readonly checkpoints: CheckpointStorePort;
   readonly clock: ClockPort;
@@ -68,6 +88,8 @@ export interface StartInput {
   readonly artifact: SealedArtifact;
   /** Capabilities the workflow's roles require, closed at compile time. */
   readonly capabilities?: readonly string[];
+  /** What this run changed, used to compose the review panel. */
+  readonly changedPaths?: readonly string[];
 }
 
 export function effectHash(input: {
@@ -102,6 +124,9 @@ interface RunState {
   capabilities: readonly string[];
   authorised: Set<string>;
   plan: unknown;
+  roles: Readonly<Record<string, import("@forge/ir").Role>>;
+  changedPaths: readonly string[];
+  retryBudget: number;
 }
 
 export function createRuntime(options: RuntimeOptions): Runtime {
@@ -113,6 +138,11 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     return state.record;
   };
 
+  /** Highest maxAttempts declared on any node, so a transient failure retries. */
+  function maxAttemptsFor(state: RunState): number {
+    return state.retryBudget;
+  }
+
   async function advance(state: RunState): Promise<RunRecord> {
     const ledger = ledgers.get(state.record.runId) as string[];
 
@@ -120,6 +150,67 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       state.plan as never,
       {
         runId: state.record.runId,
+
+        invokeAgent: async (nodeId, promptRef, role) => {
+          const span = options.observability.startSpan("forge.node.agent", {
+            runId: state.record.runId,
+            nodeId,
+            promptRef,
+            ...(role === undefined ? {} : { role }),
+          });
+          const session = await options.provider.createSession({
+            workspacePath: `/workspace/${state.record.runId}`,
+            correlationId: state.record.runId,
+            capabilities: [],
+          });
+          try {
+            for await (const event of options.provider.execute(session, {
+              prompt: promptRef,
+            })) {
+              if (event.type === "error") {
+                throw new Error(`${event.code}: ${event.message}`);
+              }
+            }
+          } finally {
+            await options.provider.destroySession(session);
+            span.end();
+          }
+        },
+
+        judge: async (nodeId, judgeRef): Promise<JudgeVerdict> => {
+          const span = options.observability.startSpan("forge.node.judge", {
+            runId: state.record.runId,
+            nodeId,
+            judgeRef,
+          });
+          const panel = composePanel(state.roles, options.panel, {
+            paths: state.changedPaths,
+          });
+          const votes = options.votesFor?.(nodeId, judgeRef) ?? {};
+          const outcome = resolveVerdict(panel, votes);
+          span.end({
+            verdict: outcome.verdict,
+            members: panel.members.length,
+            reason: outcome.reason,
+          });
+          return outcome.verdict;
+        },
+
+        enterSandbox: async (nodeId, profile) => {
+          const health = await options.sandbox.health();
+          options.observability.event("forge.node.sandbox", {
+            runId: state.record.runId,
+            nodeId,
+            profile,
+            available: health.available,
+          });
+          if (!health.available) {
+            throw new Error(
+              `Required sandbox profile '${profile}' is unavailable; host execution is not permitted.`,
+            );
+          }
+        },
+
         assertCapability: async (_nodeId, capability) => {
           const granted = await options.policy.grantedCapabilities();
           if (!granted.includes(capability)) {
@@ -140,6 +231,21 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     );
 
     if (result.kind === "failed") {
+      // Workflow retry, distinct from transport retry (006 §7). The run stays
+      // RUNNING and the attempt increments; it is not a separate state.
+      if (result.retryable && state.record.attempt < maxAttemptsFor(state)) {
+        options.observability.event("forge.run.retry", {
+          runId: state.record.runId,
+          nodeId: result.nodeId,
+          attempt: state.record.attempt + 1,
+        });
+        update(state, { attempt: state.record.attempt + 1 });
+        return advance(state);
+      }
+      options.observability.event("forge.run.failed", {
+        runId: state.record.runId,
+        nodeId: result.nodeId,
+      });
       return update(state, {
         status: "FAILED",
         error: `${result.nodeId}: ${result.reason}`,
@@ -148,6 +254,10 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     }
 
     if (result.kind === "succeeded") {
+      options.observability.event("forge.run.succeeded", {
+        runId: state.record.runId,
+        effects: ledger.length,
+      });
       return update(state, {
         status: "SUCCEEDED",
         performedEffects: [...ledger],
@@ -213,7 +323,19 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   return {
     async start(input) {
       const runId = options.ids.next("run");
+      const span = options.observability.startSpan("forge.run.start", {
+        runId,
+        workflowId: input.artifact.workflowId,
+        fingerprint: input.artifact.fingerprint,
+      });
       const plan = await options.engine.materialize(input.artifact.ir);
+      const retryBudget = input.artifact.ir.nodes.reduce(
+        (highest, node) =>
+          "retry" in node && node.retry !== undefined
+            ? Math.max(highest, node.retry.maxAttempts)
+            : highest,
+        1,
+      );
       const state: RunState = {
         record: {
           runId,
@@ -226,11 +348,16 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         capabilities: input.capabilities ?? [],
         authorised: new Set<string>(),
         plan,
+        roles: input.artifact.ir.roles,
+        changedPaths: input.changedPaths ?? [],
+        retryBudget,
       };
       runs.set(runId, state);
       ledgers.set(runId, []);
       update(state, { status: "RUNNING" });
-      return advance(state);
+      const record = await advance(state);
+      span.end({ status: record.status });
+      return record;
     },
 
     async decide(approvalId, decision, principal) {

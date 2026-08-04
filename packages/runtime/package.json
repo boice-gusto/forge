@@ -14,7 +14,10 @@
     "@forge/compiler": "workspace:*",
     "@forge/engine-memory": "workspace:*",
     "@forge/policy-memory": "workspace:*",
-    "@forge/approval-memory": "workspace:*"
+    "@forge/approval-memory": "workspace:*",
+    "@forge/panel": "workspace:*",
+    "@forge/observability-memory": "workspace:*",
+    "@forge/provider-mock": "workspace:*"
   },
   "scripts": {
     "build": "tsc --noEmit",

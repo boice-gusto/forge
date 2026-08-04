@@ -57,6 +57,10 @@ A bare workflow source works, or wrap it to supply policy and capabilities:
 }
 ```
 
+`panel`, `review.votes` and `changedPaths` are also accepted. Panels compose from
+`changedPaths`, so a specialty role only joins when its predicate matches. `votes` is
+a local stand-in until a review adapter exists — without it a judge node fails closed.
+
 See `examples/acme/workflows/campaign-brief.json` for a complete one that exercises
 every node kind.
 
@@ -111,8 +115,12 @@ change pass, that is the signal to stop.
 - **Execution follows edges.** A node with no path from the input node is not
   executed. Both the compiler and the engine enforce this independently —
   either layer alone once let an orphaned effect run.
-- **Everything fails closed.** Policy evaluator errors deny. Judge errors escalate.
-  An unmatched action denies by default.
+- **Everything fails closed.** Policy evaluator errors deny. A judge that errors,
+  returns anything but `pass`, or has no votes stops the run. An empty panel is never
+  a pass. An unavailable sandbox stops the walk — there is no host fallback. An
+  unmatched policy action denies by default.
+- **Retry is an attempt, not a state.** A retryable node failure increments the
+  attempt up to the highest `maxAttempts` declared on any node; the run stays RUNNING.
 
 ## Layering
 

@@ -4,6 +4,20 @@ import { describe, expect, test } from "vitest";
 
 import { createMemoryGraphEngine } from "./engine.js";
 
+/** A context that records effects and lets every other hook succeed. */
+function context(performed: string[]) {
+  return {
+    runId: "run_1",
+    assertCapability: async () => undefined,
+    invokeAgent: async () => undefined,
+    judge: async () => "pass" as const,
+    enterSandbox: async () => undefined,
+    perform: async (_nodeId: string, effect: string) => {
+      performed.push(effect);
+    },
+  };
+}
+
 /**
  * The engine must execute what the graph reaches and nothing else. Building
  * the IR by hand here on purpose: the compiler now refuses unreachable nodes,
@@ -34,11 +48,7 @@ describe("engine reachability", () => {
     const result = await engine.execute(
       plan,
       {
-        runId: "run_1",
-        assertCapability: async () => undefined,
-        perform: async (_nodeId, effect) => {
-          performed.push(effect);
-        },
+        ...context(performed),
       },
       new Set(["orphan"]),
     );
@@ -74,11 +84,7 @@ describe("engine reachability", () => {
     const result = await engine.execute(
       plan,
       {
-        runId: "run_1",
-        assertCapability: async () => undefined,
-        perform: async (_nodeId, effect) => {
-          performed.push(effect);
-        },
+        ...context(performed),
       },
       new Set(["act"]),
     );
@@ -112,11 +118,7 @@ describe("engine reachability", () => {
     const result = await engine.execute(
       plan,
       {
-        runId: "run_1",
-        assertCapability: async () => undefined,
-        perform: async (_nodeId, effect) => {
-          performed.push(effect);
-        },
+        ...context(performed),
       },
       new Set(),
     );

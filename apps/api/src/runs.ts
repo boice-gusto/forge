@@ -3,6 +3,7 @@ import {
   createLocalStack,
   type LocalStack,
 } from "@forge/composition";
+import type { PanelDefinition, Vote } from "@forge/panel";
 import type { PolicyRule } from "@forge/policy-memory";
 import type { FastifyInstance } from "fastify";
 
@@ -21,6 +22,9 @@ interface StartBody {
     readonly rules?: readonly PolicyRule[];
     readonly grants?: readonly string[];
   };
+  readonly panel?: PanelDefinition;
+  readonly review?: { readonly votes?: Readonly<Record<string, Vote>> };
+  readonly changedPaths?: readonly string[];
 }
 
 interface DecisionBody {
@@ -94,11 +98,16 @@ export function registerRunRoutes(
             rules: body.policy.rules ?? [],
             grants: body.policy.grants ?? [],
             environment: "production",
+            ...(body.panel === undefined ? {} : { panel: body.panel }),
+            ...(body.review?.votes === undefined
+              ? {}
+              : { votesFor: () => body.review?.votes ?? {} }),
           });
 
     const run = await stack.runtime.start({
       artifact: outcome.artifact,
       capabilities: body.capabilities ?? [],
+      changedPaths: body.changedPaths ?? [],
     });
     stacks.set(run.runId, stack);
 

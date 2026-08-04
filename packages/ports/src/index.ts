@@ -22,7 +22,14 @@ export {
   type EnginePlan,
   type EngineRunContext,
   type GraphEnginePort,
+  type JudgeVerdict,
 } from "./engine.js";
+export {
+  type ObservabilityPort,
+  type RecordedSpan,
+  type Span,
+  type SpanAttributes,
+} from "./observability.js";
 export {
   type PolicyDecision,
   type PolicyPort,

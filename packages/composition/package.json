@@ -15,7 +15,10 @@
     "@forge/policy-memory": "workspace:*",
     "@forge/ports": "workspace:*",
     "@forge/runtime": "workspace:*",
-    "@forge/types": "workspace:*"
+    "@forge/types": "workspace:*",
+    "@forge/observability-memory": "workspace:*",
+    "@forge/panel": "workspace:*",
+    "@forge/provider-mock": "workspace:*"
   },
   "scripts": {
     "build": "tsc --noEmit",

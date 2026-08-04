@@ -5,6 +5,7 @@ import type {
   EnginePlan,
   EngineRunContext,
   GraphEnginePort,
+  JudgeVerdict,
 } from "@forge/ports";
 
 /**
@@ -138,6 +139,59 @@ export function createMemoryGraphEngine(): GraphEnginePort {
       const visited: string[] = [];
       for (const node of materialized.order) {
         visited.push(node.id);
+
+        if (node.kind === "agent") {
+          try {
+            await context.invokeAgent(node.id, node.promptRef, node.role);
+          } catch (error) {
+            return {
+              kind: "failed",
+              nodeId: node.id,
+              reason: error instanceof Error ? error.message : String(error),
+              retryable: true,
+            };
+          }
+          continue;
+        }
+
+        if (node.kind === "judge") {
+          let verdict: JudgeVerdict;
+          try {
+            verdict = await context.judge(node.id, node.judgeRef);
+          } catch (error) {
+            // A judge that errors escalates; it never passes.
+            return {
+              kind: "failed",
+              nodeId: node.id,
+              reason: `judge errored: ${error instanceof Error ? error.message : String(error)}`,
+              retryable: false,
+            };
+          }
+          if (verdict !== "pass") {
+            return {
+              kind: "failed",
+              nodeId: node.id,
+              reason: `judge verdict ${verdict}`,
+              retryable: false,
+            };
+          }
+          continue;
+        }
+
+        if (node.kind === "sandbox") {
+          try {
+            await context.enterSandbox(node.id, node.profile);
+          } catch (error) {
+            // No host fallback. An unavailable sandbox stops the walk.
+            return {
+              kind: "failed",
+              nodeId: node.id,
+              reason: error instanceof Error ? error.message : String(error),
+              retryable: false,
+            };
+          }
+          continue;
+        }
 
         if (node.kind === "policy_check") {
           try {

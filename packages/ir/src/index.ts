@@ -5,6 +5,7 @@ export {
   IrEdgeSchema,
   type IrNode,
   IrNodeSchema,
+  type RetryPolicy,
   type Role,
   RoleSchema,
   type WorkflowSource,

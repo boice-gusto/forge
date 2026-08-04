@@ -3,6 +3,14 @@ import { z } from "zod";
 const NodeIdSchema = z.string().min(1);
 const SchemaRefSchema = z.string().min(1);
 
+const RetryPolicySchema = z
+  .object({
+    maxAttempts: z.number().int().min(1).max(10),
+    backoff: z.enum(["fixed", "exponential"]).default("fixed"),
+    retryableErrors: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+
 export const IrNodeSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -24,6 +32,7 @@ export const IrNodeSchema = z.discriminatedUnion("kind", [
       kind: z.literal("agent"),
       promptRef: z.string().min(1),
       role: z.string().min(1).optional(),
+      retry: RetryPolicySchema.optional(),
     })
     .strict(),
   z
@@ -39,6 +48,7 @@ export const IrNodeSchema = z.discriminatedUnion("kind", [
       kind: z.literal("tool"),
       skillRef: z.string().min(1),
       role: z.string().min(1).optional(),
+      retry: RetryPolicySchema.optional(),
       // Naming an effect makes this node a side-effect carrier, which the
       // compiler then requires an approval gate for.
       effect: z.string().min(1).optional(),
@@ -127,6 +137,7 @@ export const RoleSchema = z
   .strict();
 
 export type Role = z.infer<typeof RoleSchema>;
+export type RetryPolicy = z.infer<typeof RetryPolicySchema>;
 
 export const IrEdgeSchema = z
   .object({

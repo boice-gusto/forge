@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { compileToArtifact, createLocalStack } from "@forge/composition";
+import type { PanelDefinition, Vote } from "@forge/panel";
 import type { PolicyRule } from "@forge/policy-memory";
 
 import {
@@ -28,6 +29,9 @@ interface WorkflowFile {
   readonly capabilities?: readonly string[];
   readonly environment?: string;
   readonly actor?: string;
+  readonly panel?: PanelDefinition;
+  readonly review?: { readonly votes?: Readonly<Record<string, Vote>> };
+  readonly changedPaths?: readonly string[];
 }
 
 async function readWorkflowFile(
@@ -135,11 +139,16 @@ export async function runWorkflowFile(
     ...(file.environment === undefined
       ? {}
       : { environment: file.environment }),
+    ...(file.panel === undefined ? {} : { panel: file.panel }),
+    ...(file.review?.votes === undefined
+      ? {}
+      : { votesFor: () => file.review?.votes ?? {} }),
   });
 
   const run = await stack.runtime.start({
     artifact: outcome.artifact,
     capabilities: file.capabilities ?? [],
+    changedPaths: file.changedPaths ?? [],
   });
 
   const pending =

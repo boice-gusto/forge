@@ -11,7 +11,10 @@
           "requires": ["docs.write"],
           "forbids": ["repo.merge", "flag.set"]
         },
-        "review": { "weight": 1, "blocking": false }
+        "review": {
+          "weight": 1,
+          "blocking": false
+        }
       },
       "brand-reviewer": {
         "version": "1.1.0",
@@ -19,12 +22,21 @@
           "requires": ["repo.read"],
           "forbids": ["repo.merge"]
         },
-        "review": { "weight": 2, "blocking": true },
-        "summon": { "anyPathMatches": ["**/brand/**"] }
+        "review": {
+          "weight": 2,
+          "blocking": true
+        },
+        "summon": {
+          "anyPathMatches": ["**/brand/**"]
+        }
       }
     },
     "nodes": [
-      { "id": "intake", "kind": "input", "schemaRef": "acme.campaign.input@1" },
+      {
+        "id": "intake",
+        "kind": "input",
+        "schemaRef": "acme.campaign.input@1"
+      },
       {
         "id": "assert-write",
         "kind": "policy_check",
@@ -71,15 +83,44 @@
       }
     ],
     "edges": [
-      { "from": "intake", "to": "assert-write" },
-      { "from": "assert-write", "to": "draft" },
-      { "from": "draft", "to": "panel" },
-      { "from": "panel", "to": "route" },
-      { "from": "route", "to": "gate", "conditionId": "clean" },
-      { "from": "route", "to": "revise", "conditionId": "needs-work" },
-      { "from": "revise", "to": "gate" },
-      { "from": "gate", "to": "publish" },
-      { "from": "publish", "to": "result" }
+      {
+        "from": "intake",
+        "to": "assert-write"
+      },
+      {
+        "from": "assert-write",
+        "to": "draft"
+      },
+      {
+        "from": "draft",
+        "to": "panel"
+      },
+      {
+        "from": "panel",
+        "to": "route"
+      },
+      {
+        "from": "route",
+        "to": "gate",
+        "conditionId": "clean"
+      },
+      {
+        "from": "route",
+        "to": "revise",
+        "conditionId": "needs-work"
+      },
+      {
+        "from": "revise",
+        "to": "gate"
+      },
+      {
+        "from": "gate",
+        "to": "publish"
+      },
+      {
+        "from": "publish",
+        "to": "result"
+      }
     ]
   },
   "capabilities": ["docs.write", "slack.write"],
@@ -97,5 +138,18 @@
         "approvers": ["marketing-lead"]
       }
     ]
-  }
+  },
+  "panel": {
+    "standing": ["marketing-writer"],
+    "summonable": ["brand-reviewer"],
+    "quorum": 0.5
+  },
+  "review": {
+    "_note": "Votes are a local stand-in until a review adapter exists. Without them the panel fails closed to review.",
+    "votes": {
+      "marketing-writer": "pass",
+      "brand-reviewer": "pass"
+    }
+  },
+  "changedPaths": ["docs/campaigns/spring.md"]
 }
