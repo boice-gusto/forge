@@ -8,6 +8,7 @@ import { describe, expect, test } from "vitest";
 import {
   createRuntime,
   type EffectSink,
+  effectHash,
   type SealedArtifact,
 } from "./runtime.js";
 
@@ -72,17 +73,18 @@ function harness(
       dispatched.push(effect);
     },
   };
+  const checkpoints = createMemoryCheckpointStore();
   const runtime = createRuntime({
     engine: createMemoryGraphEngine(),
     policy: createMemoryPolicy({ rules, grants, failEvaluation }),
     effects,
-    checkpoints: createMemoryCheckpointStore(),
+    checkpoints,
     clock: createFixedClock("2026-08-04T00:00:00.000Z"),
     ids: createSequentialIds(),
     actor: "svc.forge.worker",
     environment: "production",
   });
-  return { runtime, dispatched };
+  return { runtime, dispatched, checkpoints };
 }
 
 describe("run lifecycle", () => {
@@ -360,5 +362,60 @@ describe("run records", () => {
       "marketing-lead",
     );
     expect(runtime.getRun(second.runId)?.status).toBe("AWAITING_APPROVAL");
+  });
+});
+
+describe("durability and binding", () => {
+  test("parking the run writes a checkpoint for the gated node", async () => {
+    const { runtime, checkpoints } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+
+    const saved = await checkpoints.listByRun(run.runId);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.stepId).toBe("publish");
+    expect(saved[0]?.resumeToken).toBe(
+      runtime.getApproval(run.pendingApprovalId as string)?.effectHash,
+    );
+  });
+
+  test("the binding covers the artifact fingerprint, not just the action", () => {
+    const base = {
+      runId: "run_1",
+      nodeId: "publish",
+      effect: "slack.post",
+      fingerprint: "sha256:aaa",
+    };
+
+    expect(effectHash(base)).toBe(effectHash({ ...base }));
+    expect(effectHash(base)).not.toBe(
+      effectHash({ ...base, fingerprint: "sha256:bbb" }),
+    );
+    expect(effectHash(base)).not.toBe(effectHash({ ...base, nodeId: "other" }));
+    expect(effectHash(base)).not.toBe(effectHash({ ...base, runId: "run_2" }));
+  });
+
+  test("a stale binding is refused rather than honoured", async () => {
+    const { runtime, dispatched } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const approval = runtime.getApproval(run.pendingApprovalId as string);
+
+    // Simulate an approval that survived a recompile: the stored binding no
+    // longer agrees with the action under the current fingerprint.
+    (approval as { effectHash: string }).effectHash = "sha256:stale";
+
+    await expect(
+      runtime.decide(
+        run.pendingApprovalId as string,
+        { kind: "approve" },
+        "marketing-lead",
+      ),
+    ).rejects.toThrow("no longer matches");
+    expect(dispatched).toEqual([]);
   });
 });
