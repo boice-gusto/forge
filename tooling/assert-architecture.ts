@@ -9,14 +9,18 @@ const COMPANY_EXTENSION_PREFIXES = [
   "forge.buzz",
 ] as const;
 const PRIVATE_ADAPTER_PREFIX = "@forge/adapters-";
-const PUBLIC_PACKAGE_PATH = "/packages/";
+// Match `packages/` whether or not a leading segment precedes it, so the
+// rules keep firing regardless of repository layout. A path-shape change must
+// never be able to silently disable an architecture boundary.
+const CORE_PACKAGE = /(?:^|\/)packages\//;
+const PUBLIC_PACKAGE = /(?:^|\/)packages\/(sdk|manifest|types|plugin-sdk)\//;
 
 function isCorePackage(sourcePath: string): boolean {
-  return sourcePath.includes(PUBLIC_PACKAGE_PATH);
+  return CORE_PACKAGE.test(sourcePath);
 }
 
 function isPublicPackage(sourcePath: string): boolean {
-  return /\/packages\/(sdk|manifest|types|plugin-sdk)\//.test(sourcePath);
+  return PUBLIC_PACKAGE.test(sourcePath);
 }
 
 export function assertArchitecture({

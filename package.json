@@ -3,20 +3,20 @@
   "private": true,
   "type": "module",
   "version": "0.0.0",
-  "description": "Forge AI workflow platform monorepo (Phase 0 — specification)",
+  "description": "Forge AI workflow platform monorepo (Phase 0 \u2014 specification)",
   "packageManager": "pnpm@9.15.0",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "build": "turbo run build",
-    "docs:list": "ls -1 forge/docs/*.md",
+    "docs:list": "ls -1 docs/*.md",
     "lint": "biome check .",
-    "measure:phase1": "node forge/scripts/measure-phase1.mjs",
-    "security:licenses": "node forge/scripts/check-licenses.mjs",
-    "security:secrets": "node forge/scripts/check-secrets.mjs",
+    "measure:phase1": "node scripts/measure-phase1.mjs",
+    "security:licenses": "node scripts/check-licenses.mjs",
+    "security:secrets": "node scripts/check-secrets.mjs",
     "test": "vitest run",
-    "test:architecture": "vitest run forge/tooling/architecture.test.ts",
+    "test:architecture": "vitest run tooling/architecture.test.ts",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {

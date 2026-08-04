@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!forge/docs/**", "!**/dist/**"]
+    "includes": ["**", "!docs/**", "!**/dist/**"]
   },
   "linter": {
     "enabled": true,

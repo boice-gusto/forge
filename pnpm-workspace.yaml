@@ -1,5 +1,5 @@
-# Forge monorepo workspace (Phase 0 scaffold — packages not yet created)
+# Forge monorepo workspace. Layout flattened to root per ADR-001.
 packages:
-  - "forge/packages/*"
-  - "forge/apps/*"
-  - "forge/examples/*"
+  - "packages/*"
+  - "apps/*"
+  - "examples/*"

@@ -4,7 +4,7 @@ import { describe, expect, test } from "vitest";
 
 describe("Phase 1 measurement baseline", () => {
   test("emits every required measurement with percentile samples", () => {
-    const output = execFileSync("node", ["forge/scripts/measure-phase1.mjs"], {
+    const output = execFileSync("node", ["scripts/measure-phase1.mjs"], {
       cwd: process.cwd(),
       encoding: "utf8",
     });
