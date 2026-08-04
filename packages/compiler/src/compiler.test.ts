@@ -298,3 +298,154 @@ describe("branch exhaustiveness", () => {
     expect(compileWorkflow(branching)).toMatchObject({ ok: true });
   });
 });
+
+const withRoles = {
+  id: "acme.review",
+  version: "1.0.0",
+  grantedCapabilities: ["repo.read", "docs.write"],
+  roles: {
+    architect: {
+      version: "1.0.0",
+      capabilities: {
+        requires: ["repo.read", "docs.write"],
+        forbids: ["repo.merge"],
+      },
+      review: { weight: 1.5, blocking: false },
+    },
+    "security-reviewer": {
+      version: "1.0.0",
+      capabilities: { requires: ["repo.read"], forbids: ["repo.merge"] },
+      review: { weight: 2, blocking: true },
+      summon: { anyPathMatches: ["**/namedCredentials/**"] },
+    },
+  },
+  nodes: [
+    { id: "intake", kind: "input", schemaRef: "acme.review.input@1" },
+    {
+      id: "design",
+      kind: "agent",
+      promptRef: "acme.review.design@1",
+      role: "architect",
+    },
+    { id: "result", kind: "output", schemaRef: "acme.review.output@1" },
+  ],
+  edges: [
+    { from: "intake", to: "design" },
+    { from: "design", to: "result" },
+  ],
+} as const;
+
+describe("roles and capability closure", () => {
+  test("a roster within the closure compiles and is sealed into the IR", () => {
+    const result = compileWorkflow(withRoles);
+
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) throw new Error("Expected valid compilation.");
+    expect(Object.keys(result.value.ir.roles).sort()).toEqual([
+      "architect",
+      "security-reviewer",
+    ]);
+    expect(result.value.ir.grantedCapabilities).toEqual([
+      "docs.write",
+      "repo.read",
+    ]);
+    expect(result.value.ir.roles.architect?.review?.weight).toBe(1.5);
+    expect(
+      result.value.ir.roles["security-reviewer"]?.summon?.anyPathMatches,
+    ).toEqual(["**/namedCredentials/**"]);
+  });
+
+  test("WF_CAPABILITY_UNBOUND when a role exceeds the granted closure", () => {
+    const result = compileWorkflow({
+      ...withRoles,
+      roles: {
+        ...withRoles.roles,
+        builder: {
+          version: "1.0.0",
+          capabilities: { requires: ["repo.read", "prod.write"], forbids: [] },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    const diagnostic = result.diagnostics.find(
+      (entry) => entry.code === "WF_CAPABILITY_UNBOUND",
+    );
+    expect(diagnostic?.message).toContain("prod.write");
+    expect(diagnostic?.message).toContain("exceeds the granted closure");
+  });
+
+  test("WF_CAPABILITY_UNBOUND when a role requires what it forbids", () => {
+    const result = compileWorkflow({
+      ...withRoles,
+      roles: {
+        architect: {
+          version: "1.0.0",
+          capabilities: {
+            requires: ["repo.read", "repo.merge"],
+            forbids: ["repo.merge"],
+          },
+        },
+      },
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.message).toContain(
+      "both requires and forbids",
+    );
+  });
+
+  test("a designer cannot hold merge rights — it is a build failure, not a convention", () => {
+    const result = compileWorkflow({
+      ...withRoles,
+      roles: {
+        designer: {
+          version: "1.0.0",
+          capabilities: { requires: ["repo.merge"], forbids: [] },
+        },
+      },
+      nodes: withRoles.nodes.map((node) =>
+        node.id === "design" ? { ...node, role: "designer" } : node,
+      ),
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_CAPABILITY_UNBOUND");
+  });
+
+  test("WF_UNKNOWN_ROLE when a node names a role that is not declared", () => {
+    const result = compileWorkflow({
+      ...withRoles,
+      nodes: withRoles.nodes.map((node) =>
+        node.id === "design" ? { ...node, role: "phantom" } : node,
+      ),
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_UNKNOWN_ROLE");
+    expect(result.diagnostics[0]?.message).toContain("phantom");
+  });
+
+  test("changing a role moves the fingerprint", () => {
+    const base = compileWorkflow(withRoles);
+    const bumped = compileWorkflow({
+      ...withRoles,
+      roles: {
+        ...withRoles.roles,
+        architect: { ...withRoles.roles.architect, version: "1.0.1" },
+      },
+    });
+
+    if (!base.ok || !bumped.ok) throw new Error("Expected valid compilations.");
+    expect(base.value.fingerprint).not.toBe(bumped.value.fingerprint);
+  });
+
+  test("a workflow with no roles still compiles", () => {
+    const result = compileWorkflow(branching);
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) throw new Error("Expected valid compilation.");
+    expect(result.value.ir.roles).toEqual({});
+  });
+});

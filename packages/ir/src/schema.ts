@@ -23,6 +23,7 @@ export const IrNodeSchema = z.discriminatedUnion("kind", [
       id: NodeIdSchema,
       kind: z.literal("agent"),
       promptRef: z.string().min(1),
+      role: z.string().min(1).optional(),
     })
     .strict(),
   z
@@ -37,6 +38,7 @@ export const IrNodeSchema = z.discriminatedUnion("kind", [
       id: NodeIdSchema,
       kind: z.literal("tool"),
       skillRef: z.string().min(1),
+      role: z.string().min(1).optional(),
       // Naming an effect makes this node a side-effect carrier, which the
       // compiler then requires an approval gate for.
       effect: z.string().min(1).optional(),
@@ -93,6 +95,39 @@ export const IrNodeSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
+/**
+ * A role is a versioned asset with up to three faces (ADR-009): it produces
+ * artifacts, it reviews through a lens, and it may map to a human approver
+ * group. Core owns this contract and nothing more — the roster that fills it
+ * is a company concern and lives in a company package.
+ */
+export const RoleSchema = z
+  .object({
+    version: z.string().regex(/^\d+\.\d+\.\d+$/),
+    capabilities: z
+      .object({
+        requires: z.array(z.string().min(1)).default([]),
+        forbids: z.array(z.string().min(1)).default([]),
+      })
+      .strict()
+      .default({ requires: [], forbids: [] }),
+    review: z
+      .object({
+        weight: z.number().positive().default(1),
+        blocking: z.boolean().default(false),
+      })
+      .strict()
+      .optional(),
+    /** Specialty roles join a panel only when their predicate matches. */
+    summon: z
+      .object({ anyPathMatches: z.array(z.string().min(1)).min(1) })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type Role = z.infer<typeof RoleSchema>;
+
 export const IrEdgeSchema = z
   .object({
     from: NodeIdSchema,
@@ -107,6 +142,9 @@ export const ForgeIrSchema = z
     workflowVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
     // Every effect the workflow is permitted to cause, declared up front.
     sideEffects: z.array(z.string().min(1)).default([]),
+    roles: z.record(z.string().min(1), RoleSchema).default({}),
+    /** The capabilities policy grants, so closure is checkable statically. */
+    grantedCapabilities: z.array(z.string().min(1)).default([]),
     nodes: z.array(IrNodeSchema).min(2),
     edges: z.array(IrEdgeSchema),
   })
@@ -117,6 +155,9 @@ export const WorkflowSourceSchema = z
     id: z.string().min(1),
     version: z.string().regex(/^\d+\.\d+\.\d+$/),
     sideEffects: z.array(z.string().min(1)).default([]),
+    roles: z.record(z.string().min(1), RoleSchema).default({}),
+    /** The capabilities policy grants, so closure is checkable statically. */
+    grantedCapabilities: z.array(z.string().min(1)).default([]),
     nodes: z.array(IrNodeSchema).min(2),
     edges: z.array(IrEdgeSchema),
   })

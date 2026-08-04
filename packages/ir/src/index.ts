@@ -5,6 +5,8 @@ export {
   IrEdgeSchema,
   type IrNode,
   IrNodeSchema,
+  type Role,
+  RoleSchema,
   type WorkflowSource,
   WorkflowSourceSchema,
 } from "./schema.js";

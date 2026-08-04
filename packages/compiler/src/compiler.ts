@@ -4,6 +4,7 @@ import {
   type ForgeIr,
   type IrEdge,
   type IrNode,
+  type Role,
   WorkflowSourceSchema,
 } from "@forge/ir";
 import type { Diagnostic } from "@forge/types";
@@ -72,6 +73,58 @@ function reachableAvoiding(
 type ApprovalNode = Extract<IrNode, { kind: "approval" }>;
 type ToolNode = Extract<IrNode, { kind: "tool" }>;
 type BranchNode = Extract<IrNode, { kind: "branch" }>;
+
+/**
+ * Capability closure (007 §12, ADR-009). A role may not require a capability
+ * the policy closure never granted, nor one it forbids itself. This is what
+ * makes "the designer cannot merge code" a build failure rather than a
+ * convention.
+ */
+function checkRoles(
+  nodes: readonly IrNode[],
+  roles: Readonly<Record<string, Role>>,
+  granted: readonly string[],
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const closure = new Set(granted);
+
+  for (const node of nodes) {
+    if (!("role" in node) || node.role === undefined) continue;
+    if (roles[node.role] === undefined) {
+      diagnostics.push({
+        code: "WF_UNKNOWN_ROLE",
+        message: `Node "${node.id}" names role "${node.role}", which is not declared.`,
+        path: ["nodes", node.id],
+        suggestion: "Declare the role under roles, or correct the reference.",
+      });
+    }
+  }
+
+  for (const [name, role] of Object.entries(roles)) {
+    const forbids = new Set(role.capabilities.forbids);
+    for (const capability of role.capabilities.requires) {
+      if (forbids.has(capability)) {
+        diagnostics.push({
+          code: "WF_CAPABILITY_UNBOUND",
+          message: `Role "${name}" both requires and forbids "${capability}".`,
+          path: ["roles", name, "capabilities"],
+          suggestion: "A role cannot require a capability it forbids itself.",
+        });
+        continue;
+      }
+      if (!closure.has(capability)) {
+        diagnostics.push({
+          code: "WF_CAPABILITY_UNBOUND",
+          message: `Role "${name}" requires "${capability}", which exceeds the granted closure.`,
+          path: ["roles", name, "capabilities", "requires"],
+          suggestion: "Remove the capability, or grant it in policy.",
+        });
+      }
+    }
+  }
+
+  return diagnostics;
+}
 
 /**
  * A branch must be exhaustive and every arm must be labelled. An unlabelled
@@ -218,6 +271,14 @@ export function compileWorkflow(source: unknown): WorkflowCompilation {
     return diagnostic("WF_CYCLE", "Workflow graph must be acyclic.", ["edges"]);
   }
 
+  const roleDiagnostics = checkRoles(
+    parsed.data.nodes,
+    parsed.data.roles,
+    parsed.data.grantedCapabilities,
+  );
+  if (roleDiagnostics.length > 0)
+    return { ok: false, diagnostics: roleDiagnostics };
+
   const branchDiagnostics = checkBranches(parsed.data.nodes, parsed.data.edges);
   if (branchDiagnostics.length > 0)
     return { ok: false, diagnostics: branchDiagnostics };
@@ -234,6 +295,8 @@ export function compileWorkflow(source: unknown): WorkflowCompilation {
     workflowId: parsed.data.id,
     workflowVersion: parsed.data.version,
     sideEffects: [...parsed.data.sideEffects].sort(),
+    roles: parsed.data.roles,
+    grantedCapabilities: [...parsed.data.grantedCapabilities].sort(),
     nodes: [...parsed.data.nodes].sort((left, right) =>
       left.id.localeCompare(right.id),
     ),
