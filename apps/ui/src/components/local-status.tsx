@@ -27,7 +27,7 @@ export function LocalStatus({
         {dependencies.map((dependency) => (
           <li key={dependency.name} className="flex justify-between gap-4">
             <span>{dependency.name}</span>
-            <span aria-label={`${dependency.name} status`}>
+            <span role="status" aria-label={`${dependency.name} status`}>
               {dependency.status}
             </span>
             {safeDetail(dependency.detail) === undefined ? null : (

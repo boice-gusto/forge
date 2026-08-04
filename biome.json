@@ -6,12 +6,23 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!docs/**", "!**/dist/**"]
+    "includes": ["**", "!docs", "!**/dist", "!examples/**/*.html"]
   },
   "linter": {
     "enabled": true,
     "rules": {
-      "preset": "none"
+      "recommended": true,
+      "suspicious": {
+        "noExplicitAny": "error"
+      },
+      "complexity": {
+        "noExcessiveCognitiveComplexity": {
+          "level": "warn",
+          "options": {
+            "maxAllowedComplexity": 20
+          }
+        }
+      }
     }
   },
   "formatter": {

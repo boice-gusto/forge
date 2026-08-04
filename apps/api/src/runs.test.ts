@@ -206,3 +206,142 @@ describe("control plane", () => {
     expect(response.statusCode).toBe(404);
   });
 });
+
+describe("control plane edges", () => {
+  test("approvals for an unknown run is a 404", async () => {
+    const response = await app().inject({
+      method: "GET",
+      url: "/v1/runs/run_nope/approvals",
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  test("a stale decision is a 409 conflict, not a 500", async () => {
+    const server = app();
+    const started = (
+      await server.inject({
+        method: "POST",
+        url: "/v1/runs",
+        headers: AUTH,
+        payload: startBody,
+      })
+    ).json();
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/v1/runs/${started.runId}/approvals/approval_missing/decision`,
+      headers: AUTH,
+      payload: { decision: "approve" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe("DECISION_REFUSED");
+  });
+
+  test("a reject without a reason still records one", async () => {
+    const server = app();
+    const started = (
+      await server.inject({
+        method: "POST",
+        url: "/v1/runs",
+        headers: AUTH,
+        payload: startBody,
+      })
+    ).json();
+
+    const run = (
+      await server.inject({
+        method: "POST",
+        url: `/v1/runs/${started.runId}/approvals/${started.pendingApprovalId}/decision`,
+        headers: AUTH,
+        payload: { decision: "reject" },
+      })
+    ).json();
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("No reason given");
+  });
+
+  test("an edit reissues the gate instead of authorising", async () => {
+    const server = app();
+    const started = (
+      await server.inject({
+        method: "POST",
+        url: "/v1/runs",
+        headers: AUTH,
+        payload: startBody,
+      })
+    ).json();
+
+    const run = (
+      await server.inject({
+        method: "POST",
+        url: `/v1/runs/${started.runId}/approvals/${started.pendingApprovalId}/decision`,
+        headers: AUTH,
+        payload: { decision: "edit", patch: { copy: "reworded" } },
+      })
+    ).json();
+
+    expect(run.status).toBe("AWAITING_APPROVAL");
+    expect(run.pendingApprovalId).not.toBe(started.pendingApprovalId);
+    expect(run.performedEffects).toEqual([]);
+  });
+
+  test("a timeout decision fails the run", async () => {
+    const server = app();
+    const started = (
+      await server.inject({
+        method: "POST",
+        url: "/v1/runs",
+        headers: AUTH,
+        payload: startBody,
+      })
+    ).json();
+
+    const run = (
+      await server.inject({
+        method: "POST",
+        url: `/v1/runs/${started.runId}/approvals/${started.pendingApprovalId}/decision`,
+        headers: AUTH,
+        payload: { decision: "timeout" },
+      })
+    ).json();
+
+    expect(run.status).toBe("FAILED");
+  });
+
+  test("starting with a malformed workflow returns diagnostics", async () => {
+    const response = await app().inject({
+      method: "POST",
+      url: "/v1/runs",
+      headers: AUTH,
+      payload: { workflow: { nope: true } },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json().code).toBe("WORKFLOW_COMPILE_FAILED");
+  });
+
+  test("a run started without policy uses the shared stack and is retrievable", async () => {
+    const server = app();
+    const started = (
+      await server.inject({
+        method: "POST",
+        url: "/v1/runs",
+        headers: AUTH,
+        payload: { workflow: fixture.workflow },
+      })
+    ).json();
+
+    const fetched = await server.inject({
+      method: "GET",
+      url: `/v1/runs/${started.runId}`,
+      headers: AUTH,
+    });
+
+    expect(fetched.statusCode).toBe(200);
+    expect(fetched.json().runId).toBe(started.runId);
+  });
+});

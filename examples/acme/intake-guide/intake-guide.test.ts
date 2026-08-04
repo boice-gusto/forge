@@ -9,7 +9,7 @@ describe("intake guide", () => {
     );
 
     expect(html).toContain('class="deck"');
-    expect(html.match(/class="slide(?: |\")/g)?.length).toBeGreaterThanOrEqual(
+    expect(html.match(/class="slide(?: |")/g)?.length).toBeGreaterThanOrEqual(
       8,
     );
 
@@ -40,7 +40,7 @@ describe("intake guide", () => {
       "../intake/jira.fixture.ts",
       "../intake/intake-routing.acceptance.test.ts",
     ]) {
-      expect(html).toContain(`href=\"${link}\"`);
+      expect(html).toContain(`href="${link}"`);
     }
   });
 });

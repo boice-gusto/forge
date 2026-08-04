@@ -5,7 +5,6 @@ import type {
   EnginePlan,
   EngineRunContext,
   GraphEnginePort,
-  JudgeVerdict,
 } from "@forge/ports";
 
 /**
@@ -97,6 +96,91 @@ function gateIndex(ir: ForgeIr): ReadonlyMap<string, readonly string[]> {
   return index;
 }
 
+type StepOutcome =
+  | "continue"
+  | Extract<EngineExecutionResult, { kind: "failed" }>
+  | Omit<Extract<EngineExecutionResult, { kind: "interrupted" }>, "visited">;
+
+const failed = (
+  nodeId: string,
+  reason: string,
+  retryable: boolean,
+): StepOutcome => ({ kind: "failed", nodeId, reason, retryable });
+
+const messageOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+/**
+ * One node, one outcome. Each kind owns its failure semantics: an agent may be
+ * retried, a judge or a sandbox may not, and an unauthorised effect interrupts
+ * rather than failing.
+ */
+async function step(
+  node: IrNode,
+  context: EngineRunContext,
+  authorised: AuthorisedEffects,
+  materialized: MaterializedPlan,
+): Promise<StepOutcome> {
+  switch (node.kind) {
+    case "agent":
+      try {
+        await context.invokeAgent(node.id, node.promptRef, node.role);
+        return "continue";
+      } catch (error) {
+        return failed(node.id, messageOf(error), true);
+      }
+
+    case "judge":
+      try {
+        const verdict = await context.judge(node.id, node.judgeRef);
+        return verdict === "pass"
+          ? "continue"
+          : failed(node.id, `judge verdict ${verdict}`, false);
+      } catch (error) {
+        // A judge that errors escalates; it never passes.
+        return failed(node.id, `judge errored: ${messageOf(error)}`, false);
+      }
+
+    case "sandbox":
+      try {
+        await context.enterSandbox(node.id, node.profile);
+        return "continue";
+      } catch (error) {
+        // No host fallback. An unavailable sandbox stops the walk.
+        return failed(node.id, messageOf(error), false);
+      }
+
+    case "policy_check":
+      try {
+        await context.assertCapability(node.id, node.capability);
+        return "continue";
+      } catch (error) {
+        return failed(node.id, messageOf(error), false);
+      }
+
+    case "tool": {
+      if (node.effect === undefined) return "continue";
+      if (!authorised.has(node.id)) {
+        return {
+          kind: "interrupted",
+          nodeId: node.id,
+          effect: node.effect,
+          gateIds: materialized.gatesFor.get(node.id) ?? [],
+        };
+      }
+      try {
+        await context.perform(node.id, node.effect);
+        return "continue";
+      } catch (error) {
+        return failed(node.id, messageOf(error), true);
+      }
+    }
+
+    default:
+      return "continue";
+  }
+}
+
 export function createMemoryGraphEngine(): GraphEnginePort {
   return {
     async materialize(ir: unknown): Promise<EnginePlan> {
@@ -139,96 +223,10 @@ export function createMemoryGraphEngine(): GraphEnginePort {
       const visited: string[] = [];
       for (const node of materialized.order) {
         visited.push(node.id);
-
-        if (node.kind === "agent") {
-          try {
-            await context.invokeAgent(node.id, node.promptRef, node.role);
-          } catch (error) {
-            return {
-              kind: "failed",
-              nodeId: node.id,
-              reason: error instanceof Error ? error.message : String(error),
-              retryable: true,
-            };
-          }
-          continue;
-        }
-
-        if (node.kind === "judge") {
-          let verdict: JudgeVerdict;
-          try {
-            verdict = await context.judge(node.id, node.judgeRef);
-          } catch (error) {
-            // A judge that errors escalates; it never passes.
-            return {
-              kind: "failed",
-              nodeId: node.id,
-              reason: `judge errored: ${error instanceof Error ? error.message : String(error)}`,
-              retryable: false,
-            };
-          }
-          if (verdict !== "pass") {
-            return {
-              kind: "failed",
-              nodeId: node.id,
-              reason: `judge verdict ${verdict}`,
-              retryable: false,
-            };
-          }
-          continue;
-        }
-
-        if (node.kind === "sandbox") {
-          try {
-            await context.enterSandbox(node.id, node.profile);
-          } catch (error) {
-            // No host fallback. An unavailable sandbox stops the walk.
-            return {
-              kind: "failed",
-              nodeId: node.id,
-              reason: error instanceof Error ? error.message : String(error),
-              retryable: false,
-            };
-          }
-          continue;
-        }
-
-        if (node.kind === "policy_check") {
-          try {
-            await context.assertCapability(node.id, node.capability);
-          } catch (error) {
-            return {
-              kind: "failed",
-              nodeId: node.id,
-              reason: error instanceof Error ? error.message : String(error),
-              retryable: false,
-            };
-          }
-          continue;
-        }
-
-        if (node.kind !== "tool" || node.effect === undefined) continue;
-
-        if (!authorised.has(node.id)) {
-          return {
-            kind: "interrupted",
-            nodeId: node.id,
-            effect: node.effect,
-            gateIds: materialized.gatesFor.get(node.id) ?? [],
-            visited,
-          };
-        }
-
-        try {
-          await context.perform(node.id, node.effect);
-        } catch (error) {
-          return {
-            kind: "failed",
-            nodeId: node.id,
-            reason: error instanceof Error ? error.message : String(error),
-            retryable: true,
-          };
-        }
+        const outcome = await step(node, context, authorised, materialized);
+        if (outcome === "continue") continue;
+        // `failed` carries no visited list in the port contract; `interrupted` does.
+        return outcome.kind === "failed" ? outcome : { ...outcome, visited };
       }
 
       return { kind: "succeeded", visited };

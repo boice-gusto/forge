@@ -145,13 +145,19 @@ in `packages/`, it belongs in a company repository instead.
 ## Verifying
 
 ```sh
-pnpm lint && pnpm typecheck && pnpm test && pnpm test:architecture
-pnpm security:secrets && pnpm security:licenses && pnpm measure:phase1
+pnpm lint && pnpm typecheck && pnpm test && pnpm test:coverage
+pnpm test:architecture && pnpm security:secrets && pnpm security:licenses
+pnpm measure:phase1
 ```
 
-All seven must exit `0` — that is exactly what CI runs, in that order. Run the whole
+All eight must exit `0` — that is exactly what CI runs, in that order. Run the whole
 sequence before claiming a change is done; `pnpm test` alone has passed while
 `typecheck` was broken.
+
+`pnpm lint` runs Biome's recommended rules plus `noExplicitAny`, not formatting
+alone. `pnpm test:coverage` enforces per-package floors, highest on `compiler` and
+`runtime` — a new package cannot arrive untested, and a regression is reported
+against the package that caused it rather than diluted into a global average.
 
 ## Where to look
 

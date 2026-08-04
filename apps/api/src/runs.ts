@@ -5,6 +5,7 @@ import {
 } from "@forge/composition";
 import type { PanelDefinition, Vote } from "@forge/panel";
 import type { PolicyRule } from "@forge/policy-memory";
+import type { ApprovalDecision } from "@forge/ports";
 import type { FastifyInstance } from "fastify";
 
 /**
@@ -31,6 +32,22 @@ interface DecisionBody {
   readonly decision?: "approve" | "reject" | "edit" | "timeout";
   readonly reason?: string;
   readonly patch?: unknown;
+}
+
+/** Map the wire shape onto a decision, or nothing if it is unrecognised. */
+function toDecision(body: DecisionBody): ApprovalDecision | undefined {
+  switch (body.decision) {
+    case "approve":
+      return { kind: "approve" };
+    case "reject":
+      return { kind: "reject", reason: body.reason ?? "No reason given." };
+    case "edit":
+      return { kind: "edit", patch: body.patch };
+    case "timeout":
+      return { kind: "timeout" };
+    default:
+      return undefined;
+  }
 }
 
 export interface RunRoutesOptions {
@@ -147,20 +164,7 @@ export function registerRunRoutes(
       const stack = stacks.get(request.params.runId) ?? shared;
       const body = (request.body ?? {}) as DecisionBody;
 
-      const decision =
-        body.decision === "reject"
-          ? ({
-              kind: "reject",
-              reason: body.reason ?? "No reason given.",
-            } as const)
-          : body.decision === "edit"
-            ? ({ kind: "edit", patch: body.patch } as const)
-            : body.decision === "timeout"
-              ? ({ kind: "timeout" } as const)
-              : body.decision === "approve"
-                ? ({ kind: "approve" } as const)
-                : undefined;
-
+      const decision = toDecision(body);
       if (decision === undefined) {
         return reply.code(422).send({
           status: "invalid",

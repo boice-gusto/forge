@@ -13,7 +13,7 @@ const findings = trackedFiles.flatMap((file) => {
   // `git ls-files` lists tracked paths, which includes files deleted in the
   // working tree but not yet staged. Reading one throws, and a scan that
   // crashes is a scan that did not run — skip what cannot be read.
-  let content;
+  let content: string;
   try {
     content = readFileSync(file, "utf8");
   } catch {

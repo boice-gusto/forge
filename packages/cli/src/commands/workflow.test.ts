@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { describe, expect, test } from "vitest";
 
 import { runCli } from "../program.js";
@@ -66,5 +68,65 @@ describe("forge workflow", () => {
     expect(result.exitCode).toBe(3);
     expect(result.stderr).toContain("workflow compile");
     expect(result.stderr).toContain("workflow run");
+  });
+});
+
+describe("forge workflow — failure reporting", () => {
+  test("a compile failure prints each diagnostic with its code", async () => {
+    const path = `${tmpdir()}/forge-broken-workflow.json`;
+    writeFileSync(
+      path,
+      JSON.stringify({
+        workflow: {
+          id: "broken",
+          version: "1.0.0",
+          nodes: [
+            { id: "a", kind: "input", schemaRef: "s@1" },
+            { id: "b", kind: "output", schemaRef: "s@1" },
+          ],
+          edges: [
+            { from: "a", to: "b" },
+            { from: "b", to: "a" },
+          ],
+        },
+      }),
+    );
+
+    const asJson = await runCli([
+      "workflow",
+      "compile",
+      "--input",
+      path,
+      "--json",
+    ]);
+    expect(asJson.exitCode).toBe(2);
+    expect(JSON.parse(asJson.stdout).diagnostics[0].code).toBe("WF_CYCLE");
+
+    const human = await runCli(["workflow", "compile", "--input", path]);
+    expect(human.stderr).toContain("WF_CYCLE");
+    expect(human.stderr).toContain("0 artifacts produced");
+  });
+
+  test("run reports a compile failure rather than starting", async () => {
+    const path = `${tmpdir()}/forge-broken-workflow.json`;
+    const result = await runCli(["workflow", "run", "--input", path, "--json"]);
+
+    expect(result.exitCode).toBe(2);
+    expect(JSON.parse(result.stdout).code).toBe("WORKFLOW_COMPILE_FAILED");
+  });
+
+  test("a file that is not JSON is reported, not thrown", async () => {
+    const path = `${tmpdir()}/forge-not-json.json`;
+    writeFileSync(path, "this is not json");
+    const result = await runCli([
+      "workflow",
+      "compile",
+      "--input",
+      path,
+      "--json",
+    ]);
+
+    expect(result.exitCode).toBe(2);
+    expect(JSON.parse(result.stdout).code).toBe("WORKFLOW_INPUT_UNREADABLE");
   });
 });

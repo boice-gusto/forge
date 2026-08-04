@@ -78,3 +78,39 @@ describe("memory queue", () => {
     expect(seen).toHaveLength(1);
   });
 });
+
+describe("queue contract edges", () => {
+  test("reports itself available", async () => {
+    expect(await createMemoryQueue().health()).toEqual({ available: true });
+  });
+
+  test("a cancel job is keyed by run, so a repeat cancel is one operation", async () => {
+    const queue = createMemoryQueue();
+    let handled = 0;
+    await queue.subscribe(async () => {
+      handled += 1;
+    });
+    await queue.enqueue({ type: "workflow.cancel", runId: "run_1" });
+    await queue.enqueue({ type: "workflow.cancel", runId: "run_1" });
+
+    expect(handled).toBe(1);
+  });
+
+  test("enqueue returns the operation key, so a caller can correlate", async () => {
+    const queue = createMemoryQueue();
+    const key = await queue.enqueue({
+      type: "workflow.cancel",
+      runId: "run_7",
+    });
+
+    expect(key).toBe("cancel:run_7");
+  });
+
+  test("depth reflects work waiting for a subscriber", async () => {
+    const queue = createMemoryQueue();
+    await queue.enqueue(execute(1));
+    await queue.enqueue(execute(2));
+
+    expect(await queue.depth()).toBe(2);
+  });
+});
