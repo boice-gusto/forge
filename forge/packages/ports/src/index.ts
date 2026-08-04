@@ -4,6 +4,24 @@ export {
   createApprovalProposal,
 } from "./approval.js";
 export {
+  type ClockPort,
+  createFixedClock,
+  createSequentialIds,
+  type IdPort,
+} from "./clock.js";
+export {
+  type AuthorisedEffects,
+  type EngineExecutionResult,
+  type EnginePlan,
+  type EngineRunContext,
+  type GraphEnginePort,
+} from "./engine.js";
+export {
+  type PolicyDecision,
+  type PolicyPort,
+  type PolicyRequest,
+} from "./policy.js";
+export {
   type CreateProviderSessionInput,
   type ProviderCapability,
   type ProviderEvent,

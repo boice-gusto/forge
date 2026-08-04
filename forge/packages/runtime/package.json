@@ -1,0 +1,22 @@
+{
+  "name": "@forge/runtime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@forge/checkpoint-memory": "workspace:*",
+    "@forge/ir": "workspace:*",
+    "@forge/ports": "workspace:*",
+    "@forge/types": "workspace:*",
+    "@forge/compiler": "workspace:*",
+    "@forge/engine-memory": "workspace:*",
+    "@forge/policy-memory": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  }
+}
