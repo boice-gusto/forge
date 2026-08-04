@@ -419,3 +419,83 @@ describe("durability and binding", () => {
     expect(dispatched).toEqual([]);
   });
 });
+
+const guarded = {
+  id: "acme.guarded",
+  version: "1.0.0",
+  sideEffects: ["slack.post"],
+  nodes: [
+    { id: "intake", kind: "input", schemaRef: "acme.guarded.input@1" },
+    { id: "assert", kind: "policy_check", capability: "slack.write" },
+    {
+      id: "gate",
+      kind: "approval",
+      gateSchemaRef: "acme.guarded.gate@1",
+      gates: ["publish"],
+    },
+    {
+      id: "publish",
+      kind: "tool",
+      skillRef: "slack.post@1",
+      effect: "slack.post",
+    },
+    { id: "result", kind: "output", schemaRef: "acme.guarded.output@1" },
+  ],
+  edges: [
+    { from: "intake", to: "assert" },
+    { from: "assert", to: "gate" },
+    { from: "gate", to: "publish" },
+    { from: "publish", to: "result" },
+  ],
+} as const;
+
+function guardedArtifact(): SealedArtifact {
+  const compiled = compileWorkflow(guarded);
+  if (!compiled.ok) throw new Error("Fixture must compile.");
+  return {
+    workflowId: compiled.value.ir.workflowId,
+    fingerprint: compiled.value.fingerprint,
+    ir: compiled.value.ir,
+  };
+}
+
+describe("policy_check is enforced at runtime", () => {
+  test("a granted capability lets the walk continue to the gate", async () => {
+    const { runtime, dispatched } = harness();
+    const run = await runtime.start({
+      artifact: guardedArtifact(),
+      capabilities: ["slack.write"],
+    });
+
+    expect(run.status).toBe("AWAITING_APPROVAL");
+    expect(dispatched).toEqual([]);
+  });
+
+  test("an ungranted capability fails the run at that node, before any gate", async () => {
+    const { runtime, dispatched } = harness(REQUIRE_APPROVAL, [
+      "something.else",
+    ]);
+    const run = await runtime.start({
+      artifact: guardedArtifact(),
+      capabilities: [],
+    });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("assert");
+    expect(run.error).toContain("slack.write");
+    expect(run.pendingApprovalId).toBeUndefined();
+    expect(dispatched).toEqual([]);
+  });
+
+  test("a failed assertion is not retryable and leaves no checkpoint", async () => {
+    const { runtime, checkpoints } = harness(REQUIRE_APPROVAL, [
+      "something.else",
+    ]);
+    const run = await runtime.start({
+      artifact: guardedArtifact(),
+      capabilities: [],
+    });
+
+    expect(await checkpoints.listByRun(run.runId)).toEqual([]);
+  });
+});

@@ -161,3 +161,140 @@ describe("side-effect gating", () => {
     expect(withEffect.value.fingerprint).not.toBe(withMore.value.fingerprint);
   });
 });
+
+const branching = {
+  id: "acme.triage",
+  version: "1.0.0",
+  nodes: [
+    { id: "intake", kind: "input", schemaRef: "acme.triage.input@1" },
+    {
+      id: "normalise",
+      kind: "transform",
+      transformRef: "acme.triage.normalise@1",
+    },
+    { id: "isolate", kind: "sandbox", profile: "acme.triage.sandbox@1" },
+    { id: "fanout", kind: "parallel", branches: ["normalise", "isolate"] },
+    { id: "route", kind: "branch", conditionIds: ["urgent", "routine"] },
+    { id: "fast", kind: "agent", promptRef: "acme.triage.fast@1" },
+    { id: "slow", kind: "agent", promptRef: "acme.triage.slow@1" },
+    { id: "result", kind: "output", schemaRef: "acme.triage.output@1" },
+  ],
+  edges: [
+    { from: "intake", to: "fanout" },
+    { from: "fanout", to: "normalise" },
+    { from: "fanout", to: "isolate" },
+    { from: "normalise", to: "route" },
+    { from: "isolate", to: "route" },
+    { from: "route", to: "fast", conditionId: "urgent" },
+    { from: "route", to: "slow", conditionId: "routine" },
+    { from: "fast", to: "result" },
+    { from: "slow", to: "result" },
+  ],
+} as const;
+
+describe("the full node taxonomy", () => {
+  test("transform, parallel, sandbox and branch all compile", () => {
+    const result = compileWorkflow(branching);
+
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) throw new Error("Expected valid compilation.");
+    expect(result.value.ir.nodes.map((node) => node.kind).sort()).toEqual([
+      "agent",
+      "agent",
+      "branch",
+      "input",
+      "output",
+      "parallel",
+      "sandbox",
+      "transform",
+    ]);
+  });
+
+  test("a policy_check node compiles and keeps its capability", () => {
+    const result = compileWorkflow({
+      ...branching,
+      nodes: [
+        ...branching.nodes,
+        { id: "assert", kind: "policy_check", capability: "acme.triage.read" },
+      ],
+      edges: [...branching.edges, { from: "intake", to: "assert" }],
+    });
+
+    if (!result.ok) throw new Error("Expected valid compilation.");
+    const node = result.value.ir.nodes.find((entry) => entry.id === "assert");
+    expect(node).toEqual({
+      id: "assert",
+      kind: "policy_check",
+      capability: "acme.triage.read",
+    });
+  });
+
+  test("an unknown node kind is rejected rather than passed through", () => {
+    const result = compileWorkflow({
+      ...branching,
+      nodes: [...branching.nodes, { id: "mystery", kind: "teleport" }],
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_INVALID");
+  });
+});
+
+describe("branch exhaustiveness", () => {
+  test("WF_UNTYPED_EDGE when an arm carries no conditionId", () => {
+    const result = compileWorkflow({
+      ...branching,
+      edges: branching.edges.map((edge) =>
+        edge.from === "route" && edge.to === "fast"
+          ? { from: "route", to: "fast" }
+          : edge,
+      ),
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_UNTYPED_EDGE");
+    expect(result.diagnostics[0]?.message).toContain("without a conditionId");
+  });
+
+  test("WF_UNTYPED_EDGE when an arm uses a condition the branch never declared", () => {
+    const result = compileWorkflow({
+      ...branching,
+      edges: branching.edges.map((edge) =>
+        edge.from === "route" && edge.to === "fast"
+          ? { from: "route", to: "fast", conditionId: "invented" }
+          : edge,
+      ),
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    const codes = result.diagnostics.map((entry) => entry.code);
+    expect(codes).toContain("WF_UNTYPED_EDGE");
+    expect(
+      result.diagnostics.some((entry) => entry.message.includes("invented")),
+    ).toBe(true);
+  });
+
+  test("WF_UNTYPED_EDGE when a declared condition has no arm", () => {
+    const result = compileWorkflow({
+      ...branching,
+      edges: branching.edges.filter(
+        (edge) => !(edge.from === "route" && edge.to === "slow"),
+      ),
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(
+      result.diagnostics.some((entry) =>
+        entry.message.includes("not exhaustive"),
+      ),
+    ).toBe(true);
+  });
+
+  test("an exhaustive branch with every arm labelled is accepted", () => {
+    expect(compileWorkflow(branching)).toMatchObject({ ok: true });
+  });
+});
