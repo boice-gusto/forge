@@ -42,7 +42,22 @@ const VENDOR_LEAKS = [
   "e2b",
 ] as const;
 
-const PRIVATE_ADAPTER_PREFIX = "@forge/adapters-";
+/**
+ * Adapter package prefixes. 004 names them `@forge/adapters-*`; this repository
+ * names them by family (`provider-mock`, `policy-memory`, …). The closed public
+ * set already refuses all of them, but keying only on `adapters-` meant the
+ * specific, more useful error never fired for the adapters that actually exist.
+ */
+const PRIVATE_ADAPTER_PREFIXES = [
+  "@forge/adapters-",
+  "@forge/provider-",
+  "@forge/engine-",
+  "@forge/policy-",
+  "@forge/approval-",
+  "@forge/checkpoint-",
+  "@forge/queue-",
+  "@forge/observability-",
+] as const;
 const FORGE_SCOPE = "@forge/";
 
 // Match `packages/` whether or not a leading segment precedes it, so the
@@ -102,7 +117,10 @@ export function assertArchitecture({
 
   // Checked before the general internal-import rule so a developer sees the
   // more specific failure.
-  if (fromPublic && importedPath.startsWith(PRIVATE_ADAPTER_PREFIX)) {
+  if (
+    fromPublic &&
+    PRIVATE_ADAPTER_PREFIXES.some((prefix) => importedPath.startsWith(prefix))
+  ) {
     throw new Error("FORGE_PRIVATE_ADAPTER_IMPORT");
   }
 

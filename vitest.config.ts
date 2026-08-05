@@ -28,9 +28,6 @@ export default defineConfig({
         "**/src/browser.tsx",
         "**/src/measure-*.ts",
         "**/src/measure-*.tsx",
-        // The UI is covered by Playwright in Phase 4 (015). Counting it here
-        // would report a number that no test is defending.
-        "apps/ui/**",
       ],
       thresholds: {
         lines: 94,
@@ -93,6 +90,34 @@ export default defineConfig({
           functions: 100,
           branches: 100,
           statements: 100,
+        },
+        // A conformance suite proves both provider adapters, so nothing in
+        // either is unexercised.
+        "packages/provider-mock/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 100,
+          statements: 100,
+        },
+        "packages/provider-replay/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 100,
+          statements: 100,
+        },
+        "packages/provider-conformance/src/**": {
+          lines: 99,
+          functions: 100,
+          branches: 85,
+          statements: 99,
+        },
+        // The UI is tested with Vitest rather than deferred to a Playwright
+        // suite that does not exist, so it is measured like everything else.
+        "apps/ui/src/**": {
+          lines: 98,
+          functions: 95,
+          branches: 93,
+          statements: 97,
         },
         // The loader decides what a company package is allowed to become.
         "packages/company/src/**": {

@@ -24,8 +24,8 @@ describe("architecture rules", () => {
       "@forge/compiler",
       "@forge/ir",
       "@forge/ports",
-      "@forge/engine-memory",
       "@forge/composition",
+      "@forge/company",
     ]) {
       expect(() =>
         assertArchitecture({
@@ -33,6 +33,29 @@ describe("architecture rules", () => {
           importedPath: internal,
         }),
       ).toThrow("FORGE_INTERNAL_IMPORT");
+    }
+  });
+
+  test("an adapter import reports the adapter rule, not the general one", () => {
+    // The adapters here are named by family rather than `@forge/adapters-*`,
+    // so the specific message has to key on the names that actually exist.
+    for (const adapter of [
+      "@forge/adapters-langgraph",
+      "@forge/provider-mock",
+      "@forge/provider-replay",
+      "@forge/engine-memory",
+      "@forge/policy-memory",
+      "@forge/approval-memory",
+      "@forge/checkpoint-memory",
+      "@forge/queue-memory",
+      "@forge/observability-memory",
+    ]) {
+      expect(() =>
+        assertArchitecture({
+          sourcePath: "packages/sdk/src/client.ts",
+          importedPath: adapter,
+        }),
+      ).toThrow("FORGE_PRIVATE_ADAPTER_IMPORT");
     }
   });
 
