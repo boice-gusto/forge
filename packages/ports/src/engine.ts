@@ -27,20 +27,14 @@ export type EngineExecutionResult =
 
 export interface EngineRunContext {
   readonly runId: string;
-  /**
-   * Performing an effect is the engine asking the host to do something real.
-   * The runtime only supplies a sink for effects it has authorised.
-   */
+  /** Do something real. Only supplied for effects the runtime authorised. */
   perform(nodeId: string, effect: string): Promise<void>;
-  /**
-   * Assert a capability before a privileged step. Rejecting stops the walk;
-   * the engine never proceeds past a failed assertion.
-   */
+  /** Assert a capability before a privileged step. Rejecting stops the walk. */
   assertCapability(nodeId: string, capability: string): Promise<void>;
   /**
-   * Choose which arm of a branch this run takes. Must return one of
-   * `conditionIds`; anything else stops the walk. There is no "run every arm"
-   * fallback — a workflow that says *block or publish* must not do both.
+   * Must return one of `conditionIds`; anything else stops the walk. There is
+   * no "run every arm" fallback — a workflow that says *block or publish* must
+   * not do both.
    */
   chooseBranch(
     nodeId: string,
@@ -61,8 +55,8 @@ export interface EngineRunContext {
 export interface GraphEnginePort {
   materialize(ir: unknown): Promise<EnginePlan>;
   /**
-   * Execute from the start. Pre-interrupt nodes may re-run on a later attempt
-   * (006 §8), so execution must be idempotent up to the first unauthorised
+   * Executes from the start every time, so a later attempt re-walks
+   * pre-interrupt nodes (006 §8): idempotent up to the first unauthorised
    * effect.
    */
   execute(

@@ -1,13 +1,10 @@
 import type { Role } from "@forge/ir";
 
 /**
- * Panel composition (ADR-009).
- *
- * A review panel is a consequence of what changed, not a constant. Standing
- * roles sit on every panel; specialty roles are summoned when their predicate
- * matches. This is the routing idea CODEOWNERS already applies to human
- * reviewers, extended to the agent panel — so a documentation change draws a
- * small panel and a change touching credentials draws a larger one.
+ * Panel composition (ADR-009). A review panel is a consequence of what changed,
+ * not a constant: standing roles sit on every panel, specialty roles are
+ * summoned when their predicate matches — the routing idea CODEOWNERS applies
+ * to human reviewers, extended to the agent panel.
  *
  * Pure: roles and a change description in, a panel out.
  */

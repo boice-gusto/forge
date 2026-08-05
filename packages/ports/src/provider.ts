@@ -42,10 +42,9 @@ export interface ProviderExecutionRequest {
 export interface ProviderPort {
   readonly providerId: string;
   /**
-   * What this adapter can actually do. The capability intersection in 008 §4
-   * is only as good as this list: an adapter that quietly accepts work it
-   * cannot perform turns a compile-time check into a runtime surprise, so a
-   * request naming a capability absent from here must be refused.
+   * The capability intersection in 008 §4 is only as good as this list, so a
+   * request naming a capability absent from it must be refused rather than
+   * quietly accepted and failed at runtime.
    */
   readonly capabilities: readonly ProviderCapability[];
   createSession(input: CreateProviderSessionInput): Promise<ProviderSession>;

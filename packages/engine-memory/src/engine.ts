@@ -8,16 +8,13 @@ import type {
 } from "@forge/ports";
 
 /**
- * In-memory graph engine.
+ * In-memory graph engine. Deliberately not LangGraph: ADR-002 puts a vendor
+ * engine behind `GraphEnginePort`, and this adapter lets the runtime be built
+ * and proven against the port before that one lands.
  *
- * Deliberately not LangGraph. ADR-002 puts a vendor engine behind
- * `GraphEnginePort`; this adapter exists so the runtime can be built and
- * proven against the port before that adapter lands, and so the conformance
- * expectations are written down as executable tests rather than prose.
- *
- * Execution is a topological walk from the input node. When it reaches a
- * side-effect node the runtime has not authorised, it stops and reports an
- * interrupt — it never performs the effect speculatively.
+ * Execution is a topological walk from the input node. Reaching a side-effect
+ * node the runtime has not authorised stops the walk and reports an interrupt;
+ * the effect is never performed speculatively.
  */
 
 interface MaterializedPlan {
@@ -125,11 +122,9 @@ const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 /**
- * Verdict routing (007 §10). A workflow may handle its own review outcomes by
- * declaring an arm per verdict. What it may not do is continue on a verdict it
- * declared no arm for: with no arm the run stops, so a `review` never arrives
- * on the `pass` path. A judge that declares no arms keeps the older, narrower
- * rule — only `pass` continues.
+ * Verdict routing (007 §10). A verdict with no declared arm stops the run, so a
+ * `review` never arrives on the `pass` path. A judge that declares no arms
+ * keeps the older, narrower rule — only `pass` continues.
  */
 async function judgeStep(
   node: Extract<IrNode, { kind: "judge" }>,
@@ -175,9 +170,8 @@ async function step(
       return judgeStep(node, context);
 
     case "branch": {
-      // Every arm running is not a branch, it is a fan-out: a workflow that
-      // says *block or publish* would do both. An arm the host cannot choose
-      // stops the walk rather than defaulting to one.
+      // An undeclared or unchoosable arm stops the walk rather than defaulting
+      // to one: a workflow that says *block or publish* must not do both.
       try {
         const arm = await context.chooseBranch(node.id, node.conditionIds);
         return node.conditionIds.includes(arm)
@@ -229,9 +223,8 @@ async function step(
 }
 
 /**
- * Kill every arm out of `nodeId` the verdict did not take. An unlabelled arm
- * out of a routing judge is one of them — the compiler refuses that shape, and
- * the engine must not walk it if a hand-built IR carries it anyway.
+ * Kill every arm out of `nodeId` the verdict did not take, unlabelled ones
+ * included — the compiler refuses that shape, but a hand-built IR may carry it.
  */
 function pruneArms(
   ir: ForgeIr,
@@ -249,10 +242,8 @@ export function createMemoryGraphEngine(): GraphEnginePort {
   return {
     async materialize(ir: unknown): Promise<EnginePlan> {
       const typed = ir as ForgeIr;
-      // Execution follows edges. A node with no path from the entry node is
-      // not "later in the order" — it is not part of this workflow's
-      // execution at all, and running it would let graph shape decide what
-      // happens instead of the graph.
+      // Execution follows edges: a node with no path from the entry node is not
+      // "later in the order", it is not part of this run at all.
       const entry =
         typed.nodes.find((node) => node.kind === "input") ?? typed.nodes[0];
       const reachable =
@@ -261,7 +252,7 @@ export function createMemoryGraphEngine(): GraphEnginePort {
           : reachableFrom(typed, entry.id);
 
       const token = {} as EnginePlan;
-      plans.set(token as unknown as object, {
+      plans.set(token, {
         ir: typed,
         entryId: entry?.id ?? "",
         order: topologicalOrder(typed).filter((node) => reachable.has(node.id)),
@@ -275,7 +266,7 @@ export function createMemoryGraphEngine(): GraphEnginePort {
       context: EngineRunContext,
       authorised: AuthorisedEffects,
     ): Promise<EngineExecutionResult> {
-      const materialized = plans.get(plan as unknown as object);
+      const materialized = plans.get(plan);
       if (materialized === undefined) {
         return {
           kind: "failed",
@@ -290,8 +281,8 @@ export function createMemoryGraphEngine(): GraphEnginePort {
       let live = reachableFrom(materialized.ir, materialized.entryId);
 
       for (const node of materialized.order) {
-        // An arm a judge did not take is not "skipped": it is no longer part
-        // of this run, exactly like a node the graph never reaches.
+        // A pruned arm is not "skipped": it is no longer part of this run,
+        // exactly like a node the graph never reaches.
         if (!live.has(node.id)) continue;
         visited.push(node.id);
         const outcome = await step(node, context, authorised, materialized);

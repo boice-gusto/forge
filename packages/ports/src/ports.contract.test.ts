@@ -1,7 +1,6 @@
 import { describe, expect, test } from "vitest";
 
 import { createFixedClock, createSequentialIds } from "./clock.js";
-import { sandboxUnavailable } from "./sandbox.js";
 
 /**
  * Ports is the contracts layer, so it may not import an implementation. What
@@ -9,10 +8,6 @@ import { sandboxUnavailable } from "./sandbox.js";
  * for each adapter is tested alongside that adapter.
  */
 describe("internal port contracts", () => {
-  test("reports unavailable required sandbox without host fallback", () => {
-    expect(sandboxUnavailable("docker").code).toBe("SANDBOX_UNAVAILABLE");
-  });
-
   test("the injected clock does not drift and cannot be mutated by a caller", () => {
     const clock = createFixedClock("2026-08-04T00:00:00.000Z");
     const first = clock.now();

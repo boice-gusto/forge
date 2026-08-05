@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { ForgeIr } from "@forge/ir";
+import type { ForgeIr, Role } from "@forge/ir";
 import {
   composePanel,
   type PanelDefinition,
@@ -13,6 +13,7 @@ import type {
   ApprovalRecord,
   CheckpointStorePort,
   ClockPort,
+  EnginePlan,
   GraphEnginePort,
   IdPort,
   JudgeVerdict,
@@ -117,10 +118,9 @@ export function effectHash(input: {
 const NOOP_SPAN: Span = { end: () => undefined };
 
 /**
- * Telemetry is a report, never a dependency. A sink that throws — a collector
- * that went away, an adapter with a bug — must not be able to fail a run that
- * would otherwise have succeeded, nor to abort one midway and leave a gate
- * open. Failing closed here would mean failing the wrong thing.
+ * Telemetry is a report, never a dependency: alone among the ports it fails
+ * open, because a throwing sink must not fail a run that would otherwise have
+ * succeeded, nor abort one midway and leave a gate open.
  */
 function failSafe(port: ObservabilityPort): ObservabilityPort {
   return {
@@ -131,9 +131,7 @@ function failSafe(port: ObservabilityPort): ObservabilityPort {
           end(endAttributes) {
             try {
               span.end(endAttributes);
-            } catch {
-              // Reported nothing; the run is unaffected.
-            }
+            } catch {}
           },
         };
       } catch {
@@ -143,17 +141,14 @@ function failSafe(port: ObservabilityPort): ObservabilityPort {
     event(name, attributes) {
       try {
         port.event(name, attributes);
-      } catch {
-        // Reported nothing; the run is unaffected.
-      }
+      } catch {}
     },
   };
 }
 
 /**
- * A principal is an identity, and in a payroll system an identity is PII. The
- * durable audit lives on the `ApprovalRecord`, which is where "who decided
- * this" belongs; a span only needs to be able to tell two deciders apart.
+ * A principal is PII. "Who decided this" belongs on the durable
+ * `ApprovalRecord`; a span only needs to tell two deciders apart.
  */
 function principalTag(principal: string): string {
   return createHash("sha256").update(principal).digest("hex").slice(0, 16);
@@ -177,9 +172,10 @@ interface RunState {
   record: RunRecord;
   capabilities: readonly string[];
   authorised: Set<string>;
-  plan: unknown;
-  roles: Readonly<Record<string, import("@forge/ir").Role>>;
+  plan: EnginePlan;
+  roles: Readonly<Record<string, Role>>;
   changedPaths: readonly string[];
+  /** Highest maxAttempts declared on any node (006 §7). */
   retryBudget: number;
 }
 
@@ -189,16 +185,11 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   const ledgers = new Map<string, string[]>();
   /**
    * The arm each routing node took, per run — a verdict for a judge, a
-   * condition for a branch.
-   *
-   * A resumed attempt re-walks the nodes before the interrupt, so without this
-   * the router is asked again — and a judge is a model call, not a pure
-   * function. An answer that changed on resume would silently reroute the run
-   * after a human had already decided on the first route: the operator
-   * approves `prod.write`, the arm carrying that effect dies, and the run
-   * reports SUCCEEDED having done nothing. The decision a human acted on has
-   * to still be the decision in force. Same reasoning as the effect ledger,
-   * applied to control flow.
+   * condition for a branch. A resumed attempt re-walks the nodes before the
+   * interrupt, and a judge is a model call, not a pure function: an answer that
+   * changed on resume would reroute the run away from the effect a human had
+   * already approved. Same reasoning as the effect ledger, applied to control
+   * flow.
    */
   const routeLedgers = new Map<string, Map<string, string>>();
 
@@ -222,17 +213,18 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     return state.record;
   };
 
-  /** Highest maxAttempts declared on any node, so a transient failure retries. */
-  function maxAttemptsFor(state: RunState): number {
-    return state.retryBudget;
-  }
+  /** When an approval this runtime issues stops being actionable. */
+  const expiry = (): string =>
+    new Date(
+      options.clock.now().getTime() + options.approvalTtlMs,
+    ).toISOString();
 
   async function advance(state: RunState): Promise<RunRecord> {
     const ledger = ledgers.get(state.record.runId) as string[];
     const routes = routeLedgers.get(state.record.runId) as Map<string, string>;
 
     const result = await options.engine.execute(
-      state.plan as never,
+      state.plan,
       {
         runId: state.record.runId,
 
@@ -297,9 +289,8 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
           const chosen = options.branchFor?.(nodeId, conditionIds);
           if (chosen === undefined) {
-            // Fail closed. Running every arm would make a branch a fan-out,
-            // and picking one for the caller would invent a decision the
-            // workflow did not make.
+            // Fail closed: running every arm would make a branch a fan-out, and
+            // picking one would invent a decision the workflow did not make.
             throw new Error(
               `No arm was chosen for branch '${nodeId}'; declared arms are ${conditionIds.join(", ")}.`,
             );
@@ -354,9 +345,8 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     );
 
     if (result.kind === "failed") {
-      // Workflow retry, distinct from transport retry (006 §7). The run stays
-      // RUNNING and the attempt increments; it is not a separate state.
-      if (result.retryable && state.record.attempt < maxAttemptsFor(state)) {
+      // Retry is an attempt, not a state (006 §7): the run stays RUNNING.
+      if (result.retryable && state.record.attempt < state.retryBudget) {
         observability.event("forge.run.retry", {
           runId: state.record.runId,
           nodeId: result.nodeId,
@@ -401,8 +391,6 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       environment: options.environment,
       capabilities: state.capabilities,
     });
-    // The rule that decided, and what it decided. Without the rule id a denial
-    // is unattributable, and an unattributable denial cannot be argued with.
     // `PolicyDecision` carries no rule id on an allow, so the span reports it
     // absent rather than substituting one the evaluator never named.
     policySpan.end({
@@ -446,14 +434,11 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       effectHash: binding,
       policyId: decision.policyId,
       approvers: decision.approvers,
-      expiresAt: new Date(
-        options.clock.now().getTime() + options.approvalTtlMs,
-      ).toISOString(),
+      expiresAt: expiry(),
     });
 
-    // The binding is the whole point of the gate, so it is what the span
-    // reports. Approvers are counted rather than named — who may decide is on
-    // the durable record; how many is what a dashboard needs.
+    // Approvers are counted rather than named: who may decide is on the durable
+    // record, and how many is what a dashboard needs.
     observability.event("forge.approval.requested", {
       runId: state.record.runId,
       nodeId: result.nodeId,
@@ -525,9 +510,8 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       // Single-use, enforced by the port. A repeat delivery is a no-op.
       if (approval.status !== "PENDING") return state.record;
 
-      // The decision authorises one action under one compiled version. If the
-      // recomputed binding disagrees with the stored one, the approval is
-      // stale and must not be honoured.
+      // The decision authorises one action under one compiled version, so a
+      // binding that no longer recomputes is stale and must not be honoured.
       const expected = effectHash({
         runId: approval.runId,
         nodeId: approval.nodeId,
@@ -540,8 +524,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         );
       }
 
-      // An expired gate is not a slow yes. It times out rather than being
-      // honoured late (006 §9).
+      // An expired gate is not a slow yes; it times out (006 §9).
       if (options.clock.now() > new Date(approval.expiresAt)) {
         await options.approvals.decide(
           approvalId,
@@ -554,8 +537,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           approvalId,
           effect: approval.effect,
           expiresAt: approval.expiresAt,
-          // The decision an operator tried to record, refused by the clock. A
-          // gate that ran out of time is a timeout, never a late yes.
+          // The decision the clock refused.
           attempted: decision.kind,
         });
         return update(state, {
@@ -593,9 +575,8 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       }
 
       if (decision.kind === "edit") {
-        // Amending the action changes what was proposed, so the original
-        // binding no longer describes it. The edit does not authorise
-        // anything; it asks for a fresh decision on the new action.
+        // An edit authorises nothing: amending the action makes the original
+        // binding no longer describe it, so it asks for a fresh decision.
         const reissued = await options.approvals.request({
           runId: approval.runId,
           nodeId: approval.nodeId,
@@ -603,17 +584,15 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           effectHash: approval.effectHash,
           policyId: approval.policyId,
           approvers: approval.approvers,
-          expiresAt: new Date(
-            options.clock.now().getTime() + options.approvalTtlMs,
-          ).toISOString(),
+          expiresAt: expiry(),
         });
         observability.event("forge.approval.edited", {
           runId: approval.runId,
           nodeId: approval.nodeId,
           approvalId,
           effect: approval.effect,
-          // Naming the successor is what makes the reissue auditable: the
-          // amended action was authorised by *that* gate, not by this one.
+          // Names the successor, so the audit shows which gate authorised the
+          // amended action.
           reissuedAs: reissued.approvalId,
         });
         return update(state, {

@@ -3,15 +3,12 @@ import { z } from "zod";
 /**
  * The workflow authoring shape (004 §"Package map", 007 §3, §5).
  *
- * This lives in a public package because companies author it. `@forge/manifest`
- * needs it to type `defineWorkflow`, and a public package may import public
- * packages only — so the alternative was a second definition of a workflow
- * inside the manifest package, which is exactly the drift the compiler exists
- * to prevent.
+ * Public because companies author it: `@forge/manifest` needs it to type
+ * `defineWorkflow`, and a public package may import public packages only — the
+ * alternative was a second definition of a workflow, which is exactly the drift
+ * the compiler exists to prevent.
  *
- * What stays internal is what the compiler *produces*: `ForgeIr` in
- * `@forge/ir`, built on this taxonomy, plus every analysis over it. Authors
- * declare the graph; only the compiler decides whether it may run.
+ * Authors declare the graph; only the compiler decides whether it may run.
  */
 
 const NodeIdSchema = z.string().min(1);
@@ -57,11 +54,9 @@ export const WorkflowNodeSchema = z.discriminatedUnion("kind", [
       id: NodeIdSchema,
       kind: z.literal("judge"),
       judgeRef: z.string().min(1),
-      // Verdict arms (007 §10). Each declared verdict must be carried by an
-      // outgoing edge labelled with it, and every outgoing edge must carry one
-      // of them. Omitting the field keeps the fail-closed default: only `pass`
-      // continues. A verdict with no arm stops the run either way — it never
-      // falls through onto the pass path.
+      // Verdict arms (007 §10): each must be carried by an outgoing edge
+      // labelled with it, and vice versa. Omitting the field keeps the
+      // fail-closed default — only `pass` continues.
       verdicts: z.array(JudgeVerdictSchema).min(1).optional(),
     })
     .strict(),
@@ -82,9 +77,8 @@ export const WorkflowNodeSchema = z.discriminatedUnion("kind", [
       id: NodeIdSchema,
       kind: z.literal("approval"),
       gateSchemaRef: SchemaRefSchema,
-      // The node ids this approval authorises. An approval never authorises
-      // an effect it does not name, mirroring the runtime rule that a
-      // decision binds to a specific action.
+      // The node ids this approval authorises, and no others — the compile-time
+      // half of the runtime rule that a decision binds to one action.
       gates: z.array(NodeIdSchema).default([]),
     })
     .strict(),
@@ -131,8 +125,7 @@ export const WorkflowNodeSchema = z.discriminatedUnion("kind", [
 /**
  * A role is a versioned asset with up to three faces (ADR-009): it produces
  * artifacts, it reviews through a lens, and it may map to a human approver
- * group. Core owns this contract and nothing more — the roster that fills it
- * is a company concern and lives in a company package.
+ * group. Core owns the contract; the roster that fills it is a company concern.
  */
 export const RoleSchema = z
   .object({
@@ -187,10 +180,9 @@ export type WorkflowEdge = z.infer<typeof WorkflowEdgeSchema>;
 export type WorkflowSource = z.infer<typeof WorkflowSourceSchema>;
 
 /**
- * The authoring view. A schema `.default()` makes a field required on the
- * output type, which forces an author to write `sideEffects: []` to say
- * nothing. `z.input` is the shape you may write; `WorkflowSource` is the shape
- * you get back once the defaults have been applied.
+ * The authoring view. A `.default()` makes a field required on the output type,
+ * which would force an author to write `sideEffects: []` to say nothing:
+ * `z.input` is the shape you may write, `WorkflowSource` what you get back.
  */
 export type WorkflowSourceInput = z.input<typeof WorkflowSourceSchema>;
 export type WorkflowNodeInput = z.input<typeof WorkflowNodeSchema>;

@@ -6,16 +6,13 @@ import {
 import { z } from "zod";
 
 /**
- * Forge IR.
+ * Forge IR. The node and edge taxonomy is the shape companies author, so it
+ * lives in `@forge/types` where a public authoring package can reach it. What
+ * is internal is the compiler's own product: `ForgeIr` is a *compiled*
+ * workflow — validated, ordered, and about to be fingerprinted.
  *
- * The node and edge taxonomy is the shape companies author, so it lives in
- * `@forge/types` where a public authoring package can reach it. What is
- * internal is the compiler's own product: `ForgeIr` is a *compiled* workflow —
- * validated, ordered, and about to be fingerprinted — and nothing outside the
- * application layer constructs one.
- *
- * The IR names are kept as the internal vocabulary so `@forge/compiler`,
- * `@forge/runtime` and the engine adapters keep reading in IR terms.
+ * The IR aliases below keep `@forge/compiler`, `@forge/runtime` and the engine
+ * adapters reading in IR terms.
  */
 
 export {

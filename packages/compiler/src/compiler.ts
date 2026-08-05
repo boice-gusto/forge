@@ -10,7 +10,6 @@ import {
 import type { Diagnostic } from "@forge/types";
 
 const COMPILER_VERSION = "0.1.0";
-const SHA256 = "sha256";
 
 export type WorkflowCompilation =
   | { readonly ok: true; readonly value: CompiledWorkflow }
@@ -30,9 +29,24 @@ function diagnostic(
   return { ok: false, diagnostics: [{ code, message, path }] };
 }
 
+function successors(
+  nodes: readonly IrNode[],
+  edges: readonly IrEdge[],
+): ReadonlyMap<string, readonly string[]> {
+  const outgoing = new Map<string, string[]>(
+    nodes.map((node) => [node.id, [] as string[]]),
+  );
+  for (const edge of edges) outgoing.get(edge.from)?.push(edge.to);
+  return outgoing;
+}
+
+/** Where a walk starts. Every other node must be reachable from it. */
+function entryOf(nodes: readonly IrNode[]): IrNode | undefined {
+  return nodes.find((node) => node.kind === "input") ?? nodes[0];
+}
+
 function hasCycle(nodes: readonly IrNode[], edges: readonly IrEdge[]): boolean {
-  const adjacency = new Map(nodes.map((node) => [node.id, [] as string[]]));
-  for (const edge of edges) adjacency.get(edge.from)?.push(edge.to);
+  const adjacency = successors(nodes, edges);
 
   const visiting = new Set<string>();
   const visited = new Set<string>();
@@ -128,9 +142,9 @@ function checkRoles(
 }
 
 /**
- * A branch must be exhaustive and every arm must be labelled. An unlabelled
- * arm makes control flow ambiguous; an unhandled condition makes it
- * incomplete. Both are WF_UNTYPED_EDGE (007 §11).
+ * A branch must be exhaustive and every arm labelled: an unlabelled arm makes
+ * control flow ambiguous, an unhandled condition makes it incomplete. Both are
+ * WF_UNTYPED_EDGE (007 §11).
  */
 function checkBranches(
   nodes: readonly IrNode[],
@@ -181,14 +195,10 @@ function checkBranches(
 
 /**
  * Judge verdict routing (007 §10). A judge that declares arms owns its own
- * control flow, so the same rule as a branch applies: every arm labelled, every
- * declared verdict routed. An unlabelled arm out of a routing judge would be
- * pruned at runtime and an undeclared label would be ignored, and either way
- * the graph would claim a route the engine does not take. WF_UNTYPED_EDGE
- * (007 §11).
- *
- * A judge that declares no arms is the fail-closed default — only `pass`
- * continues — so a label on one of its edges is an arm that routes nowhere.
+ * control flow, so the branch rule applies: every arm labelled, every declared
+ * verdict routed — otherwise the graph claims a route the engine does not take.
+ * A judge that declares no arms is the fail-closed default (only `pass`
+ * continues), so a label on one of its edges is an arm that routes nowhere.
  */
 function checkJudges(
   nodes: readonly IrNode[],
@@ -241,23 +251,18 @@ function checkJudges(
 }
 
 /**
- * A node with no path from the entry node is dead, and dead nodes defeat the
- * approval analysis: an effect that cannot be reached at all trivially cannot
- * be reached while bypassing its gate, so the gate check passes vacuously.
- * Refuse the shape instead of reasoning about it.
+ * A dead node defeats the approval analysis: an effect that cannot be reached
+ * at all trivially cannot be reached while bypassing its gate, so the gate
+ * check passes vacuously. Refuse the shape instead of reasoning about it.
  */
 function checkReachability(
   nodes: readonly IrNode[],
   edges: readonly IrEdge[],
 ): Diagnostic[] {
-  const entry = nodes.find((node) => node.kind === "input") ?? nodes[0];
+  const entry = entryOf(nodes);
   if (entry === undefined) return [];
 
-  const outgoing = new Map<string, string[]>(
-    nodes.map((node) => [node.id, [] as string[]]),
-  );
-  for (const edge of edges) outgoing.get(edge.from)?.push(edge.to);
-
+  const outgoing = successors(nodes, edges);
   const seen = new Set([entry.id]);
   const queue = [entry.id];
   while (queue.length > 0) {
@@ -281,11 +286,9 @@ function checkReachability(
 }
 
 /**
- * Every side effect must sit behind an approval that names it.
- *
- * A generic approval earlier in the graph does not authorise an unrelated
- * effect later — the gate binds to the action, exactly as the runtime binds a
- * decision to a run and an argument hash (006 §6.4).
+ * Every side effect must sit behind an approval that names it. A generic
+ * approval earlier in the graph authorises nothing: the gate binds to the
+ * action, exactly as the runtime binds a decision to one (006 §6.4).
  */
 function checkSideEffects(
   nodes: readonly IrNode[],
@@ -295,12 +298,8 @@ function checkSideEffects(
   const diagnostics: Diagnostic[] = [];
   const declared = new Set(declaredEffects);
 
-  const adjacency = new Map<string, string[]>(
-    nodes.map((node) => [node.id, [] as string[]]),
-  );
-  for (const edge of edges) adjacency.get(edge.from)?.push(edge.to);
-
-  const entry = nodes.find((node) => node.kind === "input") ?? nodes[0];
+  const adjacency = successors(nodes, edges);
+  const entry = entryOf(nodes);
   const approvals = nodes.filter(
     (node): node is ApprovalNode => node.kind === "approval",
   );
@@ -416,7 +415,7 @@ export function compileWorkflow(source: unknown): WorkflowCompilation {
       `${left.from}:${left.to}`.localeCompare(`${right.from}:${right.to}`),
     ),
   };
-  const fingerprint = createHash(SHA256)
+  const fingerprint = createHash("sha256")
     .update(JSON.stringify({ compilerVersion: COMPILER_VERSION, ir }))
     .digest("hex");
   return {

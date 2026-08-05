@@ -1,11 +1,11 @@
-export type {
-  ApprovalDecision,
-  ApprovalPort,
-  ApprovalRecord,
-  ApprovalRequest,
-  ApprovalStatus,
+export {
+  ANY_ROLE,
+  type ApprovalDecision,
+  type ApprovalPort,
+  type ApprovalRecord,
+  type ApprovalRequest,
+  type ApprovalStatus,
 } from "./approval.js";
-export { ANY_ROLE } from "./approval.js";
 export type {
   CheckpointInput,
   CheckpointRecord,
@@ -50,8 +50,4 @@ export {
   operationKey,
   type QueuePort,
 } from "./queue.js";
-export {
-  type SandboxError,
-  type SandboxPort,
-  sandboxUnavailable,
-} from "./sandbox.js";
+export type { SandboxPort } from "./sandbox.js";
