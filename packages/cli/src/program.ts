@@ -1,3 +1,4 @@
+import { inspectCompany, runCompanyWorkflow } from "./commands/company.js";
 import { runLocalComposition } from "./commands/dev.js";
 import { promptsUnavailable } from "./commands/prompts.js";
 import { doctorProviders } from "./commands/providers.js";
@@ -12,9 +13,13 @@ function usesJson(args: readonly string[]): boolean {
   return args.includes("--json");
 }
 
-function inputPath(args: readonly string[]): string | undefined {
-  const index = args.indexOf("--input");
+function flag(args: readonly string[], name: string): string | undefined {
+  const index = args.indexOf(name);
   return index === -1 ? undefined : args[index + 1];
+}
+
+function inputPath(args: readonly string[]): string | undefined {
+  return flag(args, "--input");
 }
 
 async function validateFromFile(
@@ -45,8 +50,19 @@ export async function runCli(args: readonly string[]): Promise<CliResult> {
   }
   if (first === "workflow" && second === "compile")
     return compileWorkflowFile(inputPath(args), asJson);
-  if (first === "workflow" && second === "run")
-    return runWorkflowFile(inputPath(args), asJson);
+  if (first === "workflow" && second === "run") {
+    // A company workflow is named, not pointed at: the company package decides
+    // what exists, so `--workflow <id>` resolves through its registry.
+    return flag(args, "--company") === undefined
+      ? runWorkflowFile(inputPath(args), asJson)
+      : runCompanyWorkflow(
+          flag(args, "--company"),
+          flag(args, "--workflow"),
+          asJson,
+        );
+  }
+  if (first === "company" && second === "inspect")
+    return inspectCompany(flag(args, "--company"), asJson);
 
   return humanResult(
     [
@@ -58,6 +74,8 @@ export async function runCli(args: readonly string[]): Promise<CliResult> {
       "  prompts check                verify prompt asset pins",
       "  workflow compile --input <f> compile a workflow to a sealed artifact",
       "  workflow run --input <f>     compile and execute until done or gated",
+      "  company inspect --company <d>          list what a company package contributes",
+      "  workflow run --company <d> --workflow <id>  run a company's workflow",
     ].join("\n"),
     CLI_EXIT_CODE.USAGE,
   );
