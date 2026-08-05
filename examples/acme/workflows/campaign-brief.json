@@ -151,5 +151,8 @@
       "brand-reviewer": "pass"
     }
   },
-  "changedPaths": ["docs/campaigns/spring.md"]
+  "changedPaths": ["docs/campaigns/spring.md"],
+  "branch": {
+    "route": "clean"
+  }
 }

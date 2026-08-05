@@ -37,13 +37,22 @@ export interface EngineRunContext {
    * the engine never proceeds past a failed assertion.
    */
   assertCapability(nodeId: string, capability: string): Promise<void>;
+  /**
+   * Choose which arm of a branch this run takes. Must return one of
+   * `conditionIds`; anything else stops the walk. There is no "run every arm"
+   * fallback — a workflow that says *block or publish* must not do both.
+   */
+  chooseBranch(
+    nodeId: string,
+    conditionIds: readonly string[],
+  ): Promise<string>;
   /** Run an agent step against the provider. Rejecting stops the walk. */
   invokeAgent(
     nodeId: string,
     promptRef: string,
     role: string | undefined,
   ): Promise<void>;
-  /** Score an artifact. Fails closed: anything but pass stops the walk. */
+  /** Score an artifact. Fails closed: a verdict with no declared arm stops the walk. */
   judge(nodeId: string, judgeRef: string): Promise<JudgeVerdict>;
   /** Acquire disposable compute. Unavailable means stop, never host fallback. */
   enterSandbox(nodeId: string, profile: string): Promise<void>;
@@ -63,5 +72,5 @@ export interface GraphEnginePort {
   ): Promise<EngineExecutionResult>;
 }
 
-/** Verdict a judge node returns. Anything other than pass stops the walk. */
+/** Verdict a judge node returns. A verdict the judge declared no arm for stops the walk. */
 export type JudgeVerdict = "pass" | "fail" | "review";

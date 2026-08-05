@@ -5,7 +5,6 @@ import type {
   EnginePlan,
   EngineRunContext,
   GraphEnginePort,
-  JudgeVerdict,
 } from "@forge/ports";
 
 /**
@@ -111,12 +110,8 @@ function gateIndex(ir: ForgeIr): ReadonlyMap<string, readonly string[]> {
 
 type StepOutcome =
   | "continue"
-  /** A judge took a declared arm; the arms it did not take are now dead. */
-  | {
-      readonly kind: "routed";
-      readonly nodeId: string;
-      readonly verdict: JudgeVerdict;
-    }
+  /** A node took one declared arm; the arms it did not take are now dead. */
+  | { readonly kind: "routed"; readonly nodeId: string; readonly arm: string }
   | Extract<EngineExecutionResult, { kind: "failed" }>
   | Omit<Extract<EngineExecutionResult, { kind: "interrupted" }>, "visited">;
 
@@ -148,7 +143,7 @@ async function judgeStep(
         : failed(node.id, `judge verdict ${verdict}`, false);
     }
     return node.verdicts.includes(verdict)
-      ? { kind: "routed", nodeId: node.id, verdict }
+      ? { kind: "routed", nodeId: node.id, arm: verdict }
       : failed(node.id, `judge verdict ${verdict} has no arm`, false);
   } catch (error) {
     // A judge that errors escalates; it never passes.
@@ -178,6 +173,20 @@ async function step(
 
     case "judge":
       return judgeStep(node, context);
+
+    case "branch": {
+      // Every arm running is not a branch, it is a fan-out: a workflow that
+      // says *block or publish* would do both. An arm the host cannot choose
+      // stops the walk rather than defaulting to one.
+      try {
+        const arm = await context.chooseBranch(node.id, node.conditionIds);
+        return node.conditionIds.includes(arm)
+          ? { kind: "routed", nodeId: node.id, arm }
+          : failed(node.id, `branch arm ${arm} is not declared`, false);
+      } catch (error) {
+        return failed(node.id, messageOf(error), false);
+      }
+    }
 
     case "sandbox":
       try {
@@ -227,11 +236,11 @@ async function step(
 function pruneArms(
   ir: ForgeIr,
   nodeId: string,
-  verdict: JudgeVerdict,
+  arm: string,
   pruned: Set<string>,
 ): void {
   for (const edge of ir.edges) {
-    if (edge.from !== nodeId || edge.conditionId === verdict) continue;
+    if (edge.from !== nodeId || edge.conditionId === arm) continue;
     pruned.add(edgeKey(edge));
   }
 }
@@ -288,7 +297,7 @@ export function createMemoryGraphEngine(): GraphEnginePort {
         const outcome = await step(node, context, authorised, materialized);
         if (outcome === "continue") continue;
         if (outcome.kind === "routed") {
-          pruneArms(materialized.ir, outcome.nodeId, outcome.verdict, pruned);
+          pruneArms(materialized.ir, outcome.nodeId, outcome.arm, pruned);
           live = reachableFrom(materialized.ir, materialized.entryId, pruned);
           continue;
         }

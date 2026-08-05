@@ -11,6 +11,11 @@ function context(performed: string[]) {
     assertCapability: async () => undefined,
     invokeAgent: async () => undefined,
     judge: async () => "pass" as const,
+    // Fails closed like the runtime: a test that walks a branch must say which
+    // arm it takes, rather than inheriting a silent default.
+    chooseBranch: async (nodeId: string): Promise<string> => {
+      throw new Error(`No arm was chosen for branch '${nodeId}'.`);
+    },
     enterSandbox: async () => undefined,
     perform: async (_nodeId: string, effect: string) => {
       performed.push(effect);

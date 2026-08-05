@@ -74,6 +74,14 @@ export interface RuntimeOptions {
     nodeId: string,
     judgeRef: string,
   ) => Readonly<Record<string, Vote>>;
+  /**
+   * Which arm a branch takes. A local stand-in until run data flows between
+   * nodes; without it a branch stops the run rather than guessing.
+   */
+  readonly branchFor?: (
+    nodeId: string,
+    conditionIds: readonly string[],
+  ) => string | undefined;
   readonly effects: EffectSink;
   readonly checkpoints: CheckpointStorePort;
   readonly clock: ClockPort;
@@ -133,18 +141,19 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   const runs = new Map<string, RunState>();
   const ledgers = new Map<string, string[]>();
   /**
-   * Verdicts already reached in a run, per judge node.
+   * The arm each routing node took, per run — a verdict for a judge, a
+   * condition for a branch.
    *
    * A resumed attempt re-walks the nodes before the interrupt, so without this
-   * a judge is asked again — and a judge is a model call, not a pure function.
-   * A verdict that changed on resume would silently reroute the run after a
-   * human had already decided on the first route: the operator approves
-   * `prod.write`, the judge answers differently the second time, the arm
-   * carrying that effect dies, and the run reports SUCCEEDED having done
-   * nothing. The decision a human acted on has to still be the decision in
-   * force. Same reasoning as the effect ledger, applied to control flow.
+   * the router is asked again — and a judge is a model call, not a pure
+   * function. An answer that changed on resume would silently reroute the run
+   * after a human had already decided on the first route: the operator
+   * approves `prod.write`, the arm carrying that effect dies, and the run
+   * reports SUCCEEDED having done nothing. The decision a human acted on has
+   * to still be the decision in force. Same reasoning as the effect ledger,
+   * applied to control flow.
    */
-  const verdictLedgers = new Map<string, Map<string, JudgeVerdict>>();
+  const routeLedgers = new Map<string, Map<string, string>>();
 
   const update = (state: RunState, patch: Partial<RunRecord>): RunRecord => {
     state.record = { ...state.record, ...patch };
@@ -158,10 +167,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
   async function advance(state: RunState): Promise<RunRecord> {
     const ledger = ledgers.get(state.record.runId) as string[];
-    const verdicts = verdictLedgers.get(state.record.runId) as Map<
-      string,
-      JudgeVerdict
-    >;
+    const routes = routeLedgers.get(state.record.runId) as Map<string, string>;
 
     const result = await options.engine.execute(
       state.plan as never,
@@ -203,10 +209,10 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
           // Decided once per run. Re-asking on a resumed walk would let the
           // route change under a decision a human has already made.
-          const settled = verdicts.get(nodeId);
+          const settled = routes.get(nodeId);
           if (settled !== undefined) {
             span.end({ verdict: settled, replayed: true });
-            return settled;
+            return settled as JudgeVerdict;
           }
 
           const panel = composePanel(state.roles, options.panel, {
@@ -214,13 +220,35 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           });
           const votes = options.votesFor?.(nodeId, judgeRef) ?? {};
           const outcome = resolveVerdict(panel, votes);
-          verdicts.set(nodeId, outcome.verdict);
+          routes.set(nodeId, outcome.verdict);
           span.end({
             verdict: outcome.verdict,
             members: panel.members.length,
             reason: outcome.reason,
           });
           return outcome.verdict;
+        },
+
+        chooseBranch: async (nodeId, conditionIds): Promise<string> => {
+          const settled = routes.get(nodeId);
+          if (settled !== undefined) return settled;
+
+          const chosen = options.branchFor?.(nodeId, conditionIds);
+          if (chosen === undefined) {
+            // Fail closed. Running every arm would make a branch a fan-out,
+            // and picking one for the caller would invent a decision the
+            // workflow did not make.
+            throw new Error(
+              `No arm was chosen for branch '${nodeId}'; declared arms are ${conditionIds.join(", ")}.`,
+            );
+          }
+          routes.set(nodeId, chosen);
+          options.observability.event("forge.node.branch", {
+            runId: state.record.runId,
+            nodeId,
+            arm: chosen,
+          });
+          return chosen;
         },
 
         enterSandbox: async (nodeId, profile) => {
@@ -381,7 +409,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       };
       runs.set(runId, state);
       ledgers.set(runId, []);
-      verdictLedgers.set(runId, new Map());
+      routeLedgers.set(runId, new Map());
       update(state, { status: "RUNNING" });
       const record = await advance(state);
       span.end({ status: record.status });

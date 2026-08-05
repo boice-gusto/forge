@@ -39,6 +39,11 @@ export interface LocalStackOptions {
   readonly effects?: EffectSink;
   /** Which roles review every change, and which are summoned. */
   readonly panel?: PanelDefinition;
+  /** Which arm a branch takes, keyed by node id. */
+  readonly branchFor?: (
+    nodeId: string,
+    conditionIds: readonly string[],
+  ) => string | undefined;
   /** Votes a judge returns, keyed by role name. */
   readonly votesFor?: (
     nodeId: string,
@@ -100,6 +105,9 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
     observability,
     panel: options.panel ?? { standing: [], summonable: [], quorum: 0.5 },
     ...(options.votesFor === undefined ? {} : { votesFor: options.votesFor }),
+    ...(options.branchFor === undefined
+      ? {}
+      : { branchFor: options.branchFor }),
     effects,
     checkpoints: createMemoryCheckpointStore(),
     clock,

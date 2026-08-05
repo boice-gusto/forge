@@ -70,6 +70,26 @@ describe("control plane", () => {
     expect(response.statusCode).toBe(401);
   });
 
+  test("a branch with no decision fails the run rather than taking every arm", async () => {
+    // The API accepts branch decisions in the body only because run data does
+    // not flow between nodes yet. Omitting them must stop the run, not pick.
+    const { branch, ...withoutBranch } = startBody as Record<string, unknown>;
+    expect(branch).toBeDefined();
+
+    const response = await app().inject({
+      method: "POST",
+      url: "/v1/runs",
+      headers: AUTH,
+      payload: withoutBranch,
+    });
+
+    expect(response.statusCode).toBe(201);
+    const run = response.json();
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("No arm was chosen");
+    expect(run.performedEffects).toEqual([]);
+  });
+
   test("a started run parks at the gate with nothing dispatched", async () => {
     const response = await app().inject({
       method: "POST",

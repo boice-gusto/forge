@@ -736,3 +736,125 @@ describe("attack: invalidate a human decision after it is made", () => {
     expect(forge.dispatched).toEqual(["prod.write"]);
   });
 });
+
+describe("attack: make a branch do every arm at once", () => {
+  // A branch that runs all its arms is not a branch, it is a fan-out. Before
+  // the engine honoured `conditionId`, this workflow blocked the order AND
+  // published it — each effect correctly gated, so no bypass, but the workflow
+  // meant the opposite of what it did.
+  const fork = {
+    id: "attack.branch-fanout",
+    version: "1.0.0",
+    sideEffects: ["order.block", "order.publish"],
+    grantedCapabilities: [],
+    roles: {},
+    nodes: [
+      { id: "intake", kind: "input", schemaRef: "s@1" },
+      { id: "route", kind: "branch", conditionIds: ["fraud", "clean"] },
+      { id: "g1", kind: "approval", gateSchemaRef: "g@1", gates: ["block"] },
+      { id: "block", kind: "tool", skillRef: "t@1", effect: "order.block" },
+      { id: "g2", kind: "approval", gateSchemaRef: "g@1", gates: ["publish"] },
+      { id: "publish", kind: "tool", skillRef: "t@1", effect: "order.publish" },
+      { id: "done", kind: "output", schemaRef: "s@1" },
+    ],
+    edges: [
+      { from: "intake", to: "route" },
+      { from: "route", to: "g1", conditionId: "fraud" },
+      { from: "route", to: "g2", conditionId: "clean" },
+      { from: "g1", to: "block" },
+      { from: "g2", to: "publish" },
+      { from: "block", to: "done" },
+      { from: "publish", to: "done" },
+    ],
+  } as const;
+
+  const BOTH = [
+    {
+      id: "r.block",
+      action: "order.block",
+      decision: "require-approval" as const,
+      reason: "Blocking an order is a human call.",
+      approvers: ["operator"],
+    },
+    {
+      id: "r.publish",
+      action: "order.publish",
+      decision: "require-approval" as const,
+      reason: "Publishing an order is a human call.",
+      approvers: ["operator"],
+    },
+  ];
+
+  async function drain(forge: ReturnType<typeof stack>, artifact: unknown) {
+    let run = await forge.runtime.start({
+      artifact: artifact as Parameters<
+        typeof forge.runtime.start
+      >[0]["artifact"],
+    });
+    const gates: string[] = [];
+    for (
+      let step = 0;
+      step < 5 && run.pendingApprovalId !== undefined;
+      step++
+    ) {
+      const pending = await forge.runtime.getApproval(run.pendingApprovalId);
+      gates.push(String(pending?.effect));
+      run = await forge.runtime.decide(
+        run.pendingApprovalId,
+        { kind: "approve" },
+        "operator",
+      );
+    }
+    return { run, gates };
+  }
+
+  test("only the chosen arm runs, so only its effect is ever offered", async () => {
+    const forge = stack({ rules: BOTH, branchFor: () => "clean" });
+    const artifact = compileToArtifact(fork);
+    if (!artifact.ok) throw new Error("must compile");
+
+    const { run, gates } = await drain(forge, artifact.artifact);
+
+    expect(run.status).toBe("SUCCEEDED");
+    // One gate, not two: the operator is never asked about the arm the run
+    // did not take.
+    expect(gates).toEqual(["order.publish"]);
+    expect(forge.dispatched).toEqual(["order.publish"]);
+  });
+
+  test("choosing the other arm runs the other effect, and only that one", async () => {
+    const forge = stack({ rules: BOTH, branchFor: () => "fraud" });
+    const artifact = compileToArtifact(fork);
+    if (!artifact.ok) throw new Error("must compile");
+
+    const { run, gates } = await drain(forge, artifact.artifact);
+
+    expect(run.status).toBe("SUCCEEDED");
+    expect(gates).toEqual(["order.block"]);
+    expect(forge.dispatched).toEqual(["order.block"]);
+  });
+
+  test("an arm nobody chose stops the run rather than defaulting to one", async () => {
+    const forge = stack({ rules: BOTH });
+    const artifact = compileToArtifact(fork);
+    if (!artifact.ok) throw new Error("must compile");
+
+    const run = await forge.runtime.start({ artifact: artifact.artifact });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("No arm was chosen");
+    expect(forge.dispatched).toEqual([]);
+  });
+
+  test("an undeclared arm is refused, not followed", async () => {
+    const forge = stack({ rules: BOTH, branchFor: () => "whatever-i-like" });
+    const artifact = compileToArtifact(fork);
+    if (!artifact.ok) throw new Error("must compile");
+
+    const run = await forge.runtime.start({ artifact: artifact.artifact });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("not declared");
+    expect(forge.dispatched).toEqual([]);
+  });
+});

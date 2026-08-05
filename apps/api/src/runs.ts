@@ -25,6 +25,8 @@ interface StartBody {
   };
   readonly panel?: PanelDefinition;
   readonly review?: { readonly votes?: Readonly<Record<string, Vote>> };
+  /** Which arm each branch takes, keyed by node id. */
+  readonly branch?: Readonly<Record<string, string>>;
   readonly changedPaths?: readonly string[];
 }
 
@@ -119,6 +121,9 @@ export function registerRunRoutes(
             ...(body.review?.votes === undefined
               ? {}
               : { votesFor: () => body.review?.votes ?? {} }),
+            ...(body.branch === undefined
+              ? {}
+              : { branchFor: (nodeId: string) => body.branch?.[nodeId] }),
           });
 
     const run = await stack.runtime.start({

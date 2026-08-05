@@ -31,6 +31,8 @@ interface WorkflowFile {
   readonly actor?: string;
   readonly panel?: PanelDefinition;
   readonly review?: { readonly votes?: Readonly<Record<string, Vote>> };
+  /** Which arm each branch takes, keyed by node id. */
+  readonly branch?: Readonly<Record<string, string>>;
   readonly changedPaths?: readonly string[];
 }
 
@@ -80,6 +82,9 @@ function stackFor(file: WorkflowFile) {
     ...(file.review?.votes === undefined
       ? {}
       : { votesFor: () => file.review?.votes ?? {} }),
+    ...(file.branch === undefined
+      ? {}
+      : { branchFor: (nodeId: string) => file.branch?.[nodeId] }),
   });
 }
 
