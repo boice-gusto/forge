@@ -202,6 +202,33 @@ TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock pnpm test`.
 `forge dev up` is separate — it starts the declared Redis/Postgres/OTel stack in
 `infra/local/`, which nothing in the default path needs yet.
 
+## Publishing the public surface
+
+`types`, `manifest`, `plugin-sdk` and `sdk` emit `dist/` (JS + declarations) and
+ship only that. In the workspace their `exports` still point at `src`, so tests,
+coverage and typecheck run on source and need no build; `publishConfig` rewrites
+`exports` to `dist` at pack time, so a consumer gets the built artifact. One
+resolution mode each, and neither pretends to be the other.
+
+`pnpm test:packaging` is the check that makes this real: it packs all four,
+installs them into a throwaway project with no access to this repository, and
+authors a workflow, registers a plugin and constructs an SDK client from them.
+It fails if a tarball ships `src/`, carries no declarations, or cannot be
+imported. Verified against both regressions.
+
+Transitive `@forge/*` deps become real versions at pack time, so a consumer
+needs `overrides` in **`pnpm-workspace.yaml`** — pnpm 11 no longer reads
+`pnpm.overrides` from `package.json`.
+
+**A company repo cannot move to these tarballs yet, and the reason is worth
+knowing.** Shipped company code uses only the public surface, but an acceptance
+harness imports `@forge/company` and `@forge/composition` to construct a host,
+and those are internal and unpublishable. Doing half the migration would put two
+copies of `@forge/types` in one graph — one from the tarball chain, one from the
+source alias — and two copies of a Zod schema are not the same schema. The fix
+is to make the harness talk to a running API over `@forge/sdk` instead of
+importing the host; then a company repo depends on the public surface alone.
+
 ## Company packages
 
 A company package is a directory with `forge.company.json` naming its domains,

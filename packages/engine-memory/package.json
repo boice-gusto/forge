@@ -12,7 +12,6 @@
     "@forge/compiler": "workspace:*"
   },
   "scripts": {
-    "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   }
 }
