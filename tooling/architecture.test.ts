@@ -119,6 +119,7 @@ describe("architecture rules", () => {
       ["dockerode", "sandbox"],
       ["@opentelemetry/exporter-trace-otlp-http", "telemetry"],
       ["langsmith", "telemetry"],
+      ["@open-policy-agent/opa-wasm", "policy engine"],
     ];
     for (const [vendor] of leaks) {
       expect(() =>

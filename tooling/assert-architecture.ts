@@ -45,6 +45,10 @@ const VENDOR_LEAKS = [
   // redaction, which is where every payload is stopped.
   "@opentelemetry/",
   "langsmith",
+  // ADR-007: the policy engine sits behind `PolicyPort`. A company package
+  // evaluating Rego itself would be authorising its own actions against a
+  // bundle it also supplies, which is the capability ceiling gone.
+  "@open-policy-agent/",
 ] as const;
 
 /**

@@ -12,6 +12,12 @@ export type PolicyDecision =
       readonly approvers: readonly string[];
     };
 
+/**
+ * Four fields, and deliberately no resource and no free text: there is nothing
+ * here for workflow or model content to steer. `@forge/policy-conformance`
+ * holds an implementation to that — a request carrying anything else must
+ * decide identically.
+ */
 export interface PolicyRequest {
   /** Established at the authenticated boundary, never read from a payload. */
   readonly actor: string;

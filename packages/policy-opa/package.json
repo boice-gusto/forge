@@ -1,18 +1,20 @@
 {
-  "name": "@forge/policy-memory",
+  "name": "@forge/policy-opa",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
+  "scripts": {
+    "build:wasm": "./scripts/build-wasm.sh",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
-    "@forge/ports": "workspace:*"
+    "@forge/ports": "workspace:*",
+    "@open-policy-agent/opa-wasm": "^1.10.0"
   },
   "devDependencies": {
     "@forge/policy-conformance": "workspace:*"
-  },
-  "scripts": {
-    "typecheck": "tsc --noEmit"
   }
 }
