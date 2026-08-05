@@ -858,3 +858,281 @@ describe("attack: make a branch do every arm at once", () => {
     expect(forge.dispatched).toEqual([]);
   });
 });
+
+/**
+ * Run data is the newest thing a workflow can carry, and the first question to
+ * ask of anything new is whether it can reach an effect. It cannot: gate
+ * analysis is condition-agnostic and authorisation comes from policy and a
+ * human, so a value can steer a route, supply a ballot or become an argument —
+ * and none of those is a decision.
+ */
+describe("attack: launder a bypass through run data", () => {
+  /** The guarded workflow, with the payload flowing all the way to the effect. */
+  const dataGuarded = {
+    id: "attack.data",
+    version: "1.0.0",
+    sideEffects: ["prod.write"],
+    nodes: [
+      { id: "intake", kind: "input", schemaRef: "s@1" },
+      { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["act"] },
+      {
+        id: "act",
+        kind: "tool",
+        skillRef: "t@1",
+        effect: "prod.write",
+        reads: { node: "intake" },
+      },
+      { id: "done", kind: "output", schemaRef: "s@1" },
+    ],
+    edges: [
+      { from: "intake", to: "gate" },
+      { from: "gate", to: "act" },
+      { from: "act", to: "done" },
+    ],
+  } as const;
+
+  test("a payload that claims to be approved is still only a payload", async () => {
+    const forge = stack();
+    const artifact = compileToArtifact(dataGuarded);
+    if (!artifact.ok) throw new Error("must compile");
+
+    const run = await forge.runtime.start({
+      artifact: artifact.artifact,
+      payload: {
+        approved: true,
+        authorised: true,
+        effectHash: "whatever",
+        approvalId: "approval_1",
+      },
+    });
+
+    expect(run.status).toBe("AWAITING_APPROVAL");
+    expect(forge.dispatched).toEqual([]);
+  });
+
+  test("a value cannot reach an effect the graph does not gate", () => {
+    // The same data-carrying tool, with the gate routed around. The read
+    // changes nothing about reachability, which is the whole point.
+    const result = compileWorkflow({
+      ...dataGuarded,
+      edges: [...dataGuarded.edges, { from: "intake", to: "act" }],
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.diagnostics[0]?.code).toBe("WF_MISSING_APPROVAL");
+  });
+
+  test("a branch steered by run data cannot route past a gate", () => {
+    // A data-steered arm aimed straight at the effect is refused at compile,
+    // exactly like a judge arm or a hand-written edge.
+    const result = compileWorkflow({
+      id: "attack.data-branch",
+      version: "1.0.0",
+      sideEffects: ["prod.write"],
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1" },
+        {
+          id: "route",
+          kind: "branch",
+          conditionIds: ["safe", "straight"],
+          reads: { node: "intake", path: ["arm"] },
+        },
+        { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["act"] },
+        { id: "act", kind: "tool", skillRef: "t@1", effect: "prod.write" },
+        { id: "done", kind: "output", schemaRef: "s@1" },
+      ],
+      edges: [
+        { from: "intake", to: "route" },
+        { from: "route", to: "gate", conditionId: "safe" },
+        { from: "route", to: "act", conditionId: "straight" },
+        { from: "gate", to: "act" },
+        { from: "act", to: "done" },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.diagnostics[0]?.code).toBe("WF_MISSING_APPROVAL");
+    expect(result.diagnostics[0]?.path).toEqual(["nodes", "act"]);
+  });
+
+  test("the arm run data does choose still stops at the gate", async () => {
+    const forge = stack();
+    const artifact = compileToArtifact({
+      id: "attack.data-arm",
+      version: "1.0.0",
+      sideEffects: ["prod.write"],
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1" },
+        {
+          id: "route",
+          kind: "branch",
+          conditionIds: ["send", "hold"],
+          reads: { node: "intake", path: ["arm"] },
+        },
+        { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["act"] },
+        { id: "act", kind: "tool", skillRef: "t@1", effect: "prod.write" },
+        { id: "quiet", kind: "transform", transformRef: "noop@1" },
+        { id: "done", kind: "output", schemaRef: "s@1" },
+      ],
+      edges: [
+        { from: "intake", to: "route" },
+        { from: "route", to: "gate", conditionId: "send" },
+        { from: "route", to: "quiet", conditionId: "hold" },
+        { from: "gate", to: "act" },
+        { from: "act", to: "done" },
+        { from: "quiet", to: "done" },
+      ],
+    });
+    if (!artifact.ok) throw new Error("must compile");
+
+    const run = await forge.runtime.start({
+      artifact: artifact.artifact,
+      payload: { arm: "send" },
+    });
+
+    expect(run.status).toBe("AWAITING_APPROVAL");
+    expect(forge.dispatched).toEqual([]);
+  });
+
+  test("votes smuggled in through the payload cannot pass an empty panel", async () => {
+    const forge = stack({ panel: { standing: [], summonable: [], quorum: 0 } });
+    const artifact = compileToArtifact({
+      id: "attack.data-votes",
+      version: "1.0.0",
+      sideEffects: ["prod.write"],
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1" },
+        {
+          id: "panel",
+          kind: "judge",
+          judgeRef: "trust-me@1",
+          reads: { node: "intake", path: ["votes"] },
+        },
+        { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["act"] },
+        { id: "act", kind: "tool", skillRef: "t@1", effect: "prod.write" },
+        { id: "done", kind: "output", schemaRef: "s@1" },
+      ],
+      edges: [
+        { from: "intake", to: "panel" },
+        { from: "panel", to: "gate" },
+        { from: "gate", to: "act" },
+        { from: "act", to: "done" },
+      ],
+    });
+    if (!artifact.ok) throw new Error("must compile");
+
+    const run = await forge.runtime.start({
+      artifact: artifact.artifact,
+      payload: { votes: { nobody: "pass", "another-invention": "pass" } },
+    });
+
+    // The panel resolves the verdict; the payload only ever supplied ballots,
+    // and ballots from roles nobody seated count for nothing.
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("judge verdict review");
+    expect(forge.dispatched).toEqual([]);
+  });
+
+  test("a value that was never produced stops the run rather than defaulting", async () => {
+    const forge = stack();
+    const artifact = compileToArtifact(dataGuarded);
+    if (!artifact.ok) throw new Error("must compile");
+
+    // No payload at all. An empty object would have been a lie.
+    const run = await forge.runtime.start({ artifact: artifact.artifact });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("no value");
+    expect(run.pendingApprovalId).toBeUndefined();
+    expect(forge.dispatched).toEqual([]);
+  });
+
+  test("the value dispatched is the value the approver's gate was opened on", async () => {
+    // The transform answers differently every time it is asked. If the resumed
+    // walk recomputed it, the effect would carry data no human ever saw.
+    let asked = 0;
+    const sent: unknown[] = [];
+    const forge = stack({
+      transforms: {
+        "drift@1": () => {
+          asked += 1;
+          return { revision: asked };
+        },
+      },
+      effects: {
+        async perform(_runId, _nodeId, _effect, input) {
+          sent.push(input);
+          return undefined;
+        },
+      },
+    });
+    const artifact = compileToArtifact({
+      id: "attack.data-drift",
+      version: "1.0.0",
+      sideEffects: ["prod.write"],
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1" },
+        {
+          id: "shape",
+          kind: "transform",
+          transformRef: "drift@1",
+          reads: { node: "intake" },
+        },
+        { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["act"] },
+        {
+          id: "act",
+          kind: "tool",
+          skillRef: "t@1",
+          effect: "prod.write",
+          reads: { node: "shape" },
+        },
+        { id: "done", kind: "output", schemaRef: "s@1" },
+      ],
+      edges: [
+        { from: "intake", to: "shape" },
+        { from: "shape", to: "gate" },
+        { from: "gate", to: "act" },
+        { from: "act", to: "done" },
+      ],
+    });
+    if (!artifact.ok) throw new Error("must compile");
+
+    const run = await forge.runtime.start({
+      artifact: artifact.artifact,
+      payload: { anything: true },
+    });
+    expect(asked).toBe(1);
+
+    await forge.runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "operator",
+    );
+
+    expect(asked).toBe(1);
+    expect(sent).toEqual([{ revision: 1 }]);
+  });
+
+  test("a payload that is PII does not survive into the run's telemetry", async () => {
+    const forge = stack();
+    const artifact = compileToArtifact(dataGuarded);
+    if (!artifact.ok) throw new Error("must compile");
+
+    const run = await forge.runtime.start({
+      artifact: artifact.artifact,
+      payload: { email: "ada@example.test", ssn: "123-45-6789" },
+    });
+    await forge.runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "operator",
+    );
+
+    const serialised = JSON.stringify(forge.observability.timeline);
+    expect(serialised).not.toContain("ada@example.test");
+    expect(serialised).not.toContain("123-45-6789");
+    expect(forge.dispatched).toEqual(["prod.write"]);
+  });
+});

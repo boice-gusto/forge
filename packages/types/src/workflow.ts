@@ -25,6 +25,25 @@ const RetryPolicySchema = z
 /** What a judge can conclude (007 §10). Mirrors `JudgeVerdict` in ports. */
 const JudgeVerdictSchema = z.enum(["pass", "fail", "review"]);
 
+/**
+ * Where a node gets its input: the value another node produced, optionally
+ * narrowed to a property path inside it.
+ *
+ * Data flow is **declared**, not inferred from the edge list. An edge says what
+ * may run next; it does not say what a node may read, and conflating the two
+ * would make every predecessor's output implicitly visible to every successor.
+ * Declaring it means the compiler can check the reference and the runtime can
+ * refuse an undeclared read — a node with no `reads` is simply not part of the
+ * data plane.
+ */
+const DataRefSchema = z
+  .object({
+    node: NodeIdSchema,
+    /** Property path into that node's value. Empty means the whole value. */
+    path: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+
 export const WorkflowNodeSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -38,6 +57,8 @@ export const WorkflowNodeSchema = z.discriminatedUnion("kind", [
       id: NodeIdSchema,
       kind: z.literal("output"),
       schemaRef: SchemaRefSchema,
+      /** The value that becomes the run's result. */
+      reads: DataRefSchema.optional(),
     })
     .strict(),
   z
@@ -58,6 +79,9 @@ export const WorkflowNodeSchema = z.discriminatedUnion("kind", [
       // labelled with it, and vice versa. Omitting the field keeps the
       // fail-closed default — only `pass` continues.
       verdicts: z.array(JudgeVerdictSchema).min(1).optional(),
+      // Votes keyed by role, read from run state. The panel still resolves the
+      // verdict: run data supplies the ballots, never the outcome.
+      reads: DataRefSchema.optional(),
     })
     .strict(),
   z
@@ -70,6 +94,8 @@ export const WorkflowNodeSchema = z.discriminatedUnion("kind", [
       // Naming an effect makes this node a side-effect carrier, which the
       // compiler then requires an approval gate for.
       effect: z.string().min(1).optional(),
+      /** The value handed to the skill. Reading it never skips the gate. */
+      reads: DataRefSchema.optional(),
     })
     .strict(),
   z
@@ -87,6 +113,8 @@ export const WorkflowNodeSchema = z.discriminatedUnion("kind", [
       id: NodeIdSchema,
       kind: z.literal("transform"),
       transformRef: z.string().min(1),
+      /** What the transform is applied to. Without it, it computes nothing. */
+      reads: DataRefSchema.optional(),
     })
     .strict(),
   z
@@ -96,6 +124,10 @@ export const WorkflowNodeSchema = z.discriminatedUnion("kind", [
       // Every outgoing edge must carry one of these, and every one of these
       // must be carried by an outgoing edge (007 §11 WF_UNTYPED_EDGE).
       conditionIds: z.array(z.string().min(1)).min(1),
+      // A value that names the arm to take. Gate analysis is condition-
+      // agnostic, so an arm chosen this way reaches nothing an arm chosen any
+      // other way could not.
+      reads: DataRefSchema.optional(),
     })
     .strict(),
   z
@@ -173,6 +205,7 @@ export const WorkflowSourceSchema = z
   })
   .strict();
 
+export type DataRef = z.infer<typeof DataRefSchema>;
 export type Role = z.infer<typeof RoleSchema>;
 export type RetryPolicy = z.infer<typeof RetryPolicySchema>;
 export type WorkflowNode = z.infer<typeof WorkflowNodeSchema>;

@@ -19,6 +19,7 @@
     "@forge/observability-memory": "workspace:*",
     "@forge/panel": "workspace:*",
     "@forge/provider-mock": "workspace:*",
+    "@forge/sandbox": "workspace:*",
     "@forge/company": "workspace:*"
   },
   "scripts": {

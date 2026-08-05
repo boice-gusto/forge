@@ -16,10 +16,12 @@ import type {
   EnginePlan,
   GraphEnginePort,
   IdPort,
+  JsonValue,
   JudgeVerdict,
   ObservabilityPort,
   PolicyPort,
   ProviderPort,
+  RunValues,
   SandboxPort,
   Span,
 } from "@forge/ports";
@@ -50,11 +52,28 @@ export interface RunRecord {
   readonly performedEffects: readonly string[];
   readonly pendingApprovalId?: string | undefined;
   readonly error?: string | undefined;
+  /** What the output node resolved to, once one has run. */
+  readonly result?: JsonValue | undefined;
 }
 
 export interface EffectSink {
-  perform(runId: string, nodeId: string, effect: string): Promise<void>;
+  /**
+   * `input` is the value the tool node read, if it declared one. Anything
+   * returned becomes that node's value, so a later node can read the result of
+   * the action rather than only the fact that it happened.
+   */
+  perform(
+    runId: string,
+    nodeId: string,
+    effect: string,
+    input: JsonValue | undefined,
+  ): Promise<JsonValue | undefined>;
 }
+
+/** A transform's implementation, resolved from its `transformRef`. */
+export type TransformFn = (
+  input: JsonValue,
+) => JsonValue | undefined | Promise<JsonValue | undefined>;
 
 export interface SealedArtifact {
   readonly workflowId: string;
@@ -84,6 +103,12 @@ export interface RuntimeOptions {
     nodeId: string,
     conditionIds: readonly string[],
   ) => string | undefined;
+  /**
+   * Resolves a `transformRef` to the function that computes it. A transform
+   * node whose ref resolves to nothing stops the run: computing nothing and
+   * carrying on would put an unwritten value in front of the next node.
+   */
+  readonly transforms?: (transformRef: string) => TransformFn | undefined;
   readonly effects: EffectSink;
   readonly checkpoints: CheckpointStorePort;
   readonly clock: ClockPort;
@@ -100,6 +125,12 @@ export interface StartInput {
   readonly capabilities?: readonly string[];
   /** What this run changed, used to compose the review panel. */
   readonly changedPaths?: readonly string[];
+  /**
+   * The run's payload, which becomes the value of every `input` node. Omitting
+   * it does not produce an empty value: a node reading an input that was never
+   * supplied stops the run.
+   */
+  readonly payload?: JsonValue;
 }
 
 export function effectHash(input: {
@@ -154,6 +185,126 @@ function principalTag(principal: string): string {
   return createHash("sha256").update(principal).digest("hex").slice(0, 16);
 }
 
+/**
+ * A produced value is stored as JSON and nothing else. The round trip does two
+ * jobs: it refuses anything a checkpoint could not hold, and it detaches the
+ * value from whatever produced it, so a sink that keeps a reference and mutates
+ * it later cannot change what a human already approved.
+ */
+function pin(nodeId: string, value: JsonValue): JsonValue {
+  try {
+    return JSON.parse(JSON.stringify(value)) as JsonValue;
+  } catch {
+    throw new Error(
+      `Node '${nodeId}' produced a value that is not JSON; a checkpoint could not hold it.`,
+    );
+  }
+}
+
+/** A node's outcome for one run. `undefined` means "ran, produced nothing". */
+type ValueLedger = Map<string, JsonValue | undefined>;
+
+/**
+ * Fail closed. Every absence here is an absence of data, and the only safe
+ * answer to "what is the value?" when there is none is to stop.
+ */
+function readPath(
+  values: ValueLedger,
+  nodeId: string,
+  path: readonly string[],
+): JsonValue {
+  if (!values.has(nodeId)) {
+    throw new Error(`Node '${nodeId}' has produced no value to read.`);
+  }
+  let current: JsonValue | undefined = values.get(nodeId);
+  const walked: string[] = [];
+  for (const segment of path) {
+    const record =
+      current !== null && typeof current === "object" && !Array.isArray(current)
+        ? (current as { readonly [key: string]: JsonValue })
+        : undefined;
+    if (record === undefined || !(segment in record)) {
+      throw new Error(
+        `Node '${nodeId}' has no value at '${[...walked, segment].join(".")}'.`,
+      );
+    }
+    current = record[segment];
+    walked.push(segment);
+  }
+  if (current === undefined) {
+    throw new Error(`Node '${nodeId}' produced no value to read.`);
+  }
+  return current;
+}
+
+/** Values as a checkpoint stores them: the ones that exist, keyed by node. */
+function snapshot(values: ValueLedger): Record<string, JsonValue> {
+  return Object.fromEntries(
+    [...values].filter(
+      (entry): entry is [string, JsonValue] => entry[1] !== undefined,
+    ),
+  );
+}
+
+/**
+ * One agent turn, reduced to what the data plane keeps: the text it streamed,
+ * or nothing if it streamed none. The session is destroyed either way — a
+ * throw here is an agent that produced nothing, not one that produced silence.
+ */
+async function runAgent(
+  provider: ProviderPort,
+  runId: string,
+  promptRef: string,
+  span: Span,
+): Promise<string | undefined> {
+  const session = await provider.createSession({
+    workspacePath: `/workspace/${runId}`,
+    correlationId: runId,
+    capabilities: [],
+  });
+  const chunks: string[] = [];
+  try {
+    for await (const event of provider.execute(session, {
+      prompt: promptRef,
+    })) {
+      if (event.type === "error") {
+        throw new Error(`${event.code}: ${event.message}`);
+      }
+      if (event.type === "text-delta") chunks.push(event.text);
+    }
+    return chunks.length === 0 ? undefined : chunks.join("");
+  } finally {
+    await provider.destroySession(session);
+    span.end();
+  }
+}
+
+const VOTES: ReadonlySet<string> = new Set(["pass", "fail", "error"]);
+
+/**
+ * Run data supplies ballots, never a verdict. The panel still resolves the
+ * outcome, so a value an agent wrote cannot talk an empty panel into passing.
+ */
+function votesFromState(
+  nodeId: string,
+  value: JsonValue | undefined,
+): Readonly<Record<string, Vote>> {
+  if (value === undefined) return {};
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !Object.values(value).every(
+      (vote) => typeof vote === "string" && VOTES.has(vote),
+    )
+  ) {
+    throw new Error(
+      `Judge '${nodeId}' read a value that is not a set of votes keyed by role.`,
+    );
+  }
+  return value as Readonly<Record<string, Vote>>;
+}
+
 export interface Runtime {
   start(input: StartInput): Promise<RunRecord>;
   decide(
@@ -192,6 +343,14 @@ export function createRuntime(options: RuntimeOptions): Runtime {
    * flow.
    */
   const routeLedgers = new Map<string, Map<string, string>>();
+  /**
+   * What each node produced, per run. Third ledger, same reason as the first
+   * two: a resumed attempt re-walks the nodes before the interrupt, and an
+   * agent is a model call, not a pure function. If its output changed on
+   * resume, the tool downstream would act on data the approver never saw — the
+   * action performed would not be the action approved.
+   */
+  const valueLedgers = new Map<string, ValueLedger>();
 
   /**
    * The single place a run's status changes, so the lifecycle transition
@@ -222,6 +381,13 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   async function advance(state: RunState): Promise<RunRecord> {
     const ledger = ledgers.get(state.record.runId) as string[];
     const routes = routeLedgers.get(state.record.runId) as Map<string, string>;
+    const values = valueLedgers.get(state.record.runId) as ValueLedger;
+
+    // The engine reads; only the hooks below write. A walk cannot invent a
+    // value, and a value cannot be produced twice under one run.
+    const view: RunValues = {
+      read: (nodeId, path) => readPath(values, nodeId, path),
+    };
 
     const result = await options.engine.execute(
       state.plan,
@@ -235,26 +401,49 @@ export function createRuntime(options: RuntimeOptions): Runtime {
             promptRef,
             ...(role === undefined ? {} : { role }),
           });
-          const session = await options.provider.createSession({
-            workspacePath: `/workspace/${state.record.runId}`,
-            correlationId: state.record.runId,
-            capabilities: [],
-          });
-          try {
-            for await (const event of options.provider.execute(session, {
-              prompt: promptRef,
-            })) {
-              if (event.type === "error") {
-                throw new Error(`${event.code}: ${event.message}`);
-              }
-            }
-          } finally {
-            await options.provider.destroySession(session);
-            span.end();
+
+          // Answered once per run, for the same reason a verdict is.
+          if (values.has(nodeId)) {
+            span.end({ replayed: true });
+            return;
           }
+
+          // Pinned only once the call completed: a failed agent has produced
+          // nothing, and a retry must be free to ask again.
+          values.set(
+            nodeId,
+            await runAgent(
+              options.provider,
+              state.record.runId,
+              promptRef,
+              span,
+            ),
+          );
         },
 
-        judge: async (nodeId, judgeRef): Promise<JudgeVerdict> => {
+        transform: async (nodeId, transformRef, input) => {
+          if (values.has(nodeId)) return;
+          const compute = options.transforms?.(transformRef);
+          if (compute === undefined) {
+            throw new Error(
+              `No transform is registered for '${transformRef}'; node '${nodeId}' has nothing to compute with.`,
+            );
+          }
+          const produced = await compute(input);
+          values.set(
+            nodeId,
+            produced === undefined ? undefined : pin(nodeId, produced),
+          );
+        },
+
+        emitOutput: async (nodeId, value) => {
+          if (values.has(nodeId)) return;
+          const pinned = pin(nodeId, value);
+          values.set(nodeId, pinned);
+          update(state, { result: pinned });
+        },
+
+        judge: async (nodeId, judgeRef, fromState): Promise<JudgeVerdict> => {
           const span = observability.startSpan("forge.node.judge", {
             runId: state.record.runId,
             nodeId,
@@ -272,7 +461,11 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           const panel = composePanel(state.roles, options.panel, {
             paths: state.changedPaths,
           });
-          const votes = options.votesFor?.(nodeId, judgeRef) ?? {};
+          // Injected votes win: the review adapter is the authority, run data
+          // only stands in for one when there is none.
+          const votes =
+            options.votesFor?.(nodeId, judgeRef) ??
+            votesFromState(nodeId, fromState);
           const outcome = resolveVerdict(panel, votes);
           routes.set(nodeId, outcome.verdict);
           span.end({
@@ -283,11 +476,22 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           return outcome.verdict;
         },
 
-        chooseBranch: async (nodeId, conditionIds): Promise<string> => {
+        chooseBranch: async (
+          nodeId,
+          conditionIds,
+          fromState,
+        ): Promise<string> => {
           const settled = routes.get(nodeId);
           if (settled !== undefined) return settled;
 
-          const chosen = options.branchFor?.(nodeId, conditionIds);
+          if (fromState !== undefined && typeof fromState !== "string") {
+            throw new Error(
+              `Branch '${nodeId}' read a value that does not name an arm.`,
+            );
+          }
+          // An injected arm overrides run data, so an explicit decision is
+          // never overruled by a value a model wrote.
+          const chosen = options.branchFor?.(nodeId, conditionIds) ?? fromState;
           if (chosen === undefined) {
             // Fail closed: running every arm would make a branch a fan-out, and
             // picking one would invent a decision the workflow did not make.
@@ -327,12 +531,21 @@ export function createRuntime(options: RuntimeOptions): Runtime {
             );
           }
         },
-        perform: async (nodeId, effect) => {
+        perform: async (nodeId, effect, input) => {
           // Replay safety: a resumed attempt re-walks pre-interrupt nodes, so
           // an already-dispatched effect must not fire twice (006 §8).
           if (ledger.includes(nodeId)) return;
-          await options.effects.perform(state.record.runId, nodeId, effect);
+          const produced = await options.effects.perform(
+            state.record.runId,
+            nodeId,
+            effect,
+            input,
+          );
           ledger.push(nodeId);
+          values.set(
+            nodeId,
+            produced === undefined ? undefined : pin(nodeId, produced),
+          );
           observability.event("forge.effect.dispatched", {
             runId: state.record.runId,
             nodeId,
@@ -342,6 +555,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         },
       },
       state.authorised,
+      view,
     );
 
     if (result.kind === "failed") {
@@ -420,11 +634,15 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       fingerprint: state.record.fingerprint,
     });
 
+    // The values go with the position. Resuming on freshly computed data would
+    // perform a different action from the one on the approval.
+    const pinned = snapshot(values);
     await options.checkpoints.save({
       runId: state.record.runId,
       stepId: result.nodeId,
       stateVersion: state.record.attempt,
       resumeToken: binding,
+      ...(Object.keys(pinned).length === 0 ? {} : { values: pinned }),
     });
 
     const approval = await options.approvals.request({
@@ -492,6 +710,19 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       runs.set(runId, state);
       ledgers.set(runId, []);
       routeLedgers.set(runId, new Map());
+
+      // The run's payload is the value of its input nodes, and of nothing else.
+      // With no payload they produce nothing, so a node that reads one stops
+      // the run rather than proceeding on an invented empty object.
+      const values: ValueLedger = new Map();
+      if (input.payload !== undefined) {
+        for (const node of input.artifact.ir.nodes) {
+          if (node.kind === "input")
+            values.set(node.id, pin(node.id, input.payload));
+        }
+      }
+      valueLedgers.set(runId, values);
+
       update(state, { status: "RUNNING" });
       const record = await advance(state);
       span.end({ status: record.status });

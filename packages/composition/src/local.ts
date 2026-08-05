@@ -15,7 +15,9 @@ import {
   type EffectSink,
   type Runtime,
   type SealedArtifact,
+  type TransformFn,
 } from "@forge/runtime";
+import { createMemorySandbox } from "@forge/sandbox";
 import type { Diagnostic } from "@forge/types";
 
 /**
@@ -49,6 +51,12 @@ export interface LocalStackOptions {
     nodeId: string,
     judgeRef: string,
   ) => Readonly<Record<string, Vote>>;
+  /**
+   * Transform implementations, keyed by `transformRef`. A workflow read from
+   * JSON cannot carry code, so a transform node that reads a value fails closed
+   * unless a host supplies one here.
+   */
+  readonly transforms?: Readonly<Record<string, TransformFn>>;
   /** Set false to prove a required sandbox failing closed. */
   readonly sandboxAvailable?: boolean;
   /**
@@ -89,6 +97,7 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
   const effects: EffectSink = options.effects ?? {
     async perform(_runId, _nodeId, effect) {
       dispatched.push(effect);
+      return undefined;
     },
   };
 
@@ -107,13 +116,19 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
       providerId: "mock",
       events: [{ type: "completed" }],
     }),
-    sandbox: { health: async () => ({ available: sandboxAvailable }) },
+    sandbox: createMemorySandbox({
+      profiles: ["docker"],
+      available: sandboxAvailable,
+    }),
     observability,
     panel: options.panel ?? { standing: [], summonable: [], quorum: 0.5 },
     ...(options.votesFor === undefined ? {} : { votesFor: options.votesFor }),
     ...(options.branchFor === undefined
       ? {}
       : { branchFor: options.branchFor }),
+    ...(options.transforms === undefined
+      ? {}
+      : { transforms: (ref: string) => options.transforms?.[ref] }),
     effects,
     checkpoints: createMemoryCheckpointStore(),
     clock,

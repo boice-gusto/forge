@@ -94,11 +94,33 @@ the type system is the only place they can be caught this early. The compiler
 keeps every analysis that needs the whole graph — reachability, gate bypass,
 capability closure — because `defineWorkflow` cannot see a path.
 
+Data flow is **declared**, not inferred from the edge list. A node that consumes
+a value carries a `reads: { node, path }` binding naming the node it reads and,
+optionally, a property path inside that node's value:
+
+```ts
+{ id: 'decide', kind: 'tool', skillRef: 'benefits.decide@1', effect: 'claim.decide',
+  reads: { node: 'review', path: ['recommendation'] } },
+```
+
+An edge says what may run next; it does not say what a node may read, and
+conflating the two would make every predecessor's output implicitly visible to
+every successor. A node with no `reads` is simply not part of the data plane.
+The compiler checks that the source exists and has a path to the reader
+(`WF_UNKNOWN_REF`); the runtime fails closed when the value is not there, which
+is what covers a source that sits on an arm the run did not take.
+
+`branch` and `judge` may read too: a branch's value **names** the arm, and a
+judge's value supplies **votes keyed by role** which the panel still resolves
+into a verdict. Run data proposes; it never decides. `branchFor` / `votesFor`
+remain explicit overrides and win over run state.
+
 > **Not yet implemented.** A `steps: [...]` builder DSL over `skill()` /
 > `approval()` / `branch()`, and `input` / `output` Zod schemas on the workflow.
-> The schemas wait on a run data plane: nothing currently flows between nodes,
-> so a declared input schema would validate a payload no node can read. Node
-> `schemaRef`s are refs the compiler resolves, not live schemas.
+> The data plane now exists, so a declared input schema would have a payload to
+> validate — but there is no schema registry, so node `schemaRef`s remain refs
+> the compiler resolves rather than live schemas. That registry is the next
+> step, not this one.
 
 **Forbidden in company/plugin code:**
 
@@ -128,7 +150,7 @@ interface CompiledWorkflowArtifact {
 // `enginePlan` — the plan is materialised by the engine from the IR rather than
 // sealed into the artifact, so there is one owner of it. The public surface is
 // derived on demand (see `POST /v1/workflows/compile`) rather than stored;
-// `inputSchema`/`outputSchema` wait on the data plane.
+// `inputSchema`/`outputSchema` wait on a schema registry.
 ```
 
 | Field | Visibility |

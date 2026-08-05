@@ -1,4 +1,5 @@
 export {
+  type DataRef,
   type ForgeIr,
   ForgeIrSchema,
   type IrEdge,

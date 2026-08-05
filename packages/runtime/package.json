@@ -17,7 +17,8 @@
     "@forge/approval-memory": "workspace:*",
     "@forge/panel": "workspace:*",
     "@forge/observability-memory": "workspace:*",
-    "@forge/provider-mock": "workspace:*"
+    "@forge/provider-mock": "workspace:*",
+    "@forge/sandbox": "workspace:*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

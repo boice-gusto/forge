@@ -1,6 +1,7 @@
 export type {
   ApprovalDecision,
   ApprovalRecord,
+  JsonValue,
 } from "@forge/ports";
 export {
   createRuntime,
@@ -12,4 +13,5 @@ export {
   type RuntimeOptions,
   type SealedArtifact,
   type StartInput,
+  type TransformFn,
 } from "./runtime.js";

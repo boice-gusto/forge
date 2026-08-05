@@ -1,10 +1,12 @@
-import type { ForgeIr, IrEdge, IrNode } from "@forge/ir";
+import type { DataRef, ForgeIr, IrEdge, IrNode } from "@forge/ir";
 import type {
   AuthorisedEffects,
   EngineExecutionResult,
   EnginePlan,
   EngineRunContext,
   GraphEnginePort,
+  JsonValue,
+  RunValues,
 } from "@forge/ports";
 
 /**
@@ -122,6 +124,18 @@ const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 /**
+ * What a node reads, or `undefined` when it declared nothing. Throws when the
+ * value is missing: `RunValues.read` fails closed, and every caller here is
+ * inside a `try` that turns that into a stopped run.
+ */
+function inputFor(
+  reads: DataRef | undefined,
+  values: RunValues,
+): JsonValue | undefined {
+  return reads === undefined ? undefined : values.read(reads.node, reads.path);
+}
+
+/**
  * Verdict routing (007 §10). A verdict with no declared arm stops the run, so a
  * `review` never arrives on the `pass` path. A judge that declares no arms
  * keeps the older, narrower rule — only `pass` continues.
@@ -129,9 +143,14 @@ const messageOf = (error: unknown): string =>
 async function judgeStep(
   node: Extract<IrNode, { kind: "judge" }>,
   context: EngineRunContext,
+  values: RunValues,
 ): Promise<StepOutcome> {
   try {
-    const verdict = await context.judge(node.id, node.judgeRef);
+    const verdict = await context.judge(
+      node.id,
+      node.judgeRef,
+      inputFor(node.reads, values),
+    );
     if (node.verdicts === undefined) {
       return verdict === "pass"
         ? "continue"
@@ -147,6 +166,62 @@ async function judgeStep(
 }
 
 /**
+ * A node whose whole job is to consume one value. Resolving and handing it over
+ * are the same failure: either way the node did not do what it declared, and a
+ * missing value is never retried into existence.
+ */
+async function dataStep(
+  nodeId: string,
+  reads: DataRef | undefined,
+  values: RunValues,
+  consume: (input: JsonValue) => Promise<void>,
+): Promise<StepOutcome> {
+  if (reads === undefined) return "continue";
+  try {
+    await consume(values.read(reads.node, reads.path));
+    return "continue";
+  } catch (error) {
+    return failed(nodeId, messageOf(error), false);
+  }
+}
+
+/**
+ * A tool resolves its input *before* the gate is considered: an action whose
+ * argument cannot be constructed is not an action to ask a human about, and an
+ * approval has to name something that exists.
+ */
+async function toolStep(
+  node: Extract<IrNode, { kind: "tool" }>,
+  context: EngineRunContext,
+  authorised: AuthorisedEffects,
+  materialized: MaterializedPlan,
+  values: RunValues,
+): Promise<StepOutcome> {
+  let input: JsonValue | undefined;
+  try {
+    input = inputFor(node.reads, values);
+  } catch (error) {
+    return failed(node.id, messageOf(error), false);
+  }
+
+  if (node.effect === undefined) return "continue";
+  if (!authorised.has(node.id)) {
+    return {
+      kind: "interrupted",
+      nodeId: node.id,
+      effect: node.effect,
+      gateIds: materialized.gatesFor.get(node.id) ?? [],
+    };
+  }
+  try {
+    await context.perform(node.id, node.effect, input);
+    return "continue";
+  } catch (error) {
+    return failed(node.id, messageOf(error), true);
+  }
+}
+
+/**
  * One node, one outcome. Each kind owns its failure semantics: an agent may be
  * retried, a judge or a sandbox may not, and an unauthorised effect interrupts
  * rather than failing.
@@ -156,6 +231,7 @@ async function step(
   context: EngineRunContext,
   authorised: AuthorisedEffects,
   materialized: MaterializedPlan,
+  values: RunValues,
 ): Promise<StepOutcome> {
   switch (node.kind) {
     case "agent":
@@ -167,13 +243,17 @@ async function step(
       }
 
     case "judge":
-      return judgeStep(node, context);
+      return judgeStep(node, context, values);
 
     case "branch": {
       // An undeclared or unchoosable arm stops the walk rather than defaulting
       // to one: a workflow that says *block or publish* must not do both.
       try {
-        const arm = await context.chooseBranch(node.id, node.conditionIds);
+        const arm = await context.chooseBranch(
+          node.id,
+          node.conditionIds,
+          inputFor(node.reads, values),
+        );
         return node.conditionIds.includes(arm)
           ? { kind: "routed", nodeId: node.id, arm }
           : failed(node.id, `branch arm ${arm} is not declared`, false);
@@ -181,6 +261,17 @@ async function step(
         return failed(node.id, messageOf(error), false);
       }
     }
+
+    case "transform":
+      // A node with nothing to read is not in the data plane at all.
+      return dataStep(node.id, node.reads, values, (input) =>
+        context.transform(node.id, node.transformRef, input),
+      );
+
+    case "output":
+      return dataStep(node.id, node.reads, values, (value) =>
+        context.emitOutput(node.id, value),
+      );
 
     case "sandbox":
       try {
@@ -199,23 +290,8 @@ async function step(
         return failed(node.id, messageOf(error), false);
       }
 
-    case "tool": {
-      if (node.effect === undefined) return "continue";
-      if (!authorised.has(node.id)) {
-        return {
-          kind: "interrupted",
-          nodeId: node.id,
-          effect: node.effect,
-          gateIds: materialized.gatesFor.get(node.id) ?? [],
-        };
-      }
-      try {
-        await context.perform(node.id, node.effect);
-        return "continue";
-      } catch (error) {
-        return failed(node.id, messageOf(error), true);
-      }
-    }
+    case "tool":
+      return toolStep(node, context, authorised, materialized, values);
 
     default:
       return "continue";
@@ -265,6 +341,7 @@ export function createMemoryGraphEngine(): GraphEnginePort {
       plan: EnginePlan,
       context: EngineRunContext,
       authorised: AuthorisedEffects,
+      values: RunValues,
     ): Promise<EngineExecutionResult> {
       const materialized = plans.get(plan);
       if (materialized === undefined) {
@@ -285,7 +362,13 @@ export function createMemoryGraphEngine(): GraphEnginePort {
         // exactly like a node the graph never reaches.
         if (!live.has(node.id)) continue;
         visited.push(node.id);
-        const outcome = await step(node, context, authorised, materialized);
+        const outcome = await step(
+          node,
+          context,
+          authorised,
+          materialized,
+          values,
+        );
         if (outcome === "continue") continue;
         if (outcome.kind === "routed") {
           pruneArms(materialized.ir, outcome.nodeId, outcome.arm, pruned);

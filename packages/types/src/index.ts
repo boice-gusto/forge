@@ -8,6 +8,7 @@ export {
   success,
 } from "./result.js";
 export {
+  type DataRef,
   type RetryPolicy,
   type Role,
   type RoleInput,

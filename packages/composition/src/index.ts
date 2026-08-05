@@ -1,3 +1,4 @@
+export type { JsonValue, TransformFn } from "@forge/runtime";
 export {
   type CompileOutcome,
   compileToArtifact,

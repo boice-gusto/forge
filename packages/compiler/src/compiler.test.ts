@@ -640,3 +640,131 @@ describe("reachability", () => {
     expect(result).toMatchObject({ ok: true });
   });
 });
+
+describe("data flow", () => {
+  const flowing = {
+    id: "acme.flow",
+    version: "1.0.0",
+    nodes: [
+      { id: "intake", kind: "input", schemaRef: "s@1" },
+      {
+        id: "shape",
+        kind: "transform",
+        transformRef: "t@1",
+        reads: { node: "intake" },
+      },
+      {
+        id: "result",
+        kind: "output",
+        schemaRef: "s@1",
+        reads: { node: "shape", path: ["body"] },
+      },
+    ],
+    edges: [
+      { from: "intake", to: "shape" },
+      { from: "shape", to: "result" },
+    ],
+  } as const;
+
+  test("a read of an upstream node compiles, and the ref survives into the IR", () => {
+    const result = compileWorkflow(flowing);
+
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) throw new Error("Expected a valid compilation.");
+    const output = result.value.ir.nodes.find((node) => node.id === "result");
+    expect(output).toMatchObject({ reads: { node: "shape", path: ["body"] } });
+  });
+
+  test("a read with no path defaults to the whole value, not to nothing", () => {
+    const result = compileWorkflow(flowing);
+    if (!result.ok) throw new Error("Expected a valid compilation.");
+    const shape = result.value.ir.nodes.find((node) => node.id === "shape");
+    expect(shape).toMatchObject({ reads: { node: "intake", path: [] } });
+  });
+
+  test("WF_UNKNOWN_REF — reading a node that was never declared", () => {
+    const result = compileWorkflow({
+      ...flowing,
+      nodes: flowing.nodes.map((node) =>
+        node.id === "shape" ? { ...node, reads: { node: "ghost" } } : node,
+      ),
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_UNKNOWN_REF");
+    expect(result.diagnostics[0]?.message).toContain("ghost");
+    expect(result.diagnostics[0]?.path).toEqual(["nodes", "shape", "reads"]);
+  });
+
+  test("WF_UNKNOWN_REF — reading a node with no path to this one", () => {
+    // `result` runs after `shape`, so `shape` reading `result` names a value
+    // that cannot exist yet. Refused rather than left to fail at runtime.
+    const result = compileWorkflow({
+      ...flowing,
+      nodes: flowing.nodes.map((node) =>
+        node.id === "shape" ? { ...node, reads: { node: "result" } } : node,
+      ),
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_UNKNOWN_REF");
+    expect(result.diagnostics[0]?.message).toContain("no path to it");
+  });
+
+  test("WF_UNKNOWN_REF — a node cannot read itself", () => {
+    const result = compileWorkflow({
+      ...flowing,
+      nodes: flowing.nodes.map((node) =>
+        node.id === "shape" ? { ...node, reads: { node: "shape" } } : node,
+      ),
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_UNKNOWN_REF");
+  });
+
+  test("a read on a node kind that has no input is not even schema-valid", () => {
+    const result = compileWorkflow({
+      ...flowing,
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1", reads: {} },
+        { id: "result", kind: "output", schemaRef: "s@1" },
+      ],
+      edges: [{ from: "intake", to: "result" }],
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_INVALID");
+  });
+
+  test("an arm-crossing read compiles, because the runtime is what fails closed", () => {
+    // `late` is reachable from `early`, but only on one arm. The compiler
+    // cannot prove the arm is taken; the runtime refuses the read when it is
+    // not. Stating it here so the division of labour is deliberate.
+    const result = compileWorkflow({
+      id: "acme.arms",
+      version: "1.0.0",
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1" },
+        { id: "route", kind: "branch", conditionIds: ["a", "b"] },
+        { id: "early", kind: "transform", transformRef: "t@1" },
+        { id: "other", kind: "transform", transformRef: "t@2" },
+        {
+          id: "late",
+          kind: "output",
+          schemaRef: "s@1",
+          reads: { node: "early" },
+        },
+      ],
+      edges: [
+        { from: "intake", to: "route" },
+        { from: "route", to: "early", conditionId: "a" },
+        { from: "route", to: "other", conditionId: "b" },
+        { from: "early", to: "late" },
+        { from: "other", to: "late" },
+      ],
+    });
+
+    expect(result).toMatchObject({ ok: true });
+  });
+});

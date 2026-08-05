@@ -286,6 +286,57 @@ function checkReachability(
 }
 
 /**
+ * A `reads` binding names the node whose value this one consumes. Two things
+ * make it a reference the compiler can check: the source must exist, and there
+ * must be a path from it to the reader. A node reading something that cannot
+ * possibly have run before it is a broken reference, not a runtime surprise —
+ * the runtime still fails closed on it, but a typo should not need a run to
+ * find.
+ *
+ * Reachability, not domination: on a graph with arms, a source on one arm and a
+ * reader after the join is reachable but not guaranteed, and the runtime's
+ * fail-closed read is what covers that.
+ */
+function checkDataFlow(
+  nodes: readonly IrNode[],
+  edges: readonly IrEdge[],
+): Diagnostic[] {
+  const adjacency = successors(nodes, edges);
+  const known = new Set(nodes.map((node) => node.id));
+  const diagnostics: Diagnostic[] = [];
+
+  for (const node of nodes) {
+    if (!("reads" in node) || node.reads === undefined) continue;
+    const source = node.reads.node;
+
+    if (!known.has(source)) {
+      diagnostics.push({
+        code: "WF_UNKNOWN_REF",
+        message: `Node "${node.id}" reads from "${source}", which is not declared.`,
+        path: ["nodes", node.id, "reads"],
+        suggestion: "Correct the reference, or declare the node it names.",
+      });
+      continue;
+    }
+
+    if (
+      source === node.id ||
+      !reachableAvoiding(source, node.id, adjacency, new Set())
+    ) {
+      diagnostics.push({
+        code: "WF_UNKNOWN_REF",
+        message: `Node "${node.id}" reads from "${source}", which has no path to it.`,
+        path: ["nodes", node.id, "reads"],
+        suggestion:
+          "Read from a node upstream of this one; a value that never exists cannot be defaulted.",
+      });
+    }
+  }
+
+  return diagnostics;
+}
+
+/**
  * Every side effect must sit behind an approval that names it. A generic
  * approval earlier in the graph authorises nothing: the gate binds to the
  * action, exactly as the runtime binds a decision to one (006 §6.4).
@@ -378,6 +429,10 @@ export function compileWorkflow(source: unknown): WorkflowCompilation {
   );
   if (reachabilityDiagnostics.length > 0)
     return { ok: false, diagnostics: reachabilityDiagnostics };
+
+  const dataDiagnostics = checkDataFlow(parsed.data.nodes, parsed.data.edges);
+  if (dataDiagnostics.length > 0)
+    return { ok: false, diagnostics: dataDiagnostics };
 
   const roleDiagnostics = checkRoles(
     parsed.data.nodes,

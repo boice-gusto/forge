@@ -3,16 +3,25 @@ import { createMemoryCheckpointStore } from "@forge/checkpoint-memory";
 import { compileWorkflow } from "@forge/compiler";
 import { createMemoryGraphEngine } from "@forge/engine-memory";
 import { createMemoryObservability } from "@forge/observability-memory";
+import type { PanelDefinition, Vote } from "@forge/panel";
 import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
 import {
   createSequentialIds,
+  type JsonValue,
   type ObservabilityPort,
+  type ProviderPort,
   type SpanAttributes,
 } from "@forge/ports";
 import { createMockProvider } from "@forge/provider-mock";
+import { createMemorySandbox } from "@forge/sandbox";
 import { describe, expect, test } from "vitest";
 
-import { createRuntime, effectHash, type SealedArtifact } from "./runtime.js";
+import {
+  createRuntime,
+  effectHash,
+  type SealedArtifact,
+  type TransformFn,
+} from "./runtime.js";
 
 const source = {
   id: "acme.publish",
@@ -90,12 +99,13 @@ function harness(
       providerId: "mock",
       events: [{ type: "completed" }],
     }),
-    sandbox: { health: async () => ({ available: true }) },
+    sandbox: createMemorySandbox({ profiles: ["docker"], available: true }),
     observability: sink ?? observability,
     panel: { standing: [], summonable: [], quorum: 0.5 },
     effects: {
       async perform(_runId, _nodeId, effect) {
         dispatched.push(effect);
+        return undefined;
       },
     },
     checkpoints,
@@ -729,15 +739,17 @@ function reviewHarness(opts: {
           ]
         : [{ type: "completed" }],
     }),
-    sandbox: {
-      health: async () => ({ available: opts.sandboxAvailable ?? true }),
-    },
+    sandbox: createMemorySandbox({
+      profiles: ["docker"],
+      available: opts.sandboxAvailable ?? true,
+    }),
     observability,
     panel: { standing: ["writer"], summonable: ["security"], quorum: 0.5 },
     votesFor: () => opts.votes ?? {},
     effects: {
       async perform(_r, _n, effect) {
         dispatched.push(effect);
+        return undefined;
       },
     },
     checkpoints: createMemoryCheckpointStore(),
@@ -1116,5 +1128,705 @@ describe("telemetry can neither leak a payload nor break a run", () => {
     });
 
     expect(run.status).toBe("AWAITING_APPROVAL");
+  });
+});
+
+/**
+ * The run data plane.
+ *
+ * Values flow along declared reads, and every one of them is pinned per run for
+ * the same reason effects and verdicts are: a resumed attempt re-walks the
+ * nodes before the interrupt, and an agent or a transform asked twice may
+ * answer twice. The action a human approved has to be the action performed,
+ * which means the data it was computed from cannot move underneath it.
+ */
+
+const dataFlow = {
+  id: "acme.data",
+  version: "1.0.0",
+  sideEffects: ["slack.post"],
+  nodes: [
+    { id: "intake", kind: "input", schemaRef: "s@1" },
+    {
+      id: "shape",
+      kind: "transform",
+      transformRef: "shape@1",
+      reads: { node: "intake" },
+    },
+    { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["publish"] },
+    {
+      id: "publish",
+      kind: "tool",
+      skillRef: "t@1",
+      effect: "slack.post",
+      reads: { node: "shape" },
+    },
+    {
+      id: "result",
+      kind: "output",
+      schemaRef: "s@1",
+      reads: { node: "publish" },
+    },
+  ],
+  edges: [
+    { from: "intake", to: "shape" },
+    { from: "shape", to: "gate" },
+    { from: "gate", to: "publish" },
+    { from: "publish", to: "result" },
+  ],
+} as const;
+
+function sealed(source: unknown): SealedArtifact {
+  const compiled = compileWorkflow(source);
+  if (!compiled.ok)
+    throw new Error(
+      `Fixture must compile: ${compiled.diagnostics.map((d) => d.message).join("; ")}`,
+    );
+  return {
+    workflowId: compiled.value.ir.workflowId,
+    fingerprint: compiled.value.fingerprint,
+    ir: compiled.value.ir,
+  };
+}
+
+/** A provider whose reply differs every call, as a flaky model would. */
+function driftingProvider(replies: readonly string[]): {
+  readonly port: ProviderPort;
+  readonly calls: () => number;
+} {
+  let call = 0;
+  const port: ProviderPort = {
+    providerId: "drift",
+    capabilities: ["streaming"],
+    createSession: async () => ({ sessionId: "s_1", providerId: "drift" }),
+    resumeSession: async () => ({ sessionId: "s_1", providerId: "drift" }),
+    async *execute() {
+      const text = replies[Math.min(call, replies.length - 1)] as string;
+      call += 1;
+      yield { type: "text-delta", text } as const;
+      yield { type: "completed" } as const;
+    },
+    cancel: async () => undefined,
+    destroySession: async () => undefined,
+    health: async () => ({ available: true, providerId: "drift" }),
+  };
+  return { port, calls: () => call };
+}
+
+interface DataHarnessOptions {
+  readonly transforms?: Readonly<Record<string, TransformFn>>;
+  readonly effect?: (input: JsonValue | undefined) => JsonValue | undefined;
+  readonly provider?: ProviderPort;
+  readonly observability?: ObservabilityPort;
+  readonly votesFor?: (
+    nodeId: string,
+    judgeRef: string,
+  ) => Readonly<Record<string, Vote>>;
+  readonly branchFor?: (
+    nodeId: string,
+    conditionIds: readonly string[],
+  ) => string | undefined;
+  readonly panel?: PanelDefinition;
+}
+
+function dataHarness(options: DataHarnessOptions = {}) {
+  const dispatched: JsonValue[] = [];
+  const inputs: (JsonValue | undefined)[] = [];
+  const clock = { now: () => new Date("2026-08-04T00:00:00.000Z") };
+  const ids = createSequentialIds();
+  const checkpoints = createMemoryCheckpointStore();
+  const recorder = createMemoryObservability();
+
+  const runtime = createRuntime({
+    engine: createMemoryGraphEngine(),
+    policy: createMemoryPolicy({ rules: REQUIRE_APPROVAL, grants: [] }),
+    approvals: createMemoryApprovalStore(clock, ids),
+    provider:
+      options.provider ??
+      createMockProvider({
+        providerId: "mock",
+        events: [{ type: "completed" }],
+      }),
+    sandbox: createMemorySandbox({ profiles: ["docker"], available: true }),
+    observability: options.observability ?? recorder,
+    panel: options.panel ?? { standing: [], summonable: [], quorum: 0.5 },
+    ...(options.votesFor === undefined ? {} : { votesFor: options.votesFor }),
+    ...(options.branchFor === undefined
+      ? {}
+      : { branchFor: options.branchFor }),
+    ...(options.transforms === undefined
+      ? {}
+      : { transforms: (ref: string) => options.transforms?.[ref] }),
+    effects: {
+      async perform(_runId, _nodeId, _effect, input) {
+        inputs.push(input);
+        const produced = options.effect?.(input);
+        if (produced !== undefined) dispatched.push(produced);
+        return produced;
+      },
+    },
+    checkpoints,
+    clock,
+    ids,
+    actor: "svc.forge.worker",
+    environment: "production",
+    approvalTtlMs: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  return { runtime, dispatched, inputs, checkpoints, observability: recorder };
+}
+
+describe("values flow between nodes", () => {
+  test("the payload reaches an effect through a transform, and its result becomes the run's", async () => {
+    const forge = dataHarness({
+      transforms: {
+        "shape@1": (input) => ({
+          text: `hello ${(input as { name: string }).name}`,
+        }),
+      },
+      effect: (input) => ({ posted: input as JsonValue }),
+    });
+
+    const started = await forge.runtime.start({
+      artifact: sealed(dataFlow),
+      payload: { name: "ada" },
+    });
+    const done = await forge.runtime.decide(
+      started.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(done.status).toBe("SUCCEEDED");
+    expect(forge.inputs).toEqual([{ text: "hello ada" }]);
+    expect(done.result).toEqual({ posted: { text: "hello ada" } });
+  });
+
+  test("a read narrows to a property path inside the value", async () => {
+    const forge = dataHarness({
+      transforms: { "shape@1": (input) => input },
+      effect: (input) => input,
+    });
+    const artifact = sealed({
+      ...dataFlow,
+      nodes: dataFlow.nodes.map((node) =>
+        node.id === "publish"
+          ? { ...node, reads: { node: "shape", path: ["inner", "deep"] } }
+          : node,
+      ),
+    });
+
+    const started = await forge.runtime.start({
+      artifact,
+      payload: { inner: { deep: "found", other: 1 } },
+    });
+    await forge.runtime.decide(
+      started.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(forge.inputs).toEqual(["found"]);
+  });
+
+  test("the run's values are checkpointed with its position", async () => {
+    const forge = dataHarness({
+      transforms: { "shape@1": () => ({ ready: true }) },
+    });
+    const run = await forge.runtime.start({
+      artifact: sealed(dataFlow),
+      payload: { name: "ada" },
+    });
+
+    const saved = await forge.checkpoints.listByRun(run.runId);
+    expect(saved[0]?.values).toEqual({
+      intake: { name: "ada" },
+      shape: { ready: true },
+    });
+    // A checkpoint that a durable store cannot hold is not a checkpoint.
+    expect(JSON.parse(JSON.stringify(saved[0]?.values))).toEqual(
+      saved[0]?.values,
+    );
+  });
+
+  test("a node with no reads is simply not in the data plane", async () => {
+    const forge = dataHarness();
+    const started = await forge.runtime.start({
+      artifact: sealed({
+        ...dataFlow,
+        id: "acme.data-unread",
+        nodes: dataFlow.nodes.map((node) => {
+          const { reads, ...rest } = node as { reads?: unknown };
+          void reads;
+          return rest;
+        }),
+      }),
+      payload: { name: "ada" },
+    });
+    await forge.runtime.decide(
+      started.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(forge.inputs).toEqual([undefined]);
+  });
+});
+
+describe("a node reading a value that is not there stops the run", () => {
+  test("no payload means the input node produced nothing, not an empty one", async () => {
+    const forge = dataHarness({
+      transforms: { "shape@1": (input) => input },
+    });
+
+    const run = await forge.runtime.start({ artifact: sealed(dataFlow) });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("intake");
+    expect(run.error).toContain("no value");
+    expect(forge.inputs).toEqual([]);
+  });
+
+  test("a path that is not in the value is refused rather than undefined", async () => {
+    const forge = dataHarness({ transforms: { "shape@1": (input) => input } });
+    const artifact = sealed({
+      ...dataFlow,
+      nodes: dataFlow.nodes.map((node) =>
+        node.id === "publish"
+          ? { ...node, reads: { node: "shape", path: ["missing"] } }
+          : node,
+      ),
+    });
+
+    const run = await forge.runtime.start({ artifact, payload: { name: "a" } });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("no value at 'missing'");
+    expect(run.pendingApprovalId).toBeUndefined();
+  });
+
+  test("a transform with no registered implementation computes nothing and stops", async () => {
+    const forge = dataHarness();
+
+    const run = await forge.runtime.start({
+      artifact: sealed(dataFlow),
+      payload: { name: "ada" },
+    });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("No transform is registered for 'shape@1'");
+    expect(forge.inputs).toEqual([]);
+  });
+
+  test("an output whose source produced nothing leaves the run without a result", async () => {
+    // The sink returns nothing, so `publish` has no value for `result` to read.
+    const forge = dataHarness({
+      transforms: { "shape@1": (input) => input },
+    });
+    const started = await forge.runtime.start({
+      artifact: sealed(dataFlow),
+      payload: { name: "ada" },
+    });
+    const done = await forge.runtime.decide(
+      started.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(done.status).toBe("FAILED");
+    expect(done.error).toContain("produced no value");
+    expect(done.result).toBeUndefined();
+  });
+
+  test("a value a checkpoint could not hold is refused where it is produced", async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const forge = dataHarness({
+      transforms: { "shape@1": () => circular as unknown as JsonValue },
+    });
+
+    const run = await forge.runtime.start({
+      artifact: sealed(dataFlow),
+      payload: { name: "ada" },
+    });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("not JSON");
+  });
+});
+
+describe("a resumed run does not change its mind", () => {
+  test("an agent is asked once, so the tool acts on what the approver saw", async () => {
+    const provider = driftingProvider(["first answer", "second answer"]);
+    const forge = dataHarness({
+      provider: provider.port,
+      effect: (input) => input,
+    });
+    const artifact = sealed({
+      ...dataFlow,
+      id: "acme.data-agent",
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1" },
+        { id: "draft", kind: "agent", promptRef: "p@1" },
+        {
+          id: "gate",
+          kind: "approval",
+          gateSchemaRef: "g@1",
+          gates: ["publish"],
+        },
+        {
+          id: "publish",
+          kind: "tool",
+          skillRef: "t@1",
+          effect: "slack.post",
+          reads: { node: "draft" },
+        },
+        { id: "result", kind: "output", schemaRef: "s@1" },
+      ],
+      edges: [
+        { from: "intake", to: "draft" },
+        { from: "draft", to: "gate" },
+        { from: "gate", to: "publish" },
+        { from: "publish", to: "result" },
+      ],
+    });
+
+    const started = await forge.runtime.start({ artifact });
+    expect(started.status).toBe("AWAITING_APPROVAL");
+    expect(provider.calls()).toBe(1);
+
+    await forge.runtime.decide(
+      started.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    // Not "second answer": the resumed walk replayed the pinned output rather
+    // than asking the model again.
+    expect(provider.calls()).toBe(1);
+    expect(forge.inputs).toEqual(["first answer"]);
+  });
+
+  test("a transform is computed once, however many attempts re-walk it", async () => {
+    let computed = 0;
+    const forge = dataHarness({
+      transforms: {
+        "shape@1": () => {
+          computed += 1;
+          return { attempt: computed };
+        },
+      },
+      effect: (input) => input,
+    });
+
+    const started = await forge.runtime.start({
+      artifact: sealed(dataFlow),
+      payload: { name: "ada" },
+    });
+    await forge.runtime.decide(
+      started.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(computed).toBe(1);
+    expect(forge.inputs).toEqual([{ attempt: 1 }]);
+  });
+
+  test("a failed agent is not pinned, so a retry may ask again", async () => {
+    let call = 0;
+    const flaky: ProviderPort = {
+      providerId: "flaky",
+      capabilities: ["streaming"],
+      createSession: async () => ({ sessionId: "s", providerId: "flaky" }),
+      resumeSession: async () => ({ sessionId: "s", providerId: "flaky" }),
+      async *execute() {
+        call += 1;
+        if (call === 1) {
+          yield {
+            type: "error",
+            code: "PROVIDER_TIMEOUT",
+            message: "timed out",
+            retryable: true,
+          } as const;
+          return;
+        }
+        yield { type: "text-delta", text: "recovered" } as const;
+        yield { type: "completed" } as const;
+      },
+      cancel: async () => undefined,
+      destroySession: async () => undefined,
+      health: async () => ({ available: true, providerId: "flaky" }),
+    };
+    const forge = dataHarness({ provider: flaky, effect: (input) => input });
+    const artifact = sealed({
+      ...dataFlow,
+      id: "acme.data-retry",
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1" },
+        {
+          id: "draft",
+          kind: "agent",
+          promptRef: "p@1",
+          retry: { maxAttempts: 2 },
+        },
+        {
+          id: "gate",
+          kind: "approval",
+          gateSchemaRef: "g@1",
+          gates: ["publish"],
+        },
+        {
+          id: "publish",
+          kind: "tool",
+          skillRef: "t@1",
+          effect: "slack.post",
+          reads: { node: "draft" },
+        },
+        { id: "result", kind: "output", schemaRef: "s@1" },
+      ],
+      edges: [
+        { from: "intake", to: "draft" },
+        { from: "draft", to: "gate" },
+        { from: "gate", to: "publish" },
+        { from: "publish", to: "result" },
+      ],
+    });
+
+    const started = await forge.runtime.start({ artifact });
+    await forge.runtime.decide(
+      started.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(call).toBe(2);
+    expect(forge.inputs).toEqual(["recovered"]);
+  });
+});
+
+describe("a branch and a judge can decide from run state", () => {
+  const routedByData = {
+    id: "acme.route",
+    version: "1.0.0",
+    sideEffects: ["slack.post"],
+    nodes: [
+      { id: "intake", kind: "input", schemaRef: "s@1" },
+      {
+        id: "route",
+        kind: "branch",
+        conditionIds: ["send", "hold"],
+        reads: { node: "intake", path: ["arm"] },
+      },
+      {
+        id: "gate",
+        kind: "approval",
+        gateSchemaRef: "g@1",
+        gates: ["publish"],
+      },
+      { id: "publish", kind: "tool", skillRef: "t@1", effect: "slack.post" },
+      { id: "quiet", kind: "transform", transformRef: "noop@1" },
+      { id: "result", kind: "output", schemaRef: "s@1" },
+    ],
+    edges: [
+      { from: "intake", to: "route" },
+      { from: "route", to: "gate", conditionId: "send" },
+      { from: "route", to: "quiet", conditionId: "hold" },
+      { from: "gate", to: "publish" },
+      { from: "publish", to: "result" },
+      { from: "quiet", to: "result" },
+    ],
+  } as const;
+
+  test("a value names the arm the branch takes", async () => {
+    const forge = dataHarness();
+    const run = await forge.runtime.start({
+      artifact: sealed(routedByData),
+      payload: { arm: "hold" },
+    });
+
+    expect(run.status).toBe("SUCCEEDED");
+    expect(forge.inputs).toEqual([]);
+  });
+
+  test("the other value takes the other arm, and still meets the gate", async () => {
+    const forge = dataHarness();
+    const run = await forge.runtime.start({
+      artifact: sealed(routedByData),
+      payload: { arm: "send" },
+    });
+
+    expect(run.status).toBe("AWAITING_APPROVAL");
+  });
+
+  test("an injected arm overrides the one run state proposed", async () => {
+    const forge = dataHarness({ branchFor: () => "hold" });
+    const run = await forge.runtime.start({
+      artifact: sealed(routedByData),
+      payload: { arm: "send" },
+    });
+
+    expect(run.status).toBe("SUCCEEDED");
+  });
+
+  test("a value that is not a declared arm is refused, not followed", async () => {
+    const forge = dataHarness();
+    const run = await forge.runtime.start({
+      artifact: sealed(routedByData),
+      payload: { arm: "whatever" },
+    });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("not declared");
+  });
+
+  test("a value that is not even a string names no arm at all", async () => {
+    const forge = dataHarness();
+    const run = await forge.runtime.start({
+      artifact: sealed(routedByData),
+      payload: { arm: 7 },
+    });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("does not name an arm");
+  });
+
+  const judgedByData = {
+    id: "acme.judged",
+    version: "1.0.0",
+    sideEffects: ["slack.post"],
+    roles: {
+      writer: {
+        version: "1.0.0",
+        capabilities: { requires: [], forbids: [] },
+        review: { weight: 1, blocking: true },
+      },
+    },
+    nodes: [
+      { id: "intake", kind: "input", schemaRef: "s@1" },
+      {
+        id: "panel",
+        kind: "judge",
+        judgeRef: "j@1",
+        reads: { node: "intake", path: ["votes"] },
+      },
+      {
+        id: "gate",
+        kind: "approval",
+        gateSchemaRef: "g@1",
+        gates: ["publish"],
+      },
+      { id: "publish", kind: "tool", skillRef: "t@1", effect: "slack.post" },
+      { id: "result", kind: "output", schemaRef: "s@1" },
+    ],
+    edges: [
+      { from: "intake", to: "panel" },
+      { from: "panel", to: "gate" },
+      { from: "gate", to: "publish" },
+      { from: "publish", to: "result" },
+    ],
+  } as const;
+
+  test("votes read from run state are resolved by the panel, not taken as a verdict", async () => {
+    const forge = dataHarness({
+      panel: { standing: ["writer"], summonable: [], quorum: 0.5 },
+    });
+    const run = await forge.runtime.start({
+      artifact: sealed(judgedByData),
+      payload: { votes: { writer: "pass" } },
+    });
+
+    expect(run.status).toBe("AWAITING_APPROVAL");
+  });
+
+  test("a failing vote read from run state still stops the run", async () => {
+    const forge = dataHarness({
+      panel: { standing: ["writer"], summonable: [], quorum: 0.5 },
+    });
+    const run = await forge.runtime.start({
+      artifact: sealed(judgedByData),
+      payload: { votes: { writer: "fail" } },
+    });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("judge verdict fail");
+  });
+
+  test("a value that is not a set of votes is refused rather than interpreted", async () => {
+    const forge = dataHarness({
+      panel: { standing: ["writer"], summonable: [], quorum: 0.5 },
+    });
+    const run = await forge.runtime.start({
+      artifact: sealed(judgedByData),
+      payload: { votes: { writer: "yes please" } },
+    });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("not a set of votes");
+  });
+
+  test("injected votes override the ones run state proposed", async () => {
+    const forge = dataHarness({
+      panel: { standing: ["writer"], summonable: [], quorum: 0.5 },
+      votesFor: () => ({ writer: "fail" }),
+    });
+    const run = await forge.runtime.start({
+      artifact: sealed(judgedByData),
+      payload: { votes: { writer: "pass" } },
+    });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("judge verdict fail");
+  });
+});
+
+/**
+ * Run data is the most PII-dense thing in the system — a payroll payload is a
+ * person. The adapter scrubs, but the runtime must never hand it anything to
+ * scrub: this uses a raw sink precisely so a leak cannot be masked by
+ * redaction downstream.
+ */
+describe("run data never reaches telemetry", () => {
+  test("a payload carrying an email and an SSN appears nowhere in the stream", async () => {
+    const recorded: { name: string; attributes: unknown }[] = [];
+    const raw: ObservabilityPort = {
+      startSpan(name, attributes) {
+        const entry = { name, attributes: { ...attributes } };
+        recorded.push(entry);
+        return {
+          end(endAttributes) {
+            recorded.push({ name: `${name}:end`, attributes: endAttributes });
+          },
+        };
+      },
+      event(name, attributes) {
+        recorded.push({ name, attributes });
+      },
+    };
+    const forge = dataHarness({
+      observability: raw,
+      transforms: { "shape@1": (input) => input },
+      effect: (input) => input,
+    });
+
+    const started = await forge.runtime.start({
+      artifact: sealed(dataFlow),
+      payload: { email: "ada@example.test", ssn: "123-45-6789" },
+    });
+    await forge.runtime.decide(
+      started.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    // The effect did happen on that data — this is not a run that quietly did
+    // nothing and therefore leaked nothing.
+    expect(forge.inputs).toEqual([
+      { email: "ada@example.test", ssn: "123-45-6789" },
+    ]);
+
+    const serialised = JSON.stringify(recorded);
+    expect(serialised).not.toContain("ada@example.test");
+    expect(serialised).not.toContain("123-45-6789");
   });
 });

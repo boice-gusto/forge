@@ -16,6 +16,7 @@ import { z } from "zod";
  */
 
 export {
+  type DataRef,
   type RetryPolicy,
   type Role,
   RoleSchema,
