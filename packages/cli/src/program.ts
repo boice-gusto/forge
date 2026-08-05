@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { inspectCompany, runCompanyWorkflow } from "./commands/company.js";
 import { runLocalComposition } from "./commands/dev.js";
 import { promptsUnavailable } from "./commands/prompts.js";
@@ -8,10 +10,6 @@ import {
 } from "./commands/validate.js";
 import { compileWorkflowFile, runWorkflowFile } from "./commands/workflow.js";
 import { CLI_EXIT_CODE, type CliResult, humanResult } from "./output.js";
-
-function usesJson(args: readonly string[]): boolean {
-  return args.includes("--json");
-}
 
 function flag(args: readonly string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -37,7 +35,7 @@ async function validateFromFile(
 }
 
 export async function runCli(args: readonly string[]): Promise<CliResult> {
-  const asJson = usesJson(args);
+  const asJson = args.includes("--json");
   const [first, second] = args;
 
   if (first === "providers" && second === "doctor")
@@ -80,5 +78,3 @@ export async function runCli(args: readonly string[]): Promise<CliResult> {
     CLI_EXIT_CODE.USAGE,
   );
 }
-
-import { readFile } from "node:fs/promises";

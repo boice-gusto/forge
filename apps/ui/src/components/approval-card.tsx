@@ -1,5 +1,4 @@
 import type { ApprovalView } from "@forge/sdk";
-import type { ReactNode } from "react";
 
 import {
   type DecisionDraft,
@@ -8,6 +7,7 @@ import {
   presentGate,
   remainingLabel,
 } from "../lib/gate.js";
+import { Fact } from "./fact.js";
 
 /**
  * One gate, rendered so that refusing it is as easy as granting it.
@@ -29,21 +29,6 @@ export interface ApprovalCardProps {
 
 const FIELD = "mt-1 w-full rounded border p-2 font-mono text-sm" as const;
 const BUTTON = "rounded border px-3 py-1.5 text-sm font-medium" as const;
-
-function Fact({
-  term,
-  children,
-}: {
-  readonly term: string;
-  readonly children: ReactNode;
-}) {
-  return (
-    <div className="flex flex-wrap gap-x-2 py-1">
-      <dt className="w-44 shrink-0 opacity-70">{term}</dt>
-      <dd className="min-w-0 break-all font-medium">{children}</dd>
-    </div>
-  );
-}
 
 /**
  * The binding, stated in full. An operator who cannot see the exact action is

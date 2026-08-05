@@ -26,17 +26,8 @@ export async function startWorker(
   build: WorkerBuildInfo,
   port = 3102,
 ): Promise<void> {
-  const health = createWorkerHealth(build, {
+  await createWorkerApp(build, {
     queue: "healthy",
     persistence: "healthy",
-  });
-  if (health.status !== "healthy") {
-    throw new Error(
-      "Worker cannot start without healthy required dependencies.",
-    );
-  }
-  await createWorkerApp(build, health.dependencies).listen({
-    host: "127.0.0.1",
-    port,
-  });
+  }).listen({ host: "127.0.0.1", port });
 }

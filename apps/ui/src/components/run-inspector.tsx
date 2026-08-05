@@ -2,6 +2,7 @@ import type { ApprovalView, RunEventView, RunView } from "@forge/sdk";
 
 import { presentGate } from "../lib/gate.js";
 import { buildTimeline } from "../lib/timeline.js";
+import { Fact } from "./fact.js";
 
 /**
  * What a run actually did.
@@ -32,21 +33,6 @@ const STATUS_MARK: Readonly<Record<string, string>> = {
   FAILED: "✕",
   CANCELLED: "⊘",
 };
-
-function Fact({
-  term,
-  value,
-}: {
-  readonly term: string;
-  readonly value: string;
-}) {
-  return (
-    <div className="flex flex-wrap gap-x-2 py-1">
-      <dt className="w-44 shrink-0 opacity-70">{term}</dt>
-      <dd className="min-w-0 break-all font-medium">{value}</dd>
-    </div>
-  );
-}
 
 /** Who decided, when, and why — or that nobody has yet. */
 function GateAudit({ approval }: { readonly approval: ApprovalView }) {
@@ -116,11 +102,11 @@ export function RunInspector({
       </header>
 
       <dl className="mt-3 text-sm">
-        <Fact term="Workflow" value={run.workflowId} />
-        <Fact term="Status" value={run.status} />
-        <Fact term="Attempt" value={String(run.attempt)} />
-        <Fact term="Artifact fingerprint" value={run.fingerprint} />
-        <Fact term="Pending gate" value={run.pendingApprovalId ?? "None"} />
+        <Fact term="Workflow">{run.workflowId}</Fact>
+        <Fact term="Status">{run.status}</Fact>
+        <Fact term="Attempt">{run.attempt}</Fact>
+        <Fact term="Artifact fingerprint">{run.fingerprint}</Fact>
+        <Fact term="Pending gate">{run.pendingApprovalId ?? "None"}</Fact>
       </dl>
 
       <h3 className="mt-4 text-base font-semibold">Effects dispatched</h3>

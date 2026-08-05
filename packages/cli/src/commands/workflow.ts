@@ -12,12 +12,9 @@ import {
 } from "../output.js";
 
 /**
- * Workflow commands.
- *
- * A run is in-memory and scoped to the process, so `run` executes until it
- * either finishes or reaches a gate, then reports. It does not pretend to
- * resume across invocations — that needs the API and a durable store, and
- * saying so is better than implying persistence that does not exist.
+ * A run here is in-memory and scoped to the process: `run` executes until it
+ * finishes or reaches a gate, then reports. It does not resume across
+ * invocations — that needs the API and a durable store.
  */
 
 interface WorkflowFile {
@@ -66,9 +63,8 @@ function unreadable(path: string | undefined, asJson: boolean): CliResult {
 }
 
 /**
- * Build the local stack a run needs. Each optional field is spread only when
- * present so an absent one keeps the stack's own default rather than
- * overwriting it with `undefined`.
+ * Optional fields are spread only when present, so an absent one keeps the
+ * stack's own default rather than overwriting it with `undefined`.
  */
 function stackFor(file: WorkflowFile) {
   return createLocalStack({
@@ -147,9 +143,8 @@ export async function compileWorkflowFile(
 }
 
 /**
- * Human rendering. A gated run says what it is waiting on, who can decide it,
- * and when the gate expires — a bare "AWAITING_APPROVAL" tells the reader
- * nothing they can act on.
+ * A gated run states what it waits on, who may decide it and when it expires:
+ * a bare "AWAITING_APPROVAL" gives the reader nothing to act on.
  */
 function renderRun(
   run: {

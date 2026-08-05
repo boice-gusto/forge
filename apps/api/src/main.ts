@@ -16,19 +16,15 @@ export interface ApiOptions {
   readonly adminToken: string;
   /** Principal attributed to an authenticated caller. */
   readonly principal?: string;
-  /**
-   * Roles that principal holds, used to scope the approval inbox. A policy
-   * rule's `approvers` names roles rather than people, so without this the
-   * inbox matches on identity alone and shows nothing.
-   */
+  /** Scopes the approval inbox: a rule's `approvers` names roles, not people. */
   readonly roles?: readonly string[];
 }
 
 /**
- * A single shared admin token is, in effect, every role: there is one operator
- * and no directory to ask. Said out loud rather than left as a matching
- * accident, because it is exactly the assumption an IdP has to replace
- * (012 §8) — at which point the inbox narrows to real membership.
+ * One shared admin token is, in effect, every role: one operator and no
+ * directory to ask. Stated rather than left as a matching accident, because it
+ * is the assumption an IdP replaces (012 §8), narrowing the inbox to real
+ * membership.
  */
 const ALL_ROLES = [ANY_ROLE] as const;
 
@@ -60,13 +56,8 @@ export function createApiApp(options: ApiOptions): FastifyInstance {
   });
 
   registerRunRoutes(app, {
-    // The boundary decides who is acting. A body field never does.
-    /**
-     * One shared admin token means one operator who is, in effect, every role.
-     * Stated explicitly rather than left to a matching accident: with a real
-     * IdP this resolves actual membership, and the inbox narrows accordingly.
-     */
     rolesFor: () => options.roles ?? ALL_ROLES,
+    // The boundary decides who is acting. A body field never does.
     principalFor: (authorization) =>
       authorization === `Bearer ${options.adminToken}`
         ? (options.principal ?? "local-operator")

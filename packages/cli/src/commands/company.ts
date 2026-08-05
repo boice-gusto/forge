@@ -9,20 +9,16 @@ import {
 } from "../output.js";
 
 /**
- * Company commands.
- *
- * One binary, many companies. `--company` picks which package to load; nothing
- * in core changes between them (009 §16). The host decides the capability
- * ceiling here, at the composition root, because that is the one place with the
- * standing to grant anything.
+ * One binary, many companies: `--company` picks which package to load and
+ * nothing in core changes between them (009 §16).
  */
 
 const FORGE_VERSION = "0.1.0";
 
 /**
- * What this CLI is willing to grant a company package. Deliberately a constant
- * and deliberately narrow: a `--capability` flag would let whoever runs the
- * command mint authority, which is the opposite of a ceiling.
+ * The capability ceiling, set here because the composition root is the only
+ * place with standing to grant anything. Deliberately a constant: a
+ * `--capability` flag would let the caller mint authority.
  */
 const HOST_CAPABILITIES = [
   "repo.read",

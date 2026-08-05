@@ -36,7 +36,6 @@ interface DecisionBody {
   readonly patch?: unknown;
 }
 
-/** Map the wire shape onto a decision, or nothing if it is unrecognised. */
 function toDecision(body: DecisionBody): ApprovalDecision | undefined {
   switch (body.decision) {
     case "approve":
@@ -53,14 +52,13 @@ function toDecision(body: DecisionBody): ApprovalDecision | undefined {
 }
 
 export interface RunRoutesOptions {
-  /** Resolves the acting principal from the request, at the trusted boundary. */
   /**
    * Roles the caller holds. A policy rule names roles, not people, so an inbox
-   * that matched only on identity would show almost nothing. Resolved here at
-   * the authenticated boundary — never read from the request — and destined to
-   * come from the IdP once one exists (012 §8).
+   * matching on identity alone would show almost nothing. Resolved at the
+   * authenticated boundary, never read from the request (012 §8).
    */
   readonly rolesFor?: (principal: string) => readonly string[];
+  /** Resolves the acting principal from the request, at the trusted boundary. */
   readonly principalFor: (
     authorization: string | undefined,
   ) => string | undefined;
@@ -69,9 +67,8 @@ export interface RunRoutesOptions {
 }
 
 /**
- * An event's family, from its name. The UI groups a timeline by this, and a
- * name it has never seen is shown rather than dropped — a control plane that
- * silently discards its own telemetry is worse than one that shows it raw.
+ * An event's family, from its name. An unrecognised name falls to `other` and
+ * is shown raw rather than dropped: silently discarding telemetry is worse.
  */
 function eventKind(name: string): RunEventView["kind"] {
   const family = name.split(".")[1];
@@ -104,9 +101,8 @@ export function registerRunRoutes(
   options: RunRoutesOptions,
 ): LocalStack {
   /**
-   * Every run, in the order it was accepted, and the stack that owns it. A run
-   * started with its own policy gets its own stack, so there is no single
-   * runtime to ask — the index is what makes a cross-run query possible at all.
+   * Every run, in the order accepted, and the stack that owns it. A run with
+   * its own policy gets its own stack, so there is no single runtime to ask.
    */
   const stacks = new Map<string, LocalStack>();
   const shared = options.stack ?? createLocalStack();
@@ -193,8 +189,7 @@ export function registerRunRoutes(
     if (principal === undefined)
       return reply.code(401).send({ status: "unauthorized" });
 
-    // Most recent first: an operator arriving at a run list is looking for
-    // what just happened, not for the first run the process ever accepted.
+    // Most recent first: an operator is looking for what just happened.
     const runs = [...stacks]
       .reverse()
       .map(([runId, stack]) => stack.runtime.getRun(runId))
@@ -204,8 +199,7 @@ export function registerRunRoutes(
 
   /**
    * The operator inbox. Scoped by the port to gates this principal may decide,
-   * so widening the query cannot widen who sees what — and the principal comes
-   * from the authenticated caller, never from a query parameter.
+   * so widening the query cannot widen who sees what.
    */
   app.get("/v1/approvals", async (request, reply) => {
     const principal = options.principalFor(request.headers.authorization);
@@ -220,8 +214,7 @@ export function registerRunRoutes(
         ),
       ),
     );
-    // Closest to expiry first. An expired gate is a timeout, not a slow yes,
-    // so the one about to run out is the one that needs an operator now.
+    // Closest to expiry first: an expired gate times out, it is not a slow yes.
     const pending = perStore
       .flat()
       .sort((left, right) => left.expiresAt.localeCompare(right.expiresAt));
@@ -242,8 +235,7 @@ export function registerRunRoutes(
   app.get<{ Params: { runId: string } }>(
     "/v1/runs/:runId/approvals",
     async (request, reply) => {
-      // Authenticated because the reply now names who decided each gate.
-      // Pending gates alone said only that a decision was owed.
+      // Authenticated because the reply names who decided each gate.
       const principal = options.principalFor(request.headers.authorization);
       if (principal === undefined)
         return reply.code(401).send({ status: "unauthorized" });
@@ -269,10 +261,9 @@ export function registerRunRoutes(
       if (stack.runtime.getRun(request.params.runId) === undefined)
         return reply.code(404).send({ status: "not_found" });
 
-      // Straight from the telemetry the runtime already emits, filtered to one
-      // run. Deriving a second timeline beside it would let the screen and the
-      // trace disagree about what happened. Attributes were redacted when the
-      // span was recorded, which is what makes them safe to serve.
+      // The runtime's own telemetry, filtered to one run: a second, derived
+      // timeline could disagree with the trace. Attributes were redacted when
+      // the span was recorded, which is what makes them safe to serve.
       const events: RunEventView[] = stack.observability.timeline
         .filter((entry) => entry.attributes.runId === request.params.runId)
         .map((entry) => ({

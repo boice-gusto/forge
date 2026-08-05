@@ -2,12 +2,9 @@ import type { LocalStack } from "@forge/composition";
 import type { ForgeJob, ObservabilityPort, QueuePort } from "@forge/ports";
 
 /**
- * Queue consumer.
- *
- * The critical rule this exists to honour: a worker must not hold a queue slot
- * across human time (006 §2). Reaching an approval gate does not block here —
- * `start` returns with the run parked, this handler finishes, and the slot is
- * released. A decision later enqueues a separate `workflow.resume` job.
+ * A worker must not hold a queue slot across human time (006 §2). Reaching a
+ * gate does not block: the run is parked, this handler finishes, and the slot
+ * is released. A decision later enqueues a separate `workflow.resume` job.
  */
 
 export interface ConsumerOptions {
@@ -35,8 +32,7 @@ export function createWorkerConsumer(options: ConsumerOptions): WorkerConsumer {
           runId: job.runId,
         });
 
-        // One unservicable job must not take the consumer down. A worker that
-        // dies on a job for an unknown run stops processing every other run.
+        // One unservicable job must not stop the consumer processing others.
         try {
           await handle(job);
         } catch (error) {
@@ -51,33 +47,30 @@ export function createWorkerConsumer(options: ConsumerOptions): WorkerConsumer {
   };
 
   async function handle(job: ForgeJob): Promise<void> {
-    {
-      if (job.type === "workflow.cancel") {
-        await options.stack.runtime.cancel(job.runId);
-        return;
-      }
+    if (job.type === "workflow.cancel") {
+      await options.stack.runtime.cancel(job.runId);
+      return;
+    }
 
-      if (job.type === "workflow.resume") {
-        // The decision was already recorded by the control plane; this job
-        // exists so the resume happens on a worker rather than in the
-        // request that made the decision.
-        const run = options.stack.runtime.getRun(job.runId);
-        options.observability.event("forge.worker.resumed", {
-          runId: job.runId,
-          status: run?.status ?? "unknown",
-        });
-        return;
-      }
-
-      // workflow.execute — the run was started by the control plane, so
-      // there is nothing to re-drive here beyond reporting where it landed.
+    if (job.type === "workflow.resume") {
+      // The control plane already recorded the decision; this job only moves
+      // the resume off the request that made it.
       const run = options.stack.runtime.getRun(job.runId);
-      options.observability.event("forge.worker.executed", {
+      options.observability.event("forge.worker.resumed", {
         runId: job.runId,
         status: run?.status ?? "unknown",
-        // Proof the slot is not held across a gate.
-        parked: run?.status === "AWAITING_APPROVAL",
       });
+      return;
     }
+
+    // workflow.execute — started by the control plane, so there is nothing to
+    // re-drive beyond reporting where it landed.
+    const run = options.stack.runtime.getRun(job.runId);
+    options.observability.event("forge.worker.executed", {
+      runId: job.runId,
+      status: run?.status ?? "unknown",
+      // Proof the slot is not held across a gate.
+      parked: run?.status === "AWAITING_APPROVAL",
+    });
   }
 }

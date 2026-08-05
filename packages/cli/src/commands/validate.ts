@@ -1,3 +1,5 @@
+import { safeLoadCompanyManifest } from "@forge/manifest";
+
 import {
   CLI_EXIT_CODE,
   type CliResult,
@@ -38,5 +40,3 @@ export function validateManifest(input: unknown, asJson: boolean): CliResult {
     ? jsonResult(payload)
     : humanResult(`Manifest is valid: ${payload.id}`);
 }
-
-import { safeLoadCompanyManifest } from "@forge/manifest";
