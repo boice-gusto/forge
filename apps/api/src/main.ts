@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 
-import { type ControlPlaneStack, createLocalStack } from "@forge/composition";
+import {
+  type ControlPlaneStack,
+  createLocalStack,
+  createRunConsumer,
+  runtimeHost,
+} from "@forge/composition";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import { createRequestAuthenticator, registerAuthRoutes } from "./auth.js";
@@ -70,10 +75,32 @@ export function createApiApp(options: ApiOptions): FastifyInstance {
     return reply.send(snapshot());
   });
 
+  const stack = options.stack ?? createLocalStack();
+
   registerAuthRoutes(app, { identity: options.identity, sessions });
-  registerRunRoutes(app, {
-    authenticate,
-    stack: options.stack ?? createLocalStack(),
+  registerRunRoutes(app, { authenticate, stack });
+
+  /**
+   * The process consumes the queue it writes to.
+   *
+   * `POST /v1/runs` persists and enqueues, so *something* has to walk the run.
+   * Binding a consumer here rather than only in `apps/worker` is what makes
+   * the route mean one thing: a deployment that set `FORGE_PERSISTENCE` and
+   * forgot to run a worker would otherwise accept runs and never advance one,
+   * and the API would behave differently under two configurations — which is a
+   * route nobody can write a client against. `apps/worker` is additional
+   * capacity on the same queue, not a prerequisite for correctness.
+   *
+   * `onReady` because subscribing is asynchronous and `createApiApp` is not.
+   * Fastify runs it once, before the first request is served, on `listen` and
+   * on `inject` alike.
+   */
+  app.addHook("onReady", async () => {
+    await createRunConsumer({
+      queue: stack.queue,
+      host: runtimeHost(stack.runtime),
+      observability: stack.observability,
+    }).start();
   });
 
   return app;

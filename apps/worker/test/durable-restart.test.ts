@@ -2,7 +2,11 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { compileToArtifact } from "@forge/composition";
+import {
+  compileToArtifact,
+  createRunConsumer,
+  type RunHost,
+} from "@forge/composition";
 import {
   createDurableStack,
   type DurableStack,
@@ -18,7 +22,6 @@ import type { StartedRedisContainer } from "@testcontainers/redis";
 import { RedisContainer } from "@testcontainers/redis";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { createWorkerConsumer, type RunHost } from "../src/consumer.js";
 import {
   AGENT_WORKFLOW,
   countingProvider,
@@ -221,7 +224,7 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
         async execute() {
           throw new Error("this proof never starts a run from the queue");
         },
-        async resume(runId) {
+        async resume(runId: string) {
           const run = await stack.resume(runId);
           resumed.push(run);
           return run?.status ?? "unknown";
@@ -232,7 +235,7 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
   }
 
   async function consume(second: SecondProcess): Promise<void> {
-    await createWorkerConsumer({
+    await createRunConsumer({
       queue: second.stack.queue,
       host: second.host,
       observability: createMemoryObservability(),

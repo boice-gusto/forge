@@ -202,6 +202,18 @@ describe.skipIf(!dockerAvailable)(
       throw new Error(`The API never became ready:\n${output}`);
     }
 
+    /**
+     * The statuses at which the queue owes the run nothing. Not "terminal":
+     * every assertion below is about a run parked at its *gate*, and a helper
+     * that waited for a finished run would drive it past the thing under test.
+     */
+    const SETTLED = new Set([
+      "AWAITING_APPROVAL",
+      "SUCCEEDED",
+      "FAILED",
+      "CANCELLED",
+    ]);
+
     const call = async (
       api: Api,
       method: string,
@@ -220,6 +232,30 @@ describe.skipIf(!dockerAvailable)(
       };
     };
 
+    /**
+     * `POST /v1/runs` accepts and enqueues, so the reply is a run at PENDING.
+     * This is the loop a client writes, against the same process — which also
+     * proves the control plane consumes the queue it writes to.
+     */
+    async function settle(api: Api, runId: string) {
+      const deadline = Date.now() + 30_000;
+      for (;;) {
+        const run = await call(
+          api,
+          "GET",
+          `/v1/runs/${runId}`,
+          "marketing-lead",
+        );
+        if (SETTLED.has(run.body.status as string)) return run.body;
+        if (Date.now() > deadline) {
+          throw new Error(
+            `Run ${runId} was still ${String(run.body.status)} after 30s:\n${api.output()}`,
+          );
+        }
+        await sleep(50);
+      }
+    }
+
     test(
       "a run parked in one process is listed, readable and decidable in the next",
       async () => {
@@ -236,13 +272,18 @@ describe.skipIf(!dockerAvailable)(
           },
         );
 
+        // Accepted, not executed: the request is not held across the walk.
         expect(`${started.status} ${JSON.stringify(started.body)}`).toContain(
-          "201",
+          "202",
         );
-        expect(started.body.status).toBe("AWAITING_APPROVAL");
+        expect(started.body.status).toBe("PENDING");
         expect(started.body.performedEffects).toEqual([]);
         const runId = started.body.runId as string;
-        const approvalId = started.body.pendingApprovalId as string;
+
+        const parked = await settle(first, runId);
+        expect(parked.status).toBe("AWAITING_APPROVAL");
+        expect(parked.performedEffects).toEqual([]);
+        const approvalId = parked.pendingApprovalId as string;
 
         // The process that started it is gone, unflushed.
         await first.kill();
@@ -281,10 +322,11 @@ describe.skipIf(!dockerAvailable)(
           )?.policyId,
         ).toBe("acme.marketing.external-publish");
 
-        // 4. What did *not* survive, stated rather than glossed over. The run
-        //    and its gate are durable; its telemetry never was, so the second
-        //    process serves the events it recorded and no others. This is the
-        //    line 012 §4.3's stream has to cross.
+        // 4. The run's timeline survived too. This assertion used to read
+        //    `toEqual([])` and was labelled "what did *not* survive" — events
+        //    were the last thing in a run that a restart still lost. A second
+        //    process now serves what the first recorded, ordered by the
+        //    store's sequence rather than by whichever clock wrote it.
         const before = await call(
           second,
           "GET",
@@ -292,7 +334,17 @@ describe.skipIf(!dockerAvailable)(
           "marketing-lead",
         );
         expect(before.status).toBe(200);
-        expect(before.body.events).toEqual([]);
+        const names = (before.body.events as { name: string }[]).map(
+          (event) => event.name,
+        );
+        expect(names).toContain("forge.run.start");
+        expect(names).toContain("forge.approval.requested");
+        // Recorded by a process that no longer exists, and read here.
+        expect(names).not.toContain("forge.effect.dispatched");
+        const seqs = (before.body.events as { seq: number }[]).map(
+          (event) => event.seq,
+        );
+        expect([...seqs].sort((a, b) => a - b)).toEqual(seqs);
 
         // 5. Authority is checked on the decision itself, across the restart.
         const refused = await call(
@@ -370,10 +422,10 @@ describe.skipIf(!dockerAvailable)(
           },
         });
 
-        expect(`${run.body.status} ${JSON.stringify(run.body)}`).toContain(
-          "AWAITING_APPROVAL",
-        );
-        expect(run.body.performedEffects).toEqual([]);
+        expect(`${run.status} ${JSON.stringify(run.body)}`).toContain("202");
+        const parked = await settle(api, run.body.runId as string);
+        expect(parked.status).toBe("AWAITING_APPROVAL");
+        expect(parked.performedEffects).toEqual([]);
 
         // Not merely "a gate opened" — the gate the *company's* pack asked
         // for. A rule the caller invented would either open a different gate

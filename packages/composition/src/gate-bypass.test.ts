@@ -1181,6 +1181,17 @@ describe("attack: launder a bypass through run data", () => {
   });
 
   test("a payload that is PII does not survive into the run's telemetry", async () => {
+    // Deliberately a conjunction, and it reads like a check that cannot fail
+    // until you try it. Two layers keep the payload out of telemetry: the
+    // runtime never puts run data in an attribute, and redaction scrubs
+    // anything that looks like PII on the way to a sink. Break either alone
+    // and this still passes — break both and it fails.
+    //
+    // That is the property worth asserting here, because a leak needs both to
+    // go wrong. Each layer is proven on its own elsewhere: the scrubber
+    // against a capture store in `observability/src/run-events.test.ts`, and
+    // the runtime's own silence in `runtime.test.ts`. Verified by sabotage,
+    // not assumed.
     const forge = stack();
     const artifact = compileToArtifact(dataGuarded);
     if (!artifact.ok) throw new Error("must compile");

@@ -184,7 +184,7 @@ describe.skipIf(!dockerAvailable)(
       expect(run.status).toBe("AWAITING_APPROVAL");
     }, 60_000);
 
-    test("the timeline is what this process recorded, filtered to one run", async () => {
+    test("a run's events are written to the store, not only to a trace", async () => {
       const stack = await durable({
         sandboxProfiles: ["docker", "gusto-research"],
       });
@@ -194,32 +194,15 @@ describe.skipIf(!dockerAvailable)(
         payload: { body: "the copy" },
       });
 
-      const names = stack
-        .timeline()
-        .filter((entry) => entry.attributes.runId === run.runId)
-        .map((entry) => entry.name);
+      // Read from the durable store, which is what an operator queries and
+      // what survives this process. A per-process recorder could show these
+      // and still leave the next process with nothing.
+      await stack.settled();
+      const names = (await stack.runEvents.list(run.runId)).map(
+        (entry) => entry.name,
+      );
       expect(names).toContain("forge.policy.decide");
       expect(names).toContain("forge.approval.requested");
-    }, 60_000);
-
-    test("a stack that only exports has no timeline, and says so rather than inventing one", async () => {
-      // With a collector bound the spans have left the process. Serving an
-      // empty list is the honest answer; serving a second, derived timeline
-      // would be a story that could disagree with the trace.
-      const stack = await durable({
-        sandboxProfiles: ["docker", "gusto-research"],
-        observability: {
-          startSpan: () => ({ end: () => undefined }),
-          event: () => undefined,
-        },
-      });
-
-      await stack.runtime.start({
-        artifact: artifactOf(GATED),
-        payload: { body: "the copy" },
-      });
-
-      expect(stack.timeline()).toEqual([]);
     }, 60_000);
   },
 );

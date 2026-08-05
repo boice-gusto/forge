@@ -269,6 +269,21 @@ function votesFromState(
 }
 
 export interface Runtime {
+  /**
+   * Creates a run and stops.
+   *
+   * The record and the sealed artifact are written to the run store at
+   * `PENDING` — "run created; execute job not yet picked up" (006 §5) — and
+   * nothing is walked: no policy is consulted, no sandbox is leased, no model
+   * is called. This is the control plane's half of 006 §10.1, and it exists
+   * because `start` walks: a route that could only call `start` had to hold an
+   * HTTP request open across all three.
+   *
+   * Whoever consumes the `workflow.execute` job calls `resume(runId)`, which
+   * re-enters a stored run and therefore needs to know nothing about this one.
+   */
+  create(input: StartInput): Promise<RunRecord>;
+  /** Creates a run and walks it, in this process, until it stops. */
   start(input: StartInput): Promise<RunRecord>;
   /**
    * Re-enters a run this process may never have started.
@@ -991,63 +1006,90 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     return carry(state, approval.nodeId);
   }
 
-  return {
-    async start(input) {
-      const runId = options.ids.next("run");
-      const span = observability.startSpan("forge.run.start", {
+  /**
+   * A run, brought into existence and no further.
+   *
+   * Everything here is durable before it returns — the record at `PENDING`,
+   * the sealed artifact, and the payload pinned onto the input nodes — and
+   * nothing here walks. Both entry points share it so that a run created by
+   * the control plane and a run started in-process are the same run in the
+   * store, differing only in who takes the next step.
+   */
+  async function place(input: StartInput): Promise<RunState> {
+    const runId = options.ids.next("run");
+    const state: RunState = {
+      record: {
         runId,
         workflowId: input.artifact.workflowId,
         fingerprint: input.artifact.fingerprint,
-      });
-      const state: RunState = {
-        record: {
-          runId,
-          workflowId: input.artifact.workflowId,
-          fingerprint: input.artifact.fingerprint,
-          status: "PENDING",
-          attempt: 1,
-          performedEffects: [],
-        },
-        capabilities: input.capabilities ?? [],
-        authorised: new Set<string>(),
-        plan: await options.engine.materialize(input.artifact.ir),
-        roles: input.artifact.ir.roles,
-        changedPaths: input.changedPaths ?? [],
-        retryBudget: retryBudgetFor(input.artifact.ir),
-        span,
-      };
-      runs.set(runId, state);
-      ledgers.set(runId, []);
-      routeLedgers.set(runId, new Map());
-      valueLedgers.set(runId, new Map());
+        status: "PENDING",
+        attempt: 1,
+        performedEffects: [],
+      },
+      capabilities: input.capabilities ?? [],
+      authorised: new Set<string>(),
+      plan: await options.engine.materialize(input.artifact.ir),
+      roles: input.artifact.ir.roles,
+      changedPaths: input.changedPaths ?? [],
+      retryBudget: retryBudgetFor(input.artifact.ir),
+    };
+    runs.set(runId, state);
+    ledgers.set(runId, []);
+    routeLedgers.set(runId, new Map());
+    valueLedgers.set(runId, new Map());
 
-      // The sealed artifact goes with the run, which is what lets another
-      // process re-enter it from a run id alone. Until there is an artifact
-      // registry, the run row is one.
-      await options.runs.create({
-        record: state.record,
-        artifact: {
-          workflowId: input.artifact.workflowId,
-          fingerprint: input.artifact.fingerprint,
-          ir: input.artifact.ir as unknown as JsonValue,
-        },
-        capabilities: state.capabilities,
-        changedPaths: state.changedPaths,
-      });
+    // The sealed artifact goes with the run, which is what lets another
+    // process re-enter it from a run id alone. Until there is an artifact
+    // registry, the run row is one.
+    await options.runs.create({
+      record: state.record,
+      artifact: {
+        workflowId: input.artifact.workflowId,
+        fingerprint: input.artifact.fingerprint,
+        ir: input.artifact.ir as unknown as JsonValue,
+      },
+      capabilities: state.capabilities,
+      changedPaths: state.changedPaths,
+    });
 
-      // The run's payload is the value of its input nodes, and of nothing else.
-      // With no payload they produce nothing, so a node that reads one stops
-      // the run rather than proceeding on an invented empty object.
-      const values = valueLedgers.get(runId) as ValueLedger;
-      if (input.payload !== undefined) {
-        for (const node of input.artifact.ir.nodes) {
-          if (node.kind !== "input") continue;
-          const pinned = pin(node.id, input.payload);
-          values.set(node.id, pinned);
-          await options.runs.pinValue(runId, node.id, pinned);
-        }
+    // The run's payload is the value of its input nodes, and of nothing else.
+    // With no payload they produce nothing, so a node that reads one stops
+    // the run rather than proceeding on an invented empty object.
+    const values = valueLedgers.get(runId) as ValueLedger;
+    if (input.payload !== undefined) {
+      for (const node of input.artifact.ir.nodes) {
+        if (node.kind !== "input") continue;
+        const pinned = pin(node.id, input.payload);
+        values.set(node.id, pinned);
+        await options.runs.pinValue(runId, node.id, pinned);
       }
+    }
 
+    return state;
+  }
+
+  const startSpanFor = (state: RunState): Span =>
+    observability.startSpan("forge.run.start", {
+      runId: state.record.runId,
+      workflowId: state.record.workflowId,
+      fingerprint: state.record.fingerprint,
+    });
+
+  return {
+    async create(input) {
+      const state = await place(input);
+      // Opened and closed here. The walk happens wherever the execute job is
+      // consumed, which is usually not this process, so holding the span open
+      // would leave it open forever — and parenting the walk to it would be a
+      // lie about which process did the work.
+      startSpanFor(state).end({ status: state.record.status });
+      return state.record;
+    },
+
+    async start(input) {
+      const state = await place(input);
+      const span = startSpanFor(state);
+      state.span = span;
       await update(state, { status: "RUNNING" });
       const record = await advance(state);
       span.end({ status: record.status });
@@ -1061,12 +1103,17 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       if (state.record.status === "AWAITING_APPROVAL") {
         return reenterGate(state);
       }
+      // A run the control plane created and never walked. It becomes RUNNING
+      // here rather than at creation, because that is where the walk actually
+      // begins — a run reported RUNNING while its job sat in a queue would
+      // make PENDING mean nothing (006 §5).
+      if (state.record.status === "PENDING") {
+        await update(state, { status: "RUNNING" });
+        return advance(state);
+      }
       // A run that was mid-walk when its process ended. Re-entering replays
       // every ledger and invokes nothing that already answered.
-      if (
-        state.record.status === "RUNNING" ||
-        state.record.status === "PENDING"
-      ) {
+      if (state.record.status === "RUNNING") {
         return advance(state);
       }
       // Terminal. There is nothing to continue, and nothing to redo.

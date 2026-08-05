@@ -85,9 +85,14 @@ export const PII_PROBE: SpanAttributes = {
   attempt: 2,
   memberEmail: "ada.lovelace@example.test",
   ssn: "123-45-6789",
-  annualWage: 82000,
+  // Decimal on purpose. A bare `82000` is five digits that appear by chance
+  // inside a nanosecond timestamp, so the wire test could fail — or pass — for
+  // a reason unrelated to redaction. It did fail that way once.
+  annualWage: 82417.63,
   homeAddress: "1 Infinite Loop",
-  bankAccountNumber: "000123456",
+  // Twelve digits for the same reason: a nine-digit run is short enough to
+  // collide with an id or a timestamp in a raw payload grep.
+  bankAccountNumber: "000123456789",
   // Short on purpose: a longer literal here is indistinguishable from a real
   // credential to `pnpm security:secrets`, and a fixture must not train anyone
   // to ignore that check.
@@ -104,9 +109,9 @@ export const PII_PROBE: SpanAttributes = {
 export const PII_NEEDLES: readonly string[] = [
   "ada.lovelace@example.test",
   "123-45-6789",
-  "82000",
+  "82417.63",
   "1 Infinite Loop",
-  "000123456",
+  "000123456789",
   "sk-abc",
   "Summarise the payroll",
 ];

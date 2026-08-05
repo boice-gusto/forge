@@ -1,6 +1,6 @@
-import { loadCompany } from "@forge/company";
 import type { PolicyRule } from "@forge/policy-memory";
 import type { Diagnostic } from "@forge/types";
+import { loadCompany } from "./loader.js";
 
 /**
  * Where the control plane's policy comes from.

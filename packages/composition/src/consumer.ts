@@ -1,14 +1,22 @@
 import type { ForgeJob, ObservabilityPort, QueuePort } from "@forge/ports";
+import type { Runtime } from "@forge/runtime";
 
 /**
+ * The queue consumer, shared by every process that runs one.
+ *
  * A worker must not hold a queue slot across human time (006 §2). Reaching a
  * gate does not block: the run is parked, this handler finishes, and the slot
  * is released. A decision later enqueues a separate `workflow.resume` job,
  * which may well arrive at a process that was not running when the run began.
  *
- * The consumer knows nothing about runtimes, stores or artifacts. It maps one
- * job to one host call and reports where it landed — everything about *how* a
- * run is rebuilt lives in the composition root.
+ * It lives here rather than in `apps/worker` because it is no longer only the
+ * worker's. `POST /v1/runs` now persists and enqueues, so the control plane
+ * runs one too — and a second copy of this mapping is a second answer to "what
+ * does a `workflow.execute` job mean", which is exactly the kind of thing that
+ * drifts once and is discovered in production.
+ *
+ * The consumer itself knows nothing about runtimes, stores or artifacts. It
+ * maps one job to one host call and reports where it landed.
  */
 
 export interface RunHost {
@@ -26,19 +34,42 @@ export interface RunHost {
   cancel(runId: string): Promise<void>;
 }
 
-export interface ConsumerOptions {
+/**
+ * A runtime, as the consumer sees it.
+ *
+ * All three verbs land on the same rehydration path: a run's state lives in
+ * the store, so a job for a run this process never started is ordinary work
+ * rather than a special case. `execute` and `resume` are the same call because
+ * they are the same question — "continue this run from wherever it is" — and
+ * `resume` answers it for a `PENDING` run by starting the walk.
+ */
+export function runtimeHost(runtime: Runtime): RunHost {
+  return {
+    async execute(runId) {
+      return (await runtime.resume(runId))?.status ?? "UNKNOWN";
+    },
+    async resume(runId) {
+      return (await runtime.resume(runId))?.status ?? "UNKNOWN";
+    },
+    async cancel(runId) {
+      await runtime.cancel(runId);
+    },
+  };
+}
+
+export interface RunConsumerOptions {
   readonly queue: QueuePort;
   readonly host: RunHost;
   readonly observability: ObservabilityPort;
 }
 
-export interface WorkerConsumer {
+export interface RunConsumer {
   /** Jobs handled, in order. */
   readonly handled: readonly ForgeJob[];
   start(): Promise<void>;
 }
 
-export function createWorkerConsumer(options: ConsumerOptions): WorkerConsumer {
+export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
   const handled: ForgeJob[] = [];
 
   return {

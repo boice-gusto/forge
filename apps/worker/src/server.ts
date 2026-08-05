@@ -1,6 +1,7 @@
+import { loadDeploymentPolicy, NO_COMPANY_POLICY } from "@forge/company";
+import { createRunConsumer, runtimeHost } from "@forge/composition";
 import { createDurableStack } from "@forge/composition/durable";
 
-import { createWorkerConsumer, type RunHost } from "./consumer.js";
 import { startWorker } from "./main.js";
 
 /**
@@ -37,28 +38,59 @@ if (
   process.exit(1);
 }
 
-const stack = await createDurableStack();
+const csv = (spec: string): readonly string[] =>
+  spec
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
 
 /**
- * The consumer knows nothing about runtimes or stores. All three verbs land on
- * the same rehydration path: a run's state lives in the store, so a job for a
- * run this process never started is ordinary work rather than a special case.
+ * A worker is part of a deployment, not a deployment of its own.
+ *
+ * It resolves policy through the same loader the control plane uses, from the
+ * same company package and the same ceiling. A worker configured even slightly
+ * differently would make a run's outcome depend on which process happened to
+ * take it off the queue, which is the least debuggable failure this system
+ * could have — so a missing company is a refusal to start rather than a
+ * warning and a silent default-deny.
  */
-const host: RunHost = {
-  async execute(runId) {
-    return (await stack.resume(runId))?.status ?? "UNKNOWN";
-  },
-  async resume(runId) {
-    return (await stack.resume(runId))?.status ?? "UNKNOWN";
-  },
-  async cancel(runId) {
-    await stack.runtime.cancel(runId);
-  },
-};
+const companyRoot = process.env.FORGE_COMPANY;
+if (companyRoot === undefined && process.env.FORGE_WORKER_NO_COMPANY !== "1") {
+  process.stderr.write(
+    "[forge-worker] FORGE_COMPANY is required: a worker sharing a queue with a " +
+      "control plane must resolve the same policy, or a run's outcome depends " +
+      "on which process took it. Set FORGE_WORKER_NO_COMPANY=1 only if this " +
+      "deployment serves no company package.\n",
+  );
+  process.exit(1);
+}
 
-const consumer = createWorkerConsumer({
+const deployment =
+  companyRoot === undefined
+    ? NO_COMPANY_POLICY
+    : await loadDeploymentPolicy({
+        root: companyRoot,
+        hostCapabilities: csv(process.env.FORGE_HOST_CAPABILITIES ?? ""),
+        forgeVersion: process.env.FORGE_VERSION ?? "0.1.0",
+      });
+
+const stack = await createDurableStack({
+  rules: deployment.rules,
+  grants: deployment.grants,
+  environment: "production",
+  ...(process.env.FORGE_SANDBOX_PROFILES === undefined
+    ? {}
+    : { sandboxProfiles: csv(process.env.FORGE_SANDBOX_PROFILES) }),
+});
+
+/**
+ * The same consumer the control plane runs, on the same queue. It lives in
+ * `@forge/composition` so that "what a `workflow.execute` job means" has one
+ * answer rather than one per process that reads the queue.
+ */
+const consumer = createRunConsumer({
   queue: stack.queue,
-  host,
+  host: runtimeHost(stack.runtime),
   observability: stack.observability,
 });
 

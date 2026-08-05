@@ -21,4 +21,5 @@ export {
   type SessionCredential,
   type SessionView,
   type StartRunInput,
+  type WaitForRunOptions,
 } from "./client.js";

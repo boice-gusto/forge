@@ -2,6 +2,8 @@ import { createMemoryApprovalStore } from "@forge/approval-memory";
 import { createMemoryCheckpointStore } from "@forge/checkpoint-memory";
 import { compileWorkflow } from "@forge/compiler";
 import { createMemoryGraphEngine } from "@forge/engine-memory";
+import { createMemoryRunEventStore } from "@forge/event-store-memory";
+import { type RunEventStorePort, recordRunEvents } from "@forge/observability";
 import {
   createMemoryObservability,
   type MemoryObservability,
@@ -12,9 +14,12 @@ import type {
   ApprovalPort,
   ClockPort,
   IdPort,
+  ProviderPort,
+  QueuePort,
   RunStorePort,
 } from "@forge/ports";
 import { createMockProvider } from "@forge/provider-mock";
+import { createMemoryQueue } from "@forge/queue-memory";
 import { createMemoryRunStore } from "@forge/run-store-memory";
 import {
   createRuntime,
@@ -65,6 +70,12 @@ export interface LocalStackOptions {
    * unless a host supplies one here.
    */
   readonly transforms?: Readonly<Record<string, TransformFn>>;
+  /**
+   * The agent backend. Defaults to the deterministic mock; injected so a test
+   * can count what a model was actually asked, which is the only way to show
+   * that a re-entered run does not ask it again.
+   */
+  readonly provider?: ProviderPort;
   /** Set false to prove a required sandbox failing closed. */
   readonly sandboxAvailable?: boolean;
   /**
@@ -80,6 +91,17 @@ export interface LocalStackOptions {
    * concerned, and the second silently displaces the first.
    */
   readonly ids?: IdPort;
+  /**
+   * The two durable stores, shared.
+   *
+   * Everything a second process needs to re-enter a run it never started is in
+   * these, so two stacks built over one pair *are* two processes as far as the
+   * runtime is concerned — one stack's runtime, ledgers and in-memory effect
+   * list are invisible to the other. That is the only way to show the durable
+   * effect claim doing its job without a container.
+   */
+  readonly runs?: RunStorePort;
+  readonly approvals?: ApprovalPort;
 }
 
 export interface LocalStack extends ControlPlaneStack {
@@ -91,6 +113,18 @@ export interface LocalStack extends ControlPlaneStack {
   /** Effects dispatched, in order, when the default recorder is used. */
   readonly dispatched: readonly string[];
   readonly observability: MemoryObservability;
+  readonly runEvents: RunEventStorePort;
+  readonly queue: QueuePort;
+  /**
+   * Settles once no job this stack accepted is still being walked.
+   *
+   * Delivery here is deliberately off the enqueuing caller's stack, so a test
+   * that asserted straight after `POST /v1/runs` would be asserting on a run
+   * that had not started. Polling would work — that is what a client does —
+   * but in-process a test can simply be told when the work is over, and a
+   * deterministic wait cannot pass because it happened to be slow enough.
+   */
+  drain(): Promise<void>;
   advanceClock(ms: number): void;
 }
 
@@ -117,14 +151,59 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
     },
   };
 
-  const approvals = createMemoryApprovalStore(clock, ids);
+  const approvals = options.approvals ?? createMemoryApprovalStore(clock, ids);
   const observability = createMemoryObservability();
+  // The run's timeline as a queryable history, beside the trace. Bound in both
+  // roots so the control plane reads run events one way regardless of which
+  // stack it got; here the history dies with the process, exactly as this
+  // stack's runs and checkpoints do.
+  const runEvents = createMemoryRunEventStore();
+  // Writes are queued off the caller's stack, because telemetry must never
+  // hold up a run. A test that emits and reads back therefore has to wait for
+  // the queue, and nothing else can do that for it.
+  const recorder = recordRunEvents(observability, runEvents, clock);
   const sandboxAvailable = options.sandboxAvailable ?? true;
   // The local stack's run store is a Map, exactly as its checkpoints are. The
   // runtime cannot tell it from the Postgres one, which is what makes `resume`
   // work identically in both. Named here rather than inlined because the
   // control plane reads it directly to list runs.
-  const runs = createMemoryRunStore();
+  const runs = options.runs ?? createMemoryRunStore();
+
+  /**
+   * The queue, and the one thing this root has to add to it.
+   *
+   * `createMemoryQueue` hands a job to its subscriber *inside* `enqueue`;
+   * Redis hands it to another process a moment later. Both satisfy `QueuePort`
+   * — the conformance suite polls for delivery precisely because the timing is
+   * not part of the contract — but the difference is the whole point of this
+   * change: if delivery happened inside `enqueue`, `POST /v1/runs` would still
+   * be holding its request open across the walk, only less obviously than
+   * before.
+   *
+   * So the handler is pushed onto a later turn of the loop, which is what a
+   * separate worker process is. Nothing else about the local stack pretends to
+   * be distributed; this one thing has to be, or the route it serves is not
+   * the route a durable deployment serves.
+   */
+  const inFlight = new Set<Promise<void>>();
+  const later = (work: () => Promise<void>): void => {
+    const scheduled = new Promise<void>((settle) => setTimeout(settle, 0))
+      .then(work)
+      // The consumer already records a job it could not service. A rejection
+      // escaping here would be an unhandled one, and would take down a
+      // development server for a run that merely failed.
+      .catch(() => {});
+    inFlight.add(scheduled);
+    void scheduled.finally(() => inFlight.delete(scheduled));
+  };
+  const delivered = createMemoryQueue();
+  const queue: QueuePort = {
+    ...delivered,
+    subscribe: (handler) =>
+      delivered.subscribe(async (job) => {
+        later(() => handler(job));
+      }),
+  };
 
   const runtime = createRuntime({
     engine: createMemoryGraphEngine(),
@@ -133,15 +212,17 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
       grants: options.grants ?? [],
     }),
     approvals,
-    provider: createMockProvider({
-      providerId: "mock",
-      events: [{ type: "completed" }],
-    }),
+    provider:
+      options.provider ??
+      createMockProvider({
+        providerId: "mock",
+        events: [{ type: "completed" }],
+      }),
     sandbox: createMemorySandbox({
       profiles: options.sandboxProfiles ?? ["docker"],
       available: sandboxAvailable,
     }),
-    observability,
+    observability: recorder,
     panel: options.panel ?? { standing: [], summonable: [], quorum: 0.5 },
     ...(options.votesFor === undefined ? {} : { votesFor: options.votesFor }),
     ...(options.branchFor === undefined
@@ -168,7 +249,13 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
     ids,
     dispatched,
     observability,
-    timeline: () => observability.timeline,
+    runEvents,
+    queue,
+    async drain() {
+      // A walk can outlive the turn it was scheduled on, so this waits for the
+      // set to empty rather than for one snapshot of it.
+      while (inFlight.size > 0) await Promise.all([...inFlight]);
+    },
     advanceClock(ms) {
       instant = new Date(instant.getTime() + ms);
     },

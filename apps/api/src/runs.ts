@@ -164,14 +164,17 @@ export function registerRunRoutes(
     }
 
     /**
-     * The run is walked inline, on this request. 006 §10.1 has the control
-     * plane persist and enqueue instead, and it should — but `Runtime.start`
-     * walks, and there is no "create and park" for the API to call. Doing it
-     * properly is a runtime change, not a routing one; what durability needs
-     * is already true either way, because the record and the three ledgers are
-     * written to the store as the walk proceeds.
+     * Persist, then enqueue (006 §10.1). The control plane does not walk the
+     * run: it used to call `Runtime.start`, which held this request open
+     * across every policy check, sandbox lease and model call the workflow
+     * reached — with a real provider bound that is minutes, not milliseconds.
+     *
+     * The order is load-bearing. A job for a run that is not in the store is a
+     * job whose consumer cannot find it, and it would be retried until it gave
+     * up; a record with no job is a run an operator can see sitting at PENDING
+     * and re-drive. Only one of those two failures is visible.
      */
-    const run = await stack.runtime.start({
+    const run = await stack.runtime.create({
       artifact: outcome.artifact,
       capabilities: body.capabilities ?? [],
       changedPaths: body.changedPaths ?? [],
@@ -180,7 +183,29 @@ export function registerRunRoutes(
       ...(body.payload === undefined ? {} : { payload: body.payload }),
     });
 
-    return reply.code(201).send(run);
+    await stack.queue.enqueue({
+      type: "workflow.execute",
+      runId: run.runId,
+      // The sealed fingerprint *is* the workflow version: it is what the
+      // approval's binding is recomputed against, so naming anything else here
+      // would be naming a version the run is not pinned to.
+      workflowVersionId: run.fingerprint,
+      attempt: run.attempt,
+    });
+
+    /**
+     * **202, not 201.** A run resource genuinely was created, which is the
+     * case for 201 — but the reply's body is a run at `PENDING`, and the thing
+     * the caller asked for has not happened yet. 202 is the code that says so
+     * at the wire, and it is also the visible break for anyone whose client
+     * read the old 201 body as the outcome of the run. `Location` answers the
+     * usual objection to 202, that it leaves a caller with nowhere to look:
+     * the run is addressable from the moment this returns.
+     */
+    return reply
+      .code(202)
+      .header("location", `/v1/runs/${run.runId}`)
+      .send(run);
   });
 
   app.get<{ Querystring: { status?: string } }>(
@@ -278,23 +303,22 @@ export function registerRunRoutes(
       if ((await stack.runtime.loadRun(request.params.runId)) === undefined)
         return reply.code(404).send({ status: "not_found" });
 
-      // The runtime's own telemetry, filtered to one run: a second, derived
-      // timeline could disagree with the trace. Attributes were redacted when
-      // the span was recorded, which is what makes them safe to serve.
+      // The run's durable timeline, not this process's. A run started before
+      // a restart, or in another control plane, reads the same as one started
+      // here — which `stack.timeline()` could never do.
       //
-      // Only what *this* process recorded. A run started before a restart is
-      // readable — its record and its gates are durable — but its events were
-      // never durable, and 012 §4.3's stream is what will change that.
-      const events: RunEventView[] = stack
-        .timeline()
-        .filter((entry) => entry.attributes.runId === request.params.runId)
-        .map((entry) => ({
-          seq: entry.seq,
-          at: entry.at,
-          kind: eventKind(entry.name),
-          name: entry.name,
-          attributes: entry.attributes,
-        }));
+      // Ordered by the store's sequence, so two events in the same millisecond
+      // cannot tie and swap between reads. Attributes were redacted before the
+      // row was written, which is what makes them safe to serve.
+      const events: RunEventView[] = (
+        await stack.runEvents.list(request.params.runId)
+      ).map((entry) => ({
+        seq: entry.seq,
+        at: entry.at,
+        kind: eventKind(entry.name),
+        name: entry.name,
+        attributes: entry.attributes,
+      }));
       return reply.send({ events });
     },
   );

@@ -1,0 +1,23 @@
+{
+  "name": "@forge/event-store-postgres",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@forge/observability": "workspace:*",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@forge/event-store-conformance": "workspace:*",
+    "@forge/store-conformance": "workspace:*",
+    "@testcontainers/postgresql": "^12.1.0",
+    "@types/pg": "^8.20.4",
+    "testcontainers": "^12.1.0"
+  }
+}

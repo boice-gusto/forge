@@ -124,6 +124,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@forge/company':
+        specifier: workspace:*
+        version: link:../../packages/company
       '@forge/composition':
         specifier: workspace:*
         version: link:../../packages/composition
@@ -268,6 +271,9 @@ importers:
       '@forge/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
+      '@forge/policy-memory':
+        specifier: workspace:*
+        version: link:../policy-memory
       '@forge/types':
         specifier: workspace:*
         version: link:../types
@@ -307,9 +313,18 @@ importers:
       '@forge/engine-memory':
         specifier: workspace:*
         version: link:../engine-memory
+      '@forge/event-store-memory':
+        specifier: workspace:*
+        version: link:../event-store-memory
+      '@forge/event-store-postgres':
+        specifier: workspace:*
+        version: link:../event-store-postgres
       '@forge/ir':
         specifier: workspace:*
         version: link:../ir
+      '@forge/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@forge/observability-memory':
         specifier: workspace:*
         version: link:../observability-memory
@@ -331,6 +346,9 @@ importers:
       '@forge/queue-bullmq':
         specifier: workspace:*
         version: link:../queue-bullmq
+      '@forge/queue-memory':
+        specifier: workspace:*
+        version: link:../queue-memory
       '@forge/run-store-memory':
         specifier: workspace:*
         version: link:../run-store-memory
@@ -382,6 +400,47 @@ importers:
       '@forge/types':
         specifier: workspace:*
         version: link:../types
+
+  packages/event-store-conformance:
+    dependencies:
+      '@forge/observability':
+        specifier: workspace:*
+        version: link:../observability
+
+  packages/event-store-memory:
+    dependencies:
+      '@forge/observability':
+        specifier: workspace:*
+        version: link:../observability
+    devDependencies:
+      '@forge/event-store-conformance':
+        specifier: workspace:*
+        version: link:../event-store-conformance
+
+  packages/event-store-postgres:
+    dependencies:
+      '@forge/observability':
+        specifier: workspace:*
+        version: link:../observability
+      pg:
+        specifier: ^8.22.0
+        version: 8.22.0
+    devDependencies:
+      '@forge/event-store-conformance':
+        specifier: workspace:*
+        version: link:../event-store-conformance
+      '@forge/store-conformance':
+        specifier: workspace:*
+        version: link:../store-conformance
+      '@testcontainers/postgresql':
+        specifier: ^12.1.0
+        version: 12.1.0
+      '@types/pg':
+        specifier: ^8.20.4
+        version: 8.20.4
+      testcontainers:
+        specifier: ^12.1.0
+        version: 12.1.0
 
   packages/ir:
     dependencies:

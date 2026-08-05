@@ -230,17 +230,60 @@ export function createForgeSessionClient(options: {
 
 export interface StartRunInput {
   readonly workflow: unknown;
+  /** Checked against the deployment's closure, so it can only narrow. */
   readonly capabilities?: readonly string[];
   readonly changedPaths?: readonly string[];
-  readonly policy?: unknown;
-  readonly panel?: unknown;
-  readonly review?: unknown;
+  // No `policy`, `panel` or `review`. Policy is the deployment's, resolved
+  // from its company package — and a caller naming the judge's votes or a
+  // branch arm would steer the decision it is asking a human to approve.
+}
+
+/**
+ * The statuses at which no queued job is outstanding: the run is waiting on a
+ * human, or it is over. Deliberately *not* "terminal" — a helper that only
+ * settled on a finished run would quietly turn every gate assertion into a
+ * timeout, and a double-dispatch test written against it would drive the run
+ * past the node it was guarding before redelivering anything.
+ */
+const SETTLED: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  "AWAITING_APPROVAL",
+  "SUCCEEDED",
+  "FAILED",
+  "CANCELLED",
+]);
+
+export interface WaitForRunOptions {
+  /**
+   * What "done waiting" means. Defaults to "the queue owes this run nothing":
+   * it has reached a gate or a terminal state.
+   */
+  readonly until?: (run: RunView) => boolean;
+  readonly timeoutMs?: number;
+  readonly intervalMs?: number;
 }
 
 export interface ForgeClient {
   compile(workflow: unknown): Promise<ForgeResult<CompiledView>>;
+  /**
+   * Creates a run and returns immediately. The control plane persists it and
+   * enqueues the work, so the reply is a run at `PENDING` — the record, not
+   * the outcome. Follow it with `waitForRun`.
+   */
   start(input: StartRunInput): Promise<ForgeResult<RunView>>;
   getRun(runId: string): Promise<ForgeResult<RunView>>;
+  /**
+   * Polls `getRun` until the run stops moving, or the deadline passes.
+   *
+   * One helper, because the alternative is the same loop written slightly
+   * differently in every caller — and the version that waits for a *terminal*
+   * status is both the easiest to write and the one that makes a gate
+   * assertion unfalsifiable. A timeout is a failed result naming the last
+   * status seen, not a throw and not a silent success.
+   */
+  waitForRun(
+    runId: string,
+    options?: WaitForRunOptions,
+  ): Promise<ForgeResult<RunView>>;
   /** Every run the control plane knows about, most recent first. */
   runs(): Promise<ForgeResult<readonly RunView[]>>;
   /**
@@ -277,11 +320,42 @@ export function createForgeClient(options: ForgeClientOptions): ForgeClient {
     return result.ok ? { ok: true, value: result.value[key] } : result;
   }
 
+  const getRun = (runId: string) => call<RunView>("GET", `/v1/runs/${runId}`);
+
+  async function waitForRun(
+    runId: string,
+    waitOptions: WaitForRunOptions = {},
+  ): Promise<ForgeResult<RunView>> {
+    const until =
+      waitOptions.until ?? ((run: RunView) => SETTLED.has(run.status));
+    const intervalMs = waitOptions.intervalMs ?? 25;
+    const timeoutMs = waitOptions.timeoutMs ?? 30_000;
+    const deadline = Date.now() + timeoutMs;
+
+    for (;;) {
+      const result = await getRun(runId);
+      // A read that failed is the answer. Retrying past a 404 or a 401 would
+      // turn "this run does not exist" into "this run is slow".
+      if (!result.ok) return result;
+      if (until(result.value)) return result;
+      if (Date.now() >= deadline) {
+        return {
+          ok: false,
+          status: 0,
+          code: "FORGE_RUN_NOT_SETTLED",
+          message: `Run ${runId} was still ${result.value.status} after ${timeoutMs}ms.`,
+        };
+      }
+      await new Promise((settle) => setTimeout(settle, intervalMs));
+    }
+  }
+
   return {
     compile: (workflow) =>
       call<CompiledView>("POST", "/v1/workflows/compile", { workflow }),
     start: (input) => call<RunView>("POST", "/v1/runs", input),
-    getRun: (runId) => call<RunView>("GET", `/v1/runs/${runId}`),
+    getRun,
+    waitForRun,
     runs: () => collection<RunView, "runs">("/v1/runs", "runs"),
     inbox: () =>
       collection<ApprovalView, "pending">("/v1/approvals", "pending"),

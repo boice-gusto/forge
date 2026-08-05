@@ -10,10 +10,11 @@ import {
 } from "@forge/checkpoint-postgres";
 import { createMemoryGraphEngine } from "@forge/engine-memory";
 import {
-  createMemoryObservability,
-  type MemoryObservability,
-  type ObservedEvent,
-} from "@forge/observability-memory";
+  applyRunEventSchema,
+  createPostgresRunEventStore,
+} from "@forge/event-store-postgres";
+import { type RunEventStorePort, recordRunEvents } from "@forge/observability";
+import { createMemoryObservability } from "@forge/observability-memory";
 import { createOtelObservability } from "@forge/observability-otel";
 import type { PanelDefinition, Vote } from "@forge/panel";
 import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
@@ -135,6 +136,7 @@ export interface DurableStack extends ControlPlaneStack {
   readonly runs: RunStorePort;
   readonly queue: QueuePort;
   readonly observability: ObservabilityPort;
+  readonly runEvents: RunEventStorePort;
   /** What the durable ledger says was dispatched for a run, in order. */
   dispatched(runId: string): Promise<readonly DispatchedEffect[]>;
   /**
@@ -142,6 +144,12 @@ export interface DurableStack extends ControlPlaneStack {
    * as it can go. `undefined` means no such run exists.
    */
   resume(runId: string): Promise<RunRecord | undefined>;
+  /**
+   * Resolves once queued run events have been written. Writes are deliberately
+   * off the caller's stack so telemetry cannot hold up a run, which means a
+   * reader that has just caused one has to wait for it.
+   */
+  settled(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -184,6 +192,7 @@ export async function createDurableStack(
   await applyCheckpointSchema(pool);
   await applyApprovalSchema(pool);
   await applyRunStoreSchema(pool);
+  await applyRunEventSchema(pool);
 
   const clock: ClockPort = options.clock ?? { now: () => new Date() };
   // A worker's spans have no inspector reading them out of a Map; they are
@@ -199,6 +208,11 @@ export async function createDurableStack(
       : undefined;
   const observability =
     options.observability ?? exporter ?? createMemoryObservability();
+  // The gap this closes: the sink above exports and forgets, so a run parked in
+  // one process had no timeline in the next. The store is a row per event, read
+  // back by run id by whichever control plane the operator happens to reach.
+  const runEvents = createPostgresRunEventStore(pool);
+  const runEventRecorder = recordRunEvents(observability, runEvents, clock);
   const approvals = createPostgresApprovalStore(pool, clock, distinctIds);
   const checkpoints = createPostgresCheckpointStore(pool);
   const runs = createPostgresRunStore(pool);
@@ -224,7 +238,7 @@ export async function createDurableStack(
       profiles: options.sandboxProfiles ?? ["docker"],
       available: true,
     }),
-    observability,
+    observability: runEventRecorder,
     panel: options.panel ?? { standing: [], summonable: [], quorum: 0.5 },
     ...(options.votesFor === undefined ? {} : { votesFor: options.votesFor }),
     ...(options.branchFor === undefined
@@ -266,18 +280,6 @@ export async function createDurableStack(
     }));
   }
 
-  /**
-   * Only a recorder has a timeline. With a collector configured the spans have
-   * left the process and there is nothing here to serve, which is stated as an
-   * empty list rather than pretended away — the run's trace is in the
-   * collector, and 012 §4.3's stream is what will make it readable from here.
-   */
-  const recorder =
-    "timeline" in observability
-      ? (observability as MemoryObservability)
-      : undefined;
-  const timeline = (): readonly ObservedEvent[] => recorder?.timeline ?? [];
-
   return {
     runtime,
     approvals,
@@ -285,13 +287,18 @@ export async function createDurableStack(
     runs,
     queue,
     observability,
-    timeline,
+    runEvents,
     dispatched,
     resume: (runId) => runtime.resume(runId),
+    settled: () => runEventRecorder.settled(),
     async close() {
       // Flush before the sockets go. A process that exits without flushing
       // loses the spans that mattered most, which are usually the last ones.
       await exporter?.shutdown();
+      // The same reason, for the other sink. The records that matter most are
+      // the last ones, and `pool.end()` below would abandon any still in
+      // flight — a run whose final dispatch is missing from its own timeline.
+      await runEventRecorder.settled();
       await queue.close();
       await pool.end();
     },

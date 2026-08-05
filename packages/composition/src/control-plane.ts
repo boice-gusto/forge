@@ -1,5 +1,10 @@
-import type { ObservedEvent } from "@forge/observability-memory";
-import type { ApprovalPort, RunStorePort } from "@forge/ports";
+import type { RunEventStorePort } from "@forge/observability";
+import type {
+  ApprovalPort,
+  ObservabilityPort,
+  QueuePort,
+  RunStorePort,
+} from "@forge/ports";
 import type { Runtime } from "@forge/runtime";
 
 /**
@@ -18,13 +23,18 @@ export interface ControlPlaneStack {
   /** The record of every run, which a Map of live runs is only a cache of. */
   readonly runs: RunStorePort;
   /**
-   * The run telemetry **this process** recorded, oldest first.
-   *
-   * A method rather than a field, because it is not the whole history and must
-   * not be mistaken for it: a stack whose sink only exports to a collector has
-   * nothing to hand back, and a run that started in another process left its
-   * events there. 012 §4.3's event stream is the answer to that; this is what
-   * can honestly be served until one exists.
+   * A run's timeline, durable and queryable, for a run this process may never
+   * have started, which a per-process recorder could never answer.
    */
-  timeline(): readonly ObservedEvent[];
+  readonly runEvents: RunEventStorePort;
+  /**
+   * Where a created run's `workflow.execute` job goes, and where the consumer
+   * that walks it reads from. On the stack rather than on one root, because
+   * `POST /v1/runs` persists and enqueues (006 §10.1) and must do exactly that
+   * whichever root it was handed — a route whose semantics depend on the
+   * deployment's persistence is a route nobody can write a client against.
+   */
+  readonly queue: QueuePort;
+  /** Where the consumer reports the jobs it handled. */
+  readonly observability: ObservabilityPort;
 }

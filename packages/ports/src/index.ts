@@ -29,6 +29,9 @@ export type {
 export type {
   ObservabilityPort,
   RecordedSpan,
+  RunEvent,
+  RunEventInput,
+  RunEventStorePort,
   Span,
   SpanAttributes,
   SpanContext,

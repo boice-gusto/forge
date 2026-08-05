@@ -139,6 +139,98 @@ describe("forge client", () => {
   });
 });
 
+/**
+ * The control plane accepts a run and enqueues it, so `start` returns a record
+ * at `PENDING` and the outcome arrives later. `waitForRun` is the one place
+ * that loop is written; these are the ways it can be got wrong.
+ */
+describe("waiting for a run the control plane only accepted", () => {
+  /** A run whose status is whatever the sequence says on the nth read. */
+  const readingBack = (statuses: readonly string[]) => {
+    let read = 0;
+    return client(() => {
+      const status = statuses[Math.min(read, statuses.length - 1)];
+      read += 1;
+      return {
+        status: 200,
+        body: { runId: "run_1", status, performedEffects: [] },
+      };
+    });
+  };
+
+  test("settles on a gate, which is not a terminal state", async () => {
+    // The trap this helper exists to avoid. A default of "wait until the run
+    // is finished" would spin here until the deadline and then report a
+    // timeout for a run that had been sitting at its gate the whole time.
+    const { forge } = readingBack(["PENDING", "RUNNING", "AWAITING_APPROVAL"]);
+    const result = await forge.waitForRun("run_1", { intervalMs: 0 });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.status).toBe("AWAITING_APPROVAL");
+  });
+
+  test("does not report a status the run has not reached", async () => {
+    // It keeps reading while the run is PENDING or RUNNING, so a caller that
+    // asserts on a gate is asserting on one that exists.
+    const { forge, calls } = readingBack(["PENDING", "PENDING", "SUCCEEDED"]);
+    const result = await forge.waitForRun("run_1", { intervalMs: 0 });
+
+    expect(result.ok && result.value.status).toBe("SUCCEEDED");
+    expect(calls).toHaveLength(3);
+  });
+
+  test("a caller can name its own condition", async () => {
+    const { forge } = readingBack(["PENDING", "RUNNING"]);
+    const result = await forge.waitForRun("run_1", {
+      intervalMs: 0,
+      until: (run) => run.status === "RUNNING",
+    });
+
+    expect(result.ok && result.value.status).toBe("RUNNING");
+  });
+
+  test("a run that never moves is a failed result naming what it was", async () => {
+    // Not a throw and, more importantly, not a success. A helper that returned
+    // the last record it saw would let a gate assertion pass on a PENDING run.
+    const { forge } = readingBack(["PENDING"]);
+    const result = await forge.waitForRun("run_1", {
+      intervalMs: 0,
+      timeoutMs: 0,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.code).toBe("FORGE_RUN_NOT_SETTLED");
+    expect(result.message).toContain("PENDING");
+  });
+
+  test("a read that fails is the answer, not something to retry past", async () => {
+    const { forge, calls } = client(() => ({
+      status: 404,
+      body: { status: "not_found" },
+    }));
+    const result = await forge.waitForRun("run_nope", { intervalMs: 0 });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.status).toBe(404);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("an accepted start is a PENDING record, and 202 is a success", async () => {
+    const { forge } = client(() => ({
+      status: 202,
+      body: { runId: "run_1", status: "PENDING", performedEffects: [] },
+    }));
+    const result = await forge.start({ workflow: {} });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.status).toBe("PENDING");
+  });
+});
+
 describe("decision encoding", () => {
   test("an edit carries its patch", async () => {
     const { forge, calls } = client(() => ({ status: 200, body: {} }));

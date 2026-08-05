@@ -28,7 +28,11 @@
     "@forge/company": "workspace:*",
     "@forge/run-store-memory": "workspace:*",
     "@forge/run-store-postgres": "workspace:*",
-    "@forge/observability-otel": "workspace:*"
+    "@forge/observability-otel": "workspace:*",
+    "@forge/queue-memory": "workspace:*",
+    "@forge/observability": "workspace:*",
+    "@forge/event-store-memory": "workspace:*",
+    "@forge/event-store-postgres": "workspace:*"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^12.1.0",

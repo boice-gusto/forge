@@ -3,7 +3,7 @@ import type { ForgeJob } from "@forge/ports";
 import { createMemoryQueue } from "@forge/queue-memory";
 import { describe, expect, test } from "vitest";
 
-import { createWorkerConsumer, type RunHost } from "./consumer.js";
+import { createRunConsumer, type RunHost } from "./consumer.js";
 
 interface Call {
   readonly method: string;
@@ -28,7 +28,7 @@ function harness(overrides: Partial<RunHost> = {}) {
     },
     ...overrides,
   };
-  const consumer = createWorkerConsumer({ queue, host, observability });
+  const consumer = createRunConsumer({ queue, host, observability });
   return { queue, observability, consumer, calls };
 }
 
@@ -49,7 +49,7 @@ const resume: ForgeJob = {
 const names = (observability: ReturnType<typeof createMemoryObservability>) =>
   observability.events.map((event) => event.name);
 
-describe("worker consumer", () => {
+describe("run consumer", () => {
   test("an execute job reaches the host and is recorded", async () => {
     const { queue, consumer, observability, calls } = harness();
     await consumer.start();

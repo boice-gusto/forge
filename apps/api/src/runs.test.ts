@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-
+import { loadDeploymentPolicy } from "@forge/company";
 import {
   createLocalStack,
   type LocalStack,
@@ -9,9 +9,7 @@ import {
 import { ANY_ROLE } from "@forge/ports";
 import Fastify from "fastify";
 import { describe, expect, test } from "vitest";
-
 import { createRequestAuthenticator } from "./auth.js";
-import { loadDeploymentPolicy } from "./company.js";
 import { createSessionStore } from "./identity.js";
 import { createDevelopmentIdentity } from "./identity-development.js";
 import { createApiApp } from "./main.js";
@@ -173,18 +171,253 @@ const SEPARATION_RULES: NonNullable<LocalStackOptions["rules"]> = [
 
 const bodyFor = (workflow: unknown) => ({ ...startBody, workflow });
 
-async function startRun(
-  server: ReturnType<typeof app> | ReturnType<typeof Fastify>,
-  payload: object = startBody,
-) {
-  const response = await server.inject({
+type Server = ReturnType<typeof app> | ReturnType<typeof Fastify>;
+
+/** `POST /v1/runs` and nothing more: the accepted record, still PENDING. */
+async function accept(server: Server, payload: object = startBody) {
+  return server.inject({
     method: "POST",
     url: "/v1/runs",
     headers: AUTH,
     payload,
   });
-  return response.json();
 }
+
+/**
+ * The statuses at which the queue owes the run nothing more.
+ *
+ * Not "terminal". A helper that waited for a finished run would make every
+ * assertion about a *gate* below unfalsifiable — it would drive the run past
+ * the gate and then assert the gate was there.
+ */
+const SETTLED = new Set([
+  "AWAITING_APPROVAL",
+  "SUCCEEDED",
+  "FAILED",
+  "CANCELLED",
+]);
+
+/**
+ * Reads the run until the consumer has taken it as far as it goes.
+ *
+ * Over HTTP, deliberately, rather than through the stack this suite happens to
+ * hold: it is the loop a client writes, so if the route stopped reporting a
+ * run's progress this would hang rather than quietly pass.
+ */
+async function settle(server: Server, runId: string) {
+  for (let attempt = 0; attempt < 2_000; attempt += 1) {
+    const run = (
+      await server.inject({
+        method: "GET",
+        url: `/v1/runs/${runId}`,
+        headers: AUTH,
+      })
+    ).json();
+    if (SETTLED.has(run.status as string)) return run;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error(`Run ${runId} never settled.`);
+}
+
+/** Enough turns of the loop for a deferred delivery to have started. */
+const settleTicks = async () => {
+  for (let turn = 0; turn < 5; turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+};
+
+/** Start a run and wait for it to stop moving. What most tests want. */
+async function startRun(server: Server, payload: object = startBody) {
+  const response = await accept(server, payload);
+  if (response.statusCode !== 202) return response.json();
+  return settle(server, response.json().runId as string);
+}
+
+/**
+ * The routes with **no consumer bound**, so a run stops exactly where the
+ * control plane leaves it. `createApiApp` binds one; this does not, which is
+ * the only way to observe what the request itself did rather than what the
+ * request plus a turn of the event loop did.
+ */
+function bare(stack: LocalStack) {
+  const server = Fastify({ logger: false });
+  registerRunRoutes(server, {
+    authenticate: createRequestAuthenticator({
+      identity: createDevelopmentIdentity([
+        { subject: "marketing-lead", secret: BEARER, roles: [ANY_ROLE] },
+      ]),
+      sessions: createSessionStore(),
+    }),
+    stack,
+  });
+  return server;
+}
+
+describe("the control plane persists and enqueues; it does not walk", () => {
+  test("the reply is 202 with a PENDING run and where to find it", async () => {
+    const stack = acmeStack();
+    const response = await accept(bare(stack));
+
+    // 202, not 201: a run exists, but the thing that was asked for has not
+    // happened. The body says so — a client that read this as the outcome
+    // would be reading a run that has not run.
+    expect(response.statusCode).toBe(202);
+    const run = response.json();
+    expect(run.status).toBe("PENDING");
+    expect(run.pendingApprovalId).toBeUndefined();
+    expect(run.performedEffects).toEqual([]);
+    expect(response.headers.location).toBe(`/v1/runs/${run.runId}`);
+  });
+
+  test("the run is in the store before the reply, and readable at once", async () => {
+    const stack = acmeStack();
+    const server = bare(stack);
+    const accepted = (await accept(server)).json();
+
+    // Enqueueing without persisting would leave the consumer a run id it
+    // cannot find, and this is where that shows: a 404 from the route the
+    // `Location` header just pointed at.
+    const fetched = await server.inject({
+      method: "GET",
+      url: `/v1/runs/${accepted.runId}`,
+      headers: AUTH,
+    });
+    expect(fetched.statusCode).toBe(200);
+    expect(fetched.json().status).toBe("PENDING");
+    expect((await stack.runs.load(accepted.runId))?.record.status).toBe(
+      "PENDING",
+    );
+  });
+
+  test("the work is on the queue, naming the run and the sealed version", async () => {
+    const stack = acmeStack();
+    const accepted = (await accept(bare(stack))).json();
+
+    // Persisting without enqueueing is the other half, and it is silent: the
+    // run would sit at PENDING forever with nothing to blame.
+    expect(await stack.queue.depth()).toBe(1);
+
+    const seen: { type: string; runId: string; workflowVersionId?: string }[] =
+      [];
+    await stack.queue.subscribe(async (job) => {
+      seen.push(job as (typeof seen)[number]);
+    });
+    await stack.drain();
+
+    expect(seen).toEqual([
+      {
+        type: "workflow.execute",
+        runId: accepted.runId,
+        workflowVersionId: accepted.fingerprint,
+        attempt: 1,
+      },
+    ]);
+  });
+
+  test("nothing is walked on the request: no policy, no gate, no effect", async () => {
+    const stack = acmeStack();
+    const accepted = (await accept(bare(stack))).json();
+
+    // The whole point. This workflow reaches a gate; if the route were still
+    // calling `Runtime.start`, all three of these would already be true by
+    // the time the response was written.
+    expect(stack.dispatched).toEqual([]);
+    expect(await stack.approvals.getPending(accepted.runId)).toEqual([]);
+    expect(
+      stack.observability.timeline.map((entry) => entry.name),
+    ).not.toContain("forge.policy.decide");
+  });
+
+  test("the request returns while the walk is still blocked inside the agent", async () => {
+    /**
+     * The failure this whole change is about, made observable.
+     *
+     * The provider below never answers until it is released, and the workflow
+     * reaches it before its gate. A route that walked the run would still be
+     * inside `createSession` when this `await` was made, and the test would
+     * hang rather than fail an assertion — which is the honest shape, because
+     * "the request is held open across a model call" is a hang, and with a
+     * real provider bound it is a hang of minutes.
+     */
+    let release: (() => void) | undefined;
+    const answered = new Promise<void>((settle) => {
+      release = settle;
+    });
+    let asked = false;
+
+    const stack = acmeStack({
+      provider: {
+        providerId: "latched",
+        capabilities: ["streaming"],
+        async createSession() {
+          asked = true;
+          await answered;
+          return { sessionId: "session_1", providerId: "latched" };
+        },
+        async resumeSession(input) {
+          return { sessionId: input.sessionId, providerId: "latched" };
+        },
+        async *execute() {
+          yield { type: "completed" } as const;
+        },
+        async cancel() {},
+        async destroySession() {},
+        async health() {
+          return { available: true, providerId: "latched" };
+        },
+      },
+    });
+    const server = app(stack);
+
+    const response = await accept(server);
+    expect(response.statusCode).toBe(202);
+    expect(response.json().status).toBe("PENDING");
+
+    // Let the consumer get as far as the model, then confirm it is stuck
+    // there while the request has long since been answered.
+    await settleTicks();
+    expect(asked).toBe(true);
+    expect((await stack.runs.load(response.json().runId))?.record.status).toBe(
+      "RUNNING",
+    );
+
+    release?.();
+    await stack.drain();
+    expect((await stack.runs.load(response.json().runId))?.record.status).toBe(
+      "AWAITING_APPROVAL",
+    );
+  });
+
+  test("a consumer, and only a consumer, takes the run to its gate", async () => {
+    // Same stack, same route, one difference: something is reading the queue.
+    // The route's reply is identical either way, which is what makes it a
+    // contract rather than a description of this deployment.
+    const stack = acmeStack();
+    const server = app(stack);
+    const accepted = (await accept(server)).json();
+    expect(accepted.status).toBe("PENDING");
+
+    const settled = await settle(server, accepted.runId);
+    expect(settled.status).toBe("AWAITING_APPROVAL");
+    expect(settled.pendingApprovalId).toBeDefined();
+    expect(settled.performedEffects).toEqual([]);
+  });
+
+  test("starting a run still requires an authenticated caller", async () => {
+    // The 401 sweep reaches the new shape too: nothing is created and nothing
+    // is enqueued for a caller the deployment cannot name.
+    const stack = acmeStack();
+    const response = await bare(stack).inject({
+      method: "POST",
+      url: "/v1/runs",
+      payload: startBody,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(await stack.queue.depth()).toBe(0);
+    expect(await stack.runs.list()).toEqual([]);
+  });
+});
 
 describe("control plane", () => {
   test("compiles a workflow and exposes only its public surface", async () => {
@@ -239,15 +472,8 @@ describe("control plane", () => {
       votesFor: () => fixture.review.votes,
     });
 
-    const response = await app(stack).inject({
-      method: "POST",
-      url: "/v1/runs",
-      headers: AUTH,
-      payload: startBody,
-    });
+    const run = await startRun(app(stack));
 
-    expect(response.statusCode).toBe(201);
-    const run = response.json();
     expect(run.status).toBe("FAILED");
     expect(run.error).toContain("No arm was chosen");
     expect(run.performedEffects).toEqual([]);
@@ -278,15 +504,9 @@ describe("control plane", () => {
   });
 
   test("a started run parks at the gate with nothing dispatched", async () => {
-    const response = await app().inject({
-      method: "POST",
-      url: "/v1/runs",
-      headers: AUTH,
-      payload: startBody,
-    });
-    const run = response.json();
+    const server = app();
+    const run = await startRun(server);
 
-    expect(response.statusCode).toBe(201);
     expect(run.status).toBe("AWAITING_APPROVAL");
     expect(run.performedEffects).toEqual([]);
     expect(run.pendingApprovalId).toBeDefined();
@@ -294,14 +514,7 @@ describe("control plane", () => {
 
   test("the full lifecycle: start, list the gate, approve, effect dispatched once", async () => {
     const server = app();
-    const started = (
-      await server.inject({
-        method: "POST",
-        url: "/v1/runs",
-        headers: AUTH,
-        payload: startBody,
-      })
-    ).json();
+    const started = await startRun(server);
 
     const pending = (
       await server.inject({
@@ -338,14 +551,7 @@ describe("control plane", () => {
 
   test("rejecting fails the run and dispatches nothing", async () => {
     const server = app();
-    const started = (
-      await server.inject({
-        method: "POST",
-        url: "/v1/runs",
-        headers: AUTH,
-        payload: startBody,
-      })
-    ).json();
+    const started = await startRun(server);
 
     const run = (
       await server.inject({
@@ -363,14 +569,7 @@ describe("control plane", () => {
 
   test("deciding without authentication is refused", async () => {
     const server = app();
-    const started = (
-      await server.inject({
-        method: "POST",
-        url: "/v1/runs",
-        headers: AUTH,
-        payload: startBody,
-      })
-    ).json();
+    const started = await startRun(server);
 
     const response = await server.inject({
       method: "POST",
@@ -383,14 +582,7 @@ describe("control plane", () => {
 
   test("an unrecognised decision kind is refused rather than defaulted", async () => {
     const server = app();
-    const started = (
-      await server.inject({
-        method: "POST",
-        url: "/v1/runs",
-        headers: AUTH,
-        payload: startBody,
-      })
-    ).json();
+    const started = await startRun(server);
 
     const response = await server.inject({
       method: "POST",
@@ -427,14 +619,7 @@ describe("control plane edges", () => {
 
   test("a stale decision is a 409 conflict, not a 500", async () => {
     const server = app();
-    const started = (
-      await server.inject({
-        method: "POST",
-        url: "/v1/runs",
-        headers: AUTH,
-        payload: startBody,
-      })
-    ).json();
+    const started = await startRun(server);
 
     const response = await server.inject({
       method: "POST",
@@ -449,14 +634,7 @@ describe("control plane edges", () => {
 
   test("a reject without a reason still records one", async () => {
     const server = app();
-    const started = (
-      await server.inject({
-        method: "POST",
-        url: "/v1/runs",
-        headers: AUTH,
-        payload: startBody,
-      })
-    ).json();
+    const started = await startRun(server);
 
     const run = (
       await server.inject({
@@ -473,14 +651,7 @@ describe("control plane edges", () => {
 
   test("an edit reissues the gate instead of authorising", async () => {
     const server = app();
-    const started = (
-      await server.inject({
-        method: "POST",
-        url: "/v1/runs",
-        headers: AUTH,
-        payload: startBody,
-      })
-    ).json();
+    const started = await startRun(server);
 
     const run = (
       await server.inject({
@@ -498,14 +669,7 @@ describe("control plane edges", () => {
 
   test("a timeout decision fails the run", async () => {
     const server = app();
-    const started = (
-      await server.inject({
-        method: "POST",
-        url: "/v1/runs",
-        headers: AUTH,
-        payload: startBody,
-      })
-    ).json();
+    const started = await startRun(server);
 
     const run = (
       await server.inject({
@@ -520,12 +684,7 @@ describe("control plane edges", () => {
   });
 
   test("starting with a malformed workflow returns diagnostics", async () => {
-    const response = await app().inject({
-      method: "POST",
-      url: "/v1/runs",
-      headers: AUTH,
-      payload: { workflow: { nope: true } },
-    });
+    const response = await accept(app(), { workflow: { nope: true } });
 
     expect(response.statusCode).toBe(422);
     expect(response.json().code).toBe("WORKFLOW_COMPILE_FAILED");
@@ -533,14 +692,7 @@ describe("control plane edges", () => {
 
   test("listing a run's gates requires a caller, now that it names deciders", async () => {
     const server = app();
-    const started = (
-      await server.inject({
-        method: "POST",
-        url: "/v1/runs",
-        headers: AUTH,
-        payload: startBody,
-      })
-    ).json();
+    const started = await startRun(server);
 
     const response = await server.inject({
       method: "GET",
@@ -848,9 +1000,21 @@ describe("the run event stream is the telemetry, not a second story", () => {
       })
     ).json().events;
 
+    const kinds = new Set(events.map((event: { kind: string }) => event.kind));
+    for (const kind of ["run", "node", "policy", "approval"]) {
+      expect([...kinds]).toContain(kind);
+    }
+    // A subset rather than an equality, because the consumer that walks the
+    // run reports on the *job* too — `forge.worker.*`, which is not in the 011
+    // taxonomy and falls to `other` by design. Nothing is left unclassified.
     expect(
-      new Set(events.map((event: { kind: string }) => event.kind)),
-    ).toEqual(new Set(["run", "node", "policy", "approval"]));
+      [...kinds].filter(
+        (kind) =>
+          !["run", "node", "policy", "approval", "effect", "other"].includes(
+            kind as string,
+          ),
+      ),
+    ).toEqual([]);
   });
 
   test("one run's events never include another's", async () => {
@@ -936,10 +1100,23 @@ describe("an event family this build does not know is served, not dropped", () =
       stack,
     });
 
-    const started = await startRun(server, { workflow: fixture.workflow });
-    stack.observability.event("forge.worker.job", {
+    // No consumer is bound to this stack, so the run stays where the control
+    // plane left it — which is all this test needs, and is itself worth
+    // seeing: a control plane that only persists and enqueues does not
+    // advance a run by itself.
+    const started = (
+      await accept(server, { workflow: fixture.workflow })
+    ).json();
+    expect(started.status).toBe("PENDING");
+    // Written to the store the route reads, which is the seam that matters:
+    // `stack.observability` is the trace sink, and a span there is not a row
+    // an operator can query.
+    await stack.runEvents.append({
       runId: started.runId,
-      jobId: "job_1",
+      kind: "event",
+      name: "forge.worker.job",
+      at: new Date().toISOString(),
+      attributes: { runId: started.runId, jobId: "job_1" },
     });
 
     const events = (
@@ -1057,7 +1234,7 @@ describe("a role decides its own gates and no one else's", () => {
     approver: keyof typeof WORKFLOW_OF,
     credential: string,
   ) {
-    return (
+    const accepted = (
       await server.inject({
         method: "POST",
         url: "/v1/runs",
@@ -1065,6 +1242,20 @@ describe("a role decides its own gates and no one else's", () => {
         payload: bodyFor(WORKFLOW_OF[approver]),
       })
     ).json();
+
+    // The gate opens on the consumer's turn, not on this request's.
+    for (let attempt = 0; attempt < 2_000; attempt += 1) {
+      const run = (
+        await server.inject({
+          method: "GET",
+          url: `/v1/runs/${accepted.runId}`,
+          headers: as(credential),
+        })
+      ).json();
+      if (SETTLED.has(run.status as string)) return run;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    throw new Error(`Run ${accepted.runId} never settled.`);
   }
 
   test("the holder of the other role is refused, and nothing dispatches", async () => {

@@ -1,12 +1,11 @@
-import { type ControlPlaneStack, createLocalStack } from "@forge/composition";
-import { createDurableStack } from "@forge/composition/durable";
-import { ANY_ROLE } from "@forge/ports";
-
 import {
   type DeploymentPolicy,
   loadDeploymentPolicy,
   NO_COMPANY_POLICY,
-} from "./company.js";
+} from "@forge/company";
+import { type ControlPlaneStack, createLocalStack } from "@forge/composition";
+import { createDurableStack } from "@forge/composition/durable";
+import { ANY_ROLE } from "@forge/ports";
 import {
   createDevelopmentIdentity,
   type DevelopmentOperator,

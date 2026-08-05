@@ -6,7 +6,7 @@ import {
   CompanyLoadError,
   loadDeploymentPolicy,
   NO_COMPANY_POLICY,
-} from "./company.js";
+} from "./deployment.js";
 
 const ACME = fileURLToPath(new URL("../../../examples/acme", import.meta.url));
 

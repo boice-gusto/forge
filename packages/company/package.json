@@ -9,7 +9,8 @@
   "dependencies": {
     "@forge/manifest": "workspace:*",
     "@forge/plugin-sdk": "workspace:*",
-    "@forge/types": "workspace:*"
+    "@forge/types": "workspace:*",
+    "@forge/policy-memory": "workspace:*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

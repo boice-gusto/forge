@@ -37,6 +37,24 @@ const storeThresholds = storesRequired
       // Not 100: the probe's "no runtime reachable" catch cannot execute in a
       // run that requires a runtime, and these floors only apply in that run.
       // The decision it guards is tested separately as a pure function.
+      // Redaction and the fail-open wrapper are the last place a payload can
+      // be stopped before it leaves the process, so the floor is 100 — but
+      // `run-events.ts` reaches its last paths only through the
+      // container-backed event-store suite, so it is gated with the stores. A
+      // Docker-less run falls back to the global floor rather than claiming a
+      // number no test defended.
+      "packages/observability/src/**": {
+        lines: 100,
+        functions: 100,
+        branches: 93,
+        statements: 100,
+      },
+      "packages/event-store-postgres/src/**": {
+        lines: 100,
+        functions: 100,
+        branches: 100,
+        statements: 100,
+      },
       "packages/run-store-postgres/src/**": {
         lines: 100,
         functions: 100,
@@ -109,6 +127,7 @@ export default defineConfig({
               "packages/composition/src/durable.ts",
               "packages/queue-bullmq/src/queue.ts",
               "packages/run-store-postgres/**",
+              "packages/event-store-postgres/**",
             ]),
       ],
       thresholds: {
@@ -202,6 +221,20 @@ export default defineConfig({
           branches: 85,
           statements: 100,
         },
+        // A run's timeline outlives its process, so the store that keeps it is
+        // held to the same bar as the run store itself.
+        "packages/event-store-memory/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 100,
+          statements: 100,
+        },
+        "packages/event-store-conformance/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 100,
+          statements: 100,
+        },
         "packages/run-store-memory/src/**": {
           lines: 100,
           functions: 100,
@@ -213,14 +246,6 @@ export default defineConfig({
           functions: 100,
           branches: 73,
           statements: 91,
-        },
-        // Redaction and the fail-open wrapper are the last place a payload
-        // can be stopped before it leaves the process.
-        "packages/observability/src/**": {
-          lines: 100,
-          functions: 100,
-          branches: 93,
-          statements: 100,
         },
         "packages/observability-memory/src/**": {
           lines: 100,
