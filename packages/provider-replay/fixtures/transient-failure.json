@@ -1,0 +1,12 @@
+{
+  "recordedAt": "2026-08-04T09:12:00.000Z",
+  "frames": [
+    { "kind": "text", "text": "Starting.", "delayMs": 0 },
+    {
+      "kind": "failure",
+      "code": "RATE_LIMITED",
+      "message": "Upstream returned 429; the window resets shortly.",
+      "delayMs": 0
+    }
+  ]
+}

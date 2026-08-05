@@ -1,0 +1,12 @@
+{
+  "recordedAt": "2026-08-04T09:16:00.000Z",
+  "frames": [
+    { "kind": "text", "text": "Starting.", "delayMs": 0 },
+    {
+      "kind": "failure",
+      "code": "INVALID_REQUEST",
+      "message": "The prompt referenced a tool that does not exist.",
+      "delayMs": 0
+    }
+  ]
+}

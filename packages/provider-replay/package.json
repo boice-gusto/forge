@@ -1,5 +1,5 @@
 {
-  "name": "@forge/provider-mock",
+  "name": "@forge/provider-replay",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@forge/ports": "workspace:*"
+    "@forge/ports": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@forge/provider-conformance": "workspace:*"

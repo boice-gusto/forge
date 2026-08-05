@@ -1,0 +1,10 @@
+{
+  "recordedAt": "2026-08-04T09:08:00.000Z",
+  "frames": [
+    { "kind": "text", "text": "Working", "delayMs": 0 },
+    { "kind": "text", "text": " through", "delayMs": 2 },
+    { "kind": "text", "text": " a long", "delayMs": 2 },
+    { "kind": "text", "text": " answer.", "delayMs": 2 },
+    { "kind": "end", "delayMs": 2 }
+  ]
+}

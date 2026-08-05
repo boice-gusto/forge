@@ -1,0 +1,8 @@
+{
+  "recordedAt": "2026-08-04T09:00:00.000Z",
+  "frames": [
+    { "kind": "text", "text": "Reading the ticket", "delayMs": 0 },
+    { "kind": "text", "text": " and drafting a reply.", "delayMs": 0 },
+    { "kind": "end", "delayMs": 0 }
+  ]
+}

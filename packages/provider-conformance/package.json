@@ -1,5 +1,5 @@
 {
-  "name": "@forge/provider-mock",
+  "name": "@forge/provider-conformance",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -12,8 +12,5 @@
   },
   "dependencies": {
     "@forge/ports": "workspace:*"
-  },
-  "devDependencies": {
-    "@forge/provider-conformance": "workspace:*"
   }
 }

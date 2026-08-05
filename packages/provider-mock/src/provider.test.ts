@@ -73,6 +73,14 @@ describe("mock provider lifecycle", () => {
     await expect(provider.destroySession(session)).resolves.toBeUndefined();
   });
 
+  test("cleaning up a session the provider never issued is a no-op", async () => {
+    const provider = createMockProvider({ providerId: "mock", events: [] });
+    const stranger = { providerId: "mock", sessionId: "mock_session_404" };
+
+    await expect(provider.cancel(stranger)).resolves.toBeUndefined();
+    await expect(provider.destroySession(stranger)).resolves.toBeUndefined();
+  });
+
   test("an empty script completes without emitting", async () => {
     const provider = createMockProvider({ providerId: "mock", events: [] });
     const session = await provider.createSession({
