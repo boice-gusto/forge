@@ -40,12 +40,20 @@ describe("runCli", () => {
     expect(result.stderr).toBe("");
   });
 
-  test("keeps human output off stdout", async () => {
+  test("a successful human result goes to stdout, not stderr", async () => {
     const result = await runCli(["providers", "doctor"]);
 
     expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("mock: ready");
+    expect(result.stderr).toBe("");
+  });
+
+  test("a failing human result goes to stderr, not stdout", async () => {
+    const result = await runCli(["nonsense"]);
+
+    expect(result.exitCode).toBe(3);
     expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("mock: ready");
+    expect(result.stderr).toContain("workflow compile");
   });
 
   test("returns the invalid-artifact exit code for an invalid manifest", async () => {

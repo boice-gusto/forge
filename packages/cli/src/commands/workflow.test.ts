@@ -42,6 +42,20 @@ describe("forge workflow", () => {
     expect(payload.awaiting.policyId).toBe("acme.marketing.external-publish");
   });
 
+  test("the human view of a gated run says what it is waiting on", async () => {
+    const result = await runCli(["workflow", "run", "--input", FIXTURE]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("AWAITING_APPROVAL");
+    expect(result.stdout).toContain("none dispatched");
+    // A gate the reader cannot act on is not much better than a silent stop,
+    // so the node, the deciding policy, and the expiry all appear.
+    expect(result.stdout).toContain("awaiting");
+    expect(result.stdout).toContain("publish");
+    expect(result.stdout).toContain("acme.marketing.external-publish");
+    expect(result.stdout).toContain("expires");
+  });
+
   test("a missing --input is a usage-shaped failure, not a crash", async () => {
     const result = await runCli(["workflow", "compile", "--json"]);
 

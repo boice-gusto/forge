@@ -37,6 +37,10 @@ pnpm --filter @forge/cli exec tsx src/main.ts workflow run --input <file> [--jso
 `--json` gives exactly one JSON object on stdout. Exit codes: `0` success,
 `1` unavailable or run failed, `2` invalid artifact, `3` usage, `4` internal.
 
+Streams follow the exit code: a successful result is on stdout, a failure is on
+stderr. Do not send a success to stderr — `forge workflow run > run.txt` would
+capture nothing, which is how it behaved until it was noticed.
+
 A CLI run is in-process. It does **not** resume across invocations — use the API when
 a gate needs a real decision.
 

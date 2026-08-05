@@ -49,8 +49,10 @@ describe("forge validate — the accepting path", () => {
     writeFileSync(path, manifest);
     const result = await runCli(["validate", "--input", path]);
 
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("acme");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("acme");
+    expect(result.stdout).not.toContain("{");
+    expect(result.stderr).toBe("");
   });
 
   test("a structurally invalid manifest returns diagnostics", async () => {
