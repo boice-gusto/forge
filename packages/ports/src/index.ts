@@ -52,6 +52,18 @@ export {
   type QueuePort,
 } from "./queue.js";
 export type {
+  DispatchedEffect,
+  EffectClaim,
+  PersistedRun,
+  PinnedRoute,
+  PinnedValue,
+  RunCreateInput,
+  RunRecord,
+  RunStatus,
+  RunStorePort,
+  StoredArtifact,
+} from "./run-store.js";
+export type {
   SandboxExecResult,
   SandboxLease,
   SandboxLeaseRequest,

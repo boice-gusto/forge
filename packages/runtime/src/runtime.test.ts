@@ -13,6 +13,7 @@ import {
   type SpanAttributes,
 } from "@forge/ports";
 import { createMockProvider } from "@forge/provider-mock";
+import { createMemoryRunStore } from "@forge/run-store-memory";
 import { createMemorySandbox } from "@forge/sandbox";
 import { describe, expect, test } from "vitest";
 
@@ -109,6 +110,7 @@ function harness(
       },
     },
     checkpoints,
+    runs: createMemoryRunStore(),
     clock,
     ids,
     actor: "svc.forge.worker",
@@ -765,6 +767,7 @@ function reviewHarness(opts: {
       },
     },
     checkpoints: createMemoryCheckpointStore(),
+    runs: createMemoryRunStore(),
     clock,
     ids,
     actor: "svc.forge.worker",
@@ -1278,6 +1281,7 @@ function dataHarness(options: DataHarnessOptions = {}) {
       },
     },
     checkpoints,
+    runs: createMemoryRunStore(),
     clock,
     ids,
     actor: "svc.forge.worker",

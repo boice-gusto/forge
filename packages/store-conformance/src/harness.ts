@@ -5,6 +5,8 @@ import type {
   CheckpointStorePort,
   ClockPort,
   IdPort,
+  RunCreateInput,
+  RunStorePort,
 } from "@forge/ports";
 
 /**
@@ -35,7 +37,38 @@ export interface ApprovalConformanceHarness {
   create(clock: ClockPort, ids: IdPort): Promise<StoreHandle<ApprovalPort>>;
 }
 
+export interface RunStoreConformanceHarness {
+  readonly name: string;
+  /** An empty store, isolated from every other one this harness hands out. */
+  create(): Promise<StoreHandle<RunStorePort>>;
+}
+
 export const CONFORMANCE_NOW = "2026-08-04T00:00:00.000Z";
+
+export const CONFORMANCE_RUN_ID = "run_conformance";
+
+/**
+ * A freshly started run. The IR is a token rather than a real workflow: this
+ * suite proves the store carries it back unchanged, not that it means anything
+ * — the compiler owns that.
+ */
+export const CONFORMANCE_RUN: RunCreateInput = {
+  record: {
+    runId: CONFORMANCE_RUN_ID,
+    workflowId: "acme.publish",
+    fingerprint: "sha256:artifact",
+    status: "RUNNING",
+    attempt: 1,
+    performedEffects: [],
+  },
+  artifact: {
+    workflowId: "acme.publish",
+    fingerprint: "sha256:artifact",
+    ir: { workflowId: "acme.publish", nodes: ["intake", "publish"] },
+  },
+  capabilities: ["prod.write"],
+  changedPaths: ["docs/campaigns/spring.md"],
+};
 
 export const CONFORMANCE_APPROVAL: ApprovalRequest = {
   runId: "run_1",

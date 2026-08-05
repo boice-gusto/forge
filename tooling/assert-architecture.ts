@@ -60,6 +60,7 @@ const PRIVATE_ADAPTER_PREFIXES = [
   "@forge/policy-",
   "@forge/approval-",
   "@forge/checkpoint-",
+  "@forge/run-store-",
   "@forge/queue-",
   "@forge/observability-",
 ] as const;

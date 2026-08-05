@@ -10,6 +10,7 @@ import type { PanelDefinition, Vote } from "@forge/panel";
 import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
 import type { ApprovalPort, ClockPort, IdPort } from "@forge/ports";
 import { createMockProvider } from "@forge/provider-mock";
+import { createMemoryRunStore } from "@forge/run-store-memory";
 import {
   createRuntime,
   type EffectSink,
@@ -138,6 +139,10 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
       : { transforms: (ref: string) => options.transforms?.[ref] }),
     effects,
     checkpoints: createMemoryCheckpointStore(),
+    // The local stack's run store is a Map, exactly as its checkpoints are.
+    // The runtime cannot tell it from the Postgres one, which is what makes
+    // `resume` work identically in both.
+    runs: createMemoryRunStore(),
     clock,
     ids,
     actor: options.actor ?? "svc.forge.local",

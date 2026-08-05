@@ -25,7 +25,10 @@
     "@forge/panel": "workspace:*",
     "@forge/provider-mock": "workspace:*",
     "@forge/sandbox": "workspace:*",
-    "@forge/company": "workspace:*"
+    "@forge/company": "workspace:*",
+    "@forge/run-store-memory": "workspace:*",
+    "@forge/run-store-postgres": "workspace:*",
+    "@forge/observability-otel": "workspace:*"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^12.1.0",

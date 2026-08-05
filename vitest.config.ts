@@ -37,6 +37,12 @@ const storeThresholds = storesRequired
       // Not 100: the probe's "no runtime reachable" catch cannot execute in a
       // run that requires a runtime, and these floors only apply in that run.
       // The decision it guards is tested separately as a pure function.
+      "packages/run-store-postgres/src/**": {
+        lines: 100,
+        functions: 100,
+        branches: 100,
+        statements: 100,
+      },
       "packages/queue-bullmq/src/**": {
         lines: 99,
         functions: 85,
@@ -102,6 +108,7 @@ export default defineConfig({
               // drag the global aggregate for an unrelated reason.
               "packages/composition/src/durable.ts",
               "packages/queue-bullmq/src/queue.ts",
+              "packages/run-store-postgres/**",
             ]),
       ],
       thresholds: {
@@ -199,6 +206,12 @@ export default defineConfig({
           lines: 100,
           functions: 100,
           branches: 85,
+          statements: 100,
+        },
+        "packages/run-store-memory/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 100,
           statements: 100,
         },
         "packages/queue-memory/src/**": {

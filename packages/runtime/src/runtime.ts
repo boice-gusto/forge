@@ -21,6 +21,8 @@ import type {
   ObservabilityPort,
   PolicyPort,
   ProviderPort,
+  RunRecord,
+  RunStorePort,
   RunValues,
   SandboxLease,
   SandboxPort,
@@ -28,34 +30,12 @@ import type {
 } from "@forge/ports";
 
 /**
- * Run lifecycle (006 §5).
- *
- * PENDING -> RUNNING -> AWAITING_APPROVAL -> RUNNING -> SUCCEEDED
- *                    \-> FAILED
- *                    \-> CANCELLED
- *
- * Retrying is not a state: the run stays RUNNING and the attempt increments.
+ * The run lifecycle (006 §5) and the record that carries it live on
+ * `RunStorePort`, because `AWAITING_APPROVAL` is durable state rather than
+ * something one process happens to remember. Re-exported here so callers keep
+ * reading them in runtime terms.
  */
-export type RunStatus =
-  | "PENDING"
-  | "RUNNING"
-  | "AWAITING_APPROVAL"
-  | "SUCCEEDED"
-  | "FAILED"
-  | "CANCELLED";
-
-export interface RunRecord {
-  readonly runId: string;
-  readonly workflowId: string;
-  readonly fingerprint: string;
-  readonly status: RunStatus;
-  readonly attempt: number;
-  readonly performedEffects: readonly string[];
-  readonly pendingApprovalId?: string | undefined;
-  readonly error?: string | undefined;
-  /** What the output node resolved to, once one has run. */
-  readonly result?: JsonValue | undefined;
-}
+export type { RunRecord, RunStatus } from "@forge/ports";
 
 export interface EffectSink {
   /**
@@ -112,6 +92,12 @@ export interface RuntimeOptions {
   readonly transforms?: (transformRef: string) => TransformFn | undefined;
   readonly effects: EffectSink;
   readonly checkpoints: CheckpointStorePort;
+  /**
+   * Where the run and its three ledgers live. Bind the memory adapter and the
+   * runtime behaves exactly as it always did; bind the Postgres one and a
+   * second process can re-enter a run this one started.
+   */
+  readonly runs: RunStorePort;
   readonly clock: ClockPort;
   readonly ids: IdPort;
   readonly actor: string;
@@ -313,12 +299,35 @@ function votesFromState(
 
 export interface Runtime {
   start(input: StartInput): Promise<RunRecord>;
+  /**
+   * Re-enters a run this process may never have started.
+   *
+   * Loads the record, the pinned values, the route ledger and the effect
+   * ledger from the run store, then continues from where the run stopped. It
+   * does **not** re-walk in the sense that matters: every node that already
+   * produced a value, took an arm, or dispatched an effect is replayed from
+   * its ledger, so no provider, judge, branch or sink is asked a second time.
+   *
+   * A run parked at a gate stays parked unless the gate has been decided —
+   * possibly by a control plane in another process, which can only write to
+   * the approval store. The binding and the deadline are re-checked here,
+   * because here is where the dispatch is authorised.
+   *
+   * `undefined` means no such run exists anywhere.
+   */
+  resume(runId: string): Promise<RunRecord | undefined>;
+  /**
+   * The run record, from the store if this process does not know it. Reads
+   * only: a run mid-walk is not advanced by being looked at.
+   */
+  loadRun(runId: string): Promise<RunRecord | undefined>;
   decide(
     approvalId: string,
     decision: ApprovalDecision,
     principal: string,
   ): Promise<RunRecord>;
   cancel(runId: string): Promise<RunRecord>;
+  /** What this process knows, without going to the store. */
   getRun(runId: string): RunRecord | undefined;
   getApproval(approvalId: string): Promise<ApprovalRecord | undefined>;
   /** Effects actually dispatched, in order. Used to prove exactly-once. */
@@ -362,10 +371,17 @@ export function createRuntime(options: RuntimeOptions): Runtime {
    * The single place a run's status changes, so the lifecycle transition
    * (006 §5) is reported from one choke point rather than at each of the nine
    * call sites that move a run — one of which would eventually be missed.
+   *
+   * It is also the single place the record is persisted, for the same reason:
+   * a status a second process cannot read is a status only this one believes.
    */
-  const update = (state: RunState, patch: Partial<RunRecord>): RunRecord => {
+  const update = async (
+    state: RunState,
+    patch: Partial<RunRecord>,
+  ): Promise<RunRecord> => {
     const from = state.record.status;
     state.record = { ...state.record, ...patch };
+    await options.runs.update(state.record);
     if (patch.status !== undefined && patch.status !== from) {
       observability.event("forge.run.transition", {
         runId: state.record.runId,
@@ -378,6 +394,79 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     return state.record;
   };
 
+  /** Highest maxAttempts declared on any node (006 §7). */
+  const retryBudgetFor = (ir: ForgeIr): number =>
+    ir.nodes.reduce(
+      (highest, node) =>
+        "retry" in node && node.retry !== undefined
+          ? Math.max(highest, node.retry.maxAttempts)
+          : highest,
+      1,
+    );
+
+  /**
+   * Brings a run this process may never have started into memory, ledgers and
+   * all. Nothing is recomputed: the values, the arms and the dispatches are the
+   * ones the run recorded, which is what makes re-entering it safe.
+   */
+  async function hydrate(runId: string): Promise<RunState | undefined> {
+    const known = runs.get(runId);
+    if (known !== undefined) return known;
+
+    const persisted = await options.runs.load(runId);
+    if (persisted === undefined) return undefined;
+
+    // The one narrowing in the file. `@forge/ports` sits beside `@forge/ir`
+    // rather than above it, so the store holds the sealed IR as JSON; the
+    // fingerprint travelling with it is what the approval's binding is
+    // recomputed against, and a substituted artifact fails that check.
+    const ir = persisted.artifact.ir as unknown as ForgeIr;
+
+    const state: RunState = {
+      record: persisted.record,
+      capabilities: persisted.capabilities,
+      /**
+       * Derived from the effect ledger rather than stored. A node that already
+       * dispatched is walked past instead of being gated a second time — and
+       * only such a node is, so re-entering a run cannot authorise anything a
+       * policy or a human has not.
+       */
+      authorised: new Set(persisted.effects.map((effect) => effect.nodeId)),
+      plan: await options.engine.materialize(ir),
+      roles: ir.roles,
+      changedPaths: persisted.changedPaths,
+      retryBudget: retryBudgetFor(ir),
+    };
+
+    runs.set(runId, state);
+    ledgers.set(runId, [...persisted.effects.map((effect) => effect.nodeId)]);
+    routeLedgers.set(
+      runId,
+      new Map(persisted.routes.map((route) => [route.nodeId, route.arm])),
+    );
+    // A node that ran and produced nothing is a key with no value, so `has`
+    // still answers "this node has run" and it is never invoked again.
+    valueLedgers.set(
+      runId,
+      new Map(persisted.values.map((pinned) => [pinned.nodeId, pinned.value])),
+    );
+    return state;
+  }
+
+  /**
+   * Whether this approval still describes the action it was opened on. The
+   * binding covers run, node, effect and artifact fingerprint, so a mismatch
+   * means the decision authorises something else — including when the artifact
+   * came back out of a store rather than from the caller.
+   */
+  const bindsTo = (state: RunState, approval: ApprovalRecord): boolean =>
+    effectHash({
+      runId: approval.runId,
+      nodeId: approval.nodeId,
+      effect: approval.effect,
+      fingerprint: state.record.fingerprint,
+    }) === approval.effectHash;
+
   /** When an approval this runtime issues stops being actionable. */
   const expiry = (): string =>
     new Date(
@@ -385,9 +474,28 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     ).toISOString();
 
   async function advance(state: RunState): Promise<RunRecord> {
-    const ledger = ledgers.get(state.record.runId) as string[];
-    const routes = routeLedgers.get(state.record.runId) as Map<string, string>;
-    const values = valueLedgers.get(state.record.runId) as ValueLedger;
+    const runId = state.record.runId;
+    const ledger = ledgers.get(runId) as string[];
+    const routes = routeLedgers.get(runId) as Map<string, string>;
+    const values = valueLedgers.get(runId) as ValueLedger;
+
+    /**
+     * A produced value goes into the run store as it goes into the Map. The
+     * store refuses a second write for the same node, so the pin is a fact
+     * about the run rather than about the process that computed it.
+     */
+    const pinValue = async (
+      nodeId: string,
+      value: JsonValue | undefined,
+    ): Promise<void> => {
+      values.set(nodeId, value);
+      await options.runs.pinValue(runId, nodeId, value);
+    };
+
+    const pinRoute = async (nodeId: string, arm: string): Promise<void> => {
+      routes.set(nodeId, arm);
+      await options.runs.pinRoute(runId, nodeId, arm);
+    };
 
     /**
      * The lease the walk is currently inside, if any. Scoped to this attempt on
@@ -423,14 +531,14 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
           // Pinned only once the call completed: a failed agent has produced
           // nothing, and a retry must be free to ask again.
-          values.set(
+          await pinValue(
             nodeId,
             await runAgent(
               options.provider,
-              state.record.runId,
+              runId,
               promptRef,
               span,
-              inSandbox?.workspacePath ?? `/workspace/${state.record.runId}`,
+              inSandbox?.workspacePath ?? `/workspace/${runId}`,
             ),
           );
         },
@@ -444,17 +552,23 @@ export function createRuntime(options: RuntimeOptions): Runtime {
             );
           }
           const produced = await compute(input);
-          values.set(
+          await pinValue(
             nodeId,
             produced === undefined ? undefined : pin(nodeId, produced),
           );
         },
 
         emitOutput: async (nodeId, value) => {
-          if (values.has(nodeId)) return;
+          if (values.has(nodeId)) {
+            // A rehydrated run reports the result it pinned, not the one in
+            // front of it. Without this a run that emitted its output and then
+            // lost its process would come back SUCCEEDED with no result.
+            await update(state, { result: values.get(nodeId) });
+            return;
+          }
           const pinned = pin(nodeId, value);
-          values.set(nodeId, pinned);
-          update(state, { result: pinned });
+          await pinValue(nodeId, pinned);
+          await update(state, { result: pinned });
         },
 
         judge: async (nodeId, judgeRef, fromState): Promise<JudgeVerdict> => {
@@ -481,7 +595,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
             options.votesFor?.(nodeId, judgeRef) ??
             votesFromState(nodeId, fromState);
           const outcome = resolveVerdict(panel, votes);
-          routes.set(nodeId, outcome.verdict);
+          await pinRoute(nodeId, outcome.verdict);
           span.end({
             verdict: outcome.verdict,
             panelSize: panel.members.length,
@@ -513,7 +627,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
               `No arm was chosen for branch '${nodeId}'; declared arms are ${conditionIds.join(", ")}.`,
             );
           }
-          routes.set(nodeId, chosen);
+          await pinRoute(nodeId, chosen);
           observability.event("forge.node.branch", {
             runId: state.record.runId,
             nodeId,
@@ -578,22 +692,52 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           }
         },
         perform: async (nodeId, effect, input) => {
-          // Replay safety: a resumed attempt re-walks pre-interrupt nodes, so
-          // an already-dispatched effect must not fire twice (006 §8).
+          // Replay safety: a re-entered run walks the nodes before the
+          // interrupt again, so an already-dispatched effect must not fire
+          // twice (006 §8).
           if (ledger.includes(nodeId)) return;
+
+          /**
+           * The claim is durable, and it is written *before* the action. A
+           * crash between the two loses an effect; a crash the other way round
+           * performs one twice, and for a system whose premise is that a human
+           * authorised exactly one action, only the first is recoverable.
+           *
+           * The check above cannot separate two workers racing a resume. The
+           * row can.
+           */
+          const claimed = await options.runs.claimEffect({
+            runId,
+            nodeId,
+            effect,
+            ...(input === undefined ? {} : { input }),
+            at: options.clock.now().toISOString(),
+          });
+          ledger.push(nodeId);
+
+          if (!claimed) {
+            // Another worker owns this dispatch. Adopt what it pinned, so the
+            // run continues on the same data rather than on nothing.
+            const persisted = await options.runs.load(runId);
+            const already = persisted?.values.find(
+              (pinned) => pinned.nodeId === nodeId,
+            );
+            if (already !== undefined) values.set(nodeId, already.value);
+            return;
+          }
+
           const produced = await options.effects.perform(
-            state.record.runId,
+            runId,
             nodeId,
             effect,
             input,
           );
-          ledger.push(nodeId);
-          values.set(
+          await pinValue(
             nodeId,
             produced === undefined ? undefined : pin(nodeId, produced),
           );
           observability.event("forge.effect.dispatched", {
-            runId: state.record.runId,
+            runId,
             nodeId,
             effect,
             sequence: ledger.length,
@@ -612,7 +756,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           nodeId: result.nodeId,
           attempt: state.record.attempt + 1,
         });
-        update(state, { attempt: state.record.attempt + 1 });
+        await update(state, { attempt: state.record.attempt + 1 });
         return advance(state);
       }
       observability.event("forge.run.failed", {
@@ -721,6 +865,79 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     });
   }
 
+  /** Leaves the gate on an approval, authorising exactly the node it named. */
+  async function carry(state: RunState, nodeId: string): Promise<RunRecord> {
+    state.authorised.add(nodeId);
+    await update(state, {
+      status: "RUNNING",
+      attempt: state.record.attempt + 1,
+      pendingApprovalId: undefined,
+    });
+    return advance(state);
+  }
+
+  /**
+   * A run parked at a gate, re-entered.
+   *
+   * The decision may already be durable without this runtime having processed
+   * it: writing to the approval store is all a control plane in another
+   * process can do. So the two things the gate exists to guarantee are checked
+   * again here, where the dispatch is actually authorised — the binding still
+   * describes this action, and the deadline had not passed when it was
+   * decided. Neither is re-derived from anything this process chose.
+   */
+  async function reenterGate(state: RunState): Promise<RunRecord> {
+    const approvalId = state.record.pendingApprovalId;
+    if (approvalId === undefined) return state.record;
+
+    const approval = await options.approvals.get(approvalId);
+    // Undecided is not a yes. The run stays exactly where it parked.
+    if (approval === undefined || approval.status === "PENDING") {
+      return state.record;
+    }
+
+    const refuse = (error: string): Promise<RunRecord> =>
+      update(state, { status: "FAILED", error, pendingApprovalId: undefined });
+
+    if (!bindsTo(state, approval)) {
+      return refuse("Approval no longer matches the action it was bound to.");
+    }
+
+    if (approval.status !== "APPROVED") {
+      return refuse(
+        `Approval ${approvalId} was ${approval.status}, which authorises nothing.`,
+      );
+    }
+
+    // An expired gate is not a slow yes (006 §9). The runtime enforces this on
+    // the path it owns; a decision written straight to the store has to meet
+    // it here too, or the deadline means nothing across processes. An approval
+    // that names no moment cannot be shown to have met it.
+    if (
+      approval.decidedAt === undefined ||
+      approval.decidedAt > approval.expiresAt
+    ) {
+      observability.event("forge.approval.expired", {
+        runId: state.record.runId,
+        nodeId: approval.nodeId,
+        approvalId,
+        effect: approval.effect,
+        expiresAt: approval.expiresAt,
+      });
+      return refuse(
+        `Approval ${approvalId} was not decided within its deadline.`,
+      );
+    }
+
+    observability.event("forge.run.resumed", {
+      runId: state.record.runId,
+      nodeId: approval.nodeId,
+      approvalId,
+      effectHash: approval.effectHash,
+    });
+    return carry(state, approval.nodeId);
+  }
+
   return {
     async start(input) {
       const runId = options.ids.next("run");
@@ -729,14 +946,6 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         workflowId: input.artifact.workflowId,
         fingerprint: input.artifact.fingerprint,
       });
-      const plan = await options.engine.materialize(input.artifact.ir);
-      const retryBudget = input.artifact.ir.nodes.reduce(
-        (highest, node) =>
-          "retry" in node && node.retry !== undefined
-            ? Math.max(highest, node.retry.maxAttempts)
-            : highest,
-        1,
-      );
       const state: RunState = {
         record: {
           runId,
@@ -748,37 +957,76 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         },
         capabilities: input.capabilities ?? [],
         authorised: new Set<string>(),
-        plan,
+        plan: await options.engine.materialize(input.artifact.ir),
         roles: input.artifact.ir.roles,
         changedPaths: input.changedPaths ?? [],
-        retryBudget,
+        retryBudget: retryBudgetFor(input.artifact.ir),
       };
       runs.set(runId, state);
       ledgers.set(runId, []);
       routeLedgers.set(runId, new Map());
+      valueLedgers.set(runId, new Map());
+
+      // The sealed artifact goes with the run, which is what lets another
+      // process re-enter it from a run id alone. Until there is an artifact
+      // registry, the run row is one.
+      await options.runs.create({
+        record: state.record,
+        artifact: {
+          workflowId: input.artifact.workflowId,
+          fingerprint: input.artifact.fingerprint,
+          ir: input.artifact.ir as unknown as JsonValue,
+        },
+        capabilities: state.capabilities,
+        changedPaths: state.changedPaths,
+      });
 
       // The run's payload is the value of its input nodes, and of nothing else.
       // With no payload they produce nothing, so a node that reads one stops
       // the run rather than proceeding on an invented empty object.
-      const values: ValueLedger = new Map();
+      const values = valueLedgers.get(runId) as ValueLedger;
       if (input.payload !== undefined) {
         for (const node of input.artifact.ir.nodes) {
-          if (node.kind === "input")
-            values.set(node.id, pin(node.id, input.payload));
+          if (node.kind !== "input") continue;
+          const pinned = pin(node.id, input.payload);
+          values.set(node.id, pinned);
+          await options.runs.pinValue(runId, node.id, pinned);
         }
       }
-      valueLedgers.set(runId, values);
 
-      update(state, { status: "RUNNING" });
+      await update(state, { status: "RUNNING" });
       const record = await advance(state);
       span.end({ status: record.status });
       return record;
     },
 
+    async resume(runId) {
+      const state = await hydrate(runId);
+      if (state === undefined) return undefined;
+
+      if (state.record.status === "AWAITING_APPROVAL") {
+        return reenterGate(state);
+      }
+      // A run that was mid-walk when its process ended. Re-entering replays
+      // every ledger and invokes nothing that already answered.
+      if (
+        state.record.status === "RUNNING" ||
+        state.record.status === "PENDING"
+      ) {
+        return advance(state);
+      }
+      // Terminal. There is nothing to continue, and nothing to redo.
+      return state.record;
+    },
+
+    async loadRun(runId) {
+      return (await hydrate(runId))?.record;
+    },
+
     async decide(approvalId, decision, principal) {
       const approval = await options.approvals.get(approvalId);
       if (approval === undefined) throw new Error("Unknown approval.");
-      const state = runs.get(approval.runId);
+      const state = await hydrate(approval.runId);
       if (state === undefined) throw new Error("Unknown run.");
 
       if (state.record.status === "CANCELLED")
@@ -789,13 +1037,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
       // The decision authorises one action under one compiled version, so a
       // binding that no longer recomputes is stale and must not be honoured.
-      const expected = effectHash({
-        runId: approval.runId,
-        nodeId: approval.nodeId,
-        effect: approval.effect,
-        fingerprint: state.record.fingerprint,
-      });
-      if (expected !== approval.effectHash) {
+      if (!bindsTo(state, approval)) {
         throw new Error(
           "Approval no longer matches the action it was bound to.",
         );
@@ -879,17 +1121,11 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       }
 
       // The approval authorises exactly the node it was bound to.
-      state.authorised.add(approval.nodeId);
-      update(state, {
-        status: "RUNNING",
-        attempt: state.record.attempt + 1,
-        pendingApprovalId: undefined,
-      });
-      return advance(state);
+      return carry(state, approval.nodeId);
     },
 
     async cancel(runId) {
-      const state = runs.get(runId);
+      const state = await hydrate(runId);
       if (state === undefined) throw new Error("Unknown run.");
       if (
         state.record.status === "SUCCEEDED" ||
