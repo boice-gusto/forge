@@ -9,7 +9,11 @@ import {
   createPostgresCheckpointStore,
 } from "@forge/checkpoint-postgres";
 import { createMemoryGraphEngine } from "@forge/engine-memory";
-import { createMemoryObservability } from "@forge/observability-memory";
+import {
+  createMemoryObservability,
+  type MemoryObservability,
+  type ObservedEvent,
+} from "@forge/observability-memory";
 import { createOtelObservability } from "@forge/observability-otel";
 import type { PanelDefinition, Vote } from "@forge/panel";
 import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
@@ -39,6 +43,8 @@ import {
 } from "@forge/runtime";
 import { createMemorySandbox } from "@forge/sandbox";
 import pg from "pg";
+
+import type { ControlPlaneStack } from "./control-plane.js";
 
 /**
  * Durable composition root.
@@ -112,9 +118,17 @@ export interface DurableStackOptions {
   ) => string | undefined;
   readonly observability?: ObservabilityPort;
   readonly clock?: ClockPort;
+  /**
+   * Profiles this deployment can provision. A workflow naming one that is
+   * absent stops rather than running with less isolation than it declared, so
+   * a host that serves a company must declare what that company's workflows
+   * ask for — the same rule the local stack applies, stated in both roots
+   * because a run must not become less isolated by being made durable.
+   */
+  readonly sandboxProfiles?: readonly string[];
 }
 
-export interface DurableStack {
+export interface DurableStack extends ControlPlaneStack {
   readonly runtime: Runtime;
   readonly approvals: ApprovalPort;
   readonly checkpoints: CheckpointStorePort;
@@ -206,7 +220,10 @@ export async function createDurableStack(
         providerId: "mock",
         events: [{ type: "completed" }],
       }),
-    sandbox: createMemorySandbox({ profiles: ["docker"], available: true }),
+    sandbox: createMemorySandbox({
+      profiles: options.sandboxProfiles ?? ["docker"],
+      available: true,
+    }),
     observability,
     panel: options.panel ?? { standing: [], summonable: [], quorum: 0.5 },
     ...(options.votesFor === undefined ? {} : { votesFor: options.votesFor }),
@@ -249,6 +266,18 @@ export async function createDurableStack(
     }));
   }
 
+  /**
+   * Only a recorder has a timeline. With a collector configured the spans have
+   * left the process and there is nothing here to serve, which is stated as an
+   * empty list rather than pretended away — the run's trace is in the
+   * collector, and 012 §4.3's stream is what will make it readable from here.
+   */
+  const recorder =
+    "timeline" in observability
+      ? (observability as MemoryObservability)
+      : undefined;
+  const timeline = (): readonly ObservedEvent[] => recorder?.timeline ?? [];
+
   return {
     runtime,
     approvals,
@@ -256,6 +285,7 @@ export async function createDurableStack(
     runs,
     queue,
     observability,
+    timeline,
     dispatched,
     resume: (runId) => runtime.resume(runId),
     async close() {

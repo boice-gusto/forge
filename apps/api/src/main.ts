@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { type ControlPlaneStack, createLocalStack } from "@forge/composition";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import { createRequestAuthenticator, registerAuthRoutes } from "./auth.js";
@@ -25,8 +26,14 @@ export interface ApiOptions {
    * was the same person, holding every role.
    */
   readonly identity: IdentityPort;
-  /** Sandbox profiles this deployment can provision. */
-  readonly sandboxProfiles?: readonly string[];
+  /**
+   * The one stack this process serves, built at boot from the company package
+   * and the persistence this deployment was configured with. Defaulted to a
+   * bare local stack so a contributor with no Docker and no company package
+   * still gets a control plane — one that grants nothing and rules on nothing,
+   * which is the correct thing for a host that was told nothing.
+   */
+  readonly stack?: ControlPlaneStack;
   /** Overridable so a suite can age a session out without waiting for one. */
   readonly sessions?: SessionStore;
 }
@@ -66,9 +73,7 @@ export function createApiApp(options: ApiOptions): FastifyInstance {
   registerAuthRoutes(app, { identity: options.identity, sessions });
   registerRunRoutes(app, {
     authenticate,
-    ...(options.sandboxProfiles === undefined
-      ? {}
-      : { sandboxProfiles: options.sandboxProfiles }),
+    stack: options.stack ?? createLocalStack(),
   });
 
   return app;

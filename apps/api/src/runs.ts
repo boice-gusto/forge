@@ -1,11 +1,5 @@
-import {
-  compileToArtifact,
-  createLocalStack,
-  type LocalStack,
-} from "@forge/composition";
-import type { PanelDefinition, Vote } from "@forge/panel";
-import type { PolicyRule } from "@forge/policy-memory";
-import type { ApprovalDecision, JsonValue } from "@forge/ports";
+import { type ControlPlaneStack, compileToArtifact } from "@forge/composition";
+import type { ApprovalDecision, JsonValue, RunStatus } from "@forge/ports";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import { mayDecide, type Principal } from "./identity.js";
@@ -16,19 +10,23 @@ import { mayDecide, type Principal } from "./identity.js";
  * The API is the boundary that establishes who is acting. A decision's
  * principal is taken from the authenticated caller, never from the request
  * body — a body field is not an identity claim (006 §2).
+ *
+ * **One stack per deployment.** This file used to build a fresh stack for any
+ * request that carried a `policy`, which with the durable root would have meant
+ * a new Postgres pool and a new Redis connection per run started. Policy now
+ * resolves from the company package the process loaded at boot, so there is one
+ * runtime, one approval store and one run store to ask — and a run this process
+ * did not start is an ordinary run rather than a 404.
  */
 
 interface StartBody {
   readonly workflow?: unknown;
+  /**
+   * What the run's roles require. Not authority: the evaluator checks each
+   * against the policy closure's grants, so naming a capability the company was
+   * never granted denies the action rather than conferring it.
+   */
   readonly capabilities?: readonly string[];
-  readonly policy?: {
-    readonly rules?: readonly PolicyRule[];
-    readonly grants?: readonly string[];
-  };
-  readonly panel?: PanelDefinition;
-  readonly review?: { readonly votes?: Readonly<Record<string, Vote>> };
-  /** Which arm each branch takes, keyed by node id. */
-  readonly branch?: Readonly<Record<string, string>>;
   readonly changedPaths?: readonly string[];
   /** The run's input, which the workflow's input nodes produce. */
   readonly payload?: JsonValue;
@@ -55,9 +53,16 @@ function toDecision(body: DecisionBody): ApprovalDecision | undefined {
   }
 }
 
+const RUN_STATUSES = new Set<string>([
+  "PENDING",
+  "RUNNING",
+  "AWAITING_APPROVAL",
+  "SUCCEEDED",
+  "FAILED",
+  "CANCELLED",
+] satisfies readonly RunStatus[]);
+
 export interface RunRoutesOptions {
-  /** Sandbox profiles this deployment can provision. */
-  readonly sandboxProfiles?: readonly string[];
   /**
    * Resolves the acting principal — subject *and* roles — from the request, at
    * the trusted boundary. A rule's `approvers` names roles rather than people,
@@ -66,8 +71,12 @@ export interface RunRoutesOptions {
   readonly authenticate: (
     request: FastifyRequest,
   ) => Promise<Principal | undefined>;
-  /** Overridable so tests and the local stack share one wiring. */
-  readonly stack?: LocalStack;
+  /**
+   * The one stack this deployment serves — local or durable, decided at boot.
+   * The routes cannot tell which they got, which is the point: everything below
+   * reads the store rather than a map of runs this process happens to remember.
+   */
+  readonly stack: ControlPlaneStack;
 }
 
 /**
@@ -100,58 +109,11 @@ interface RunEventView {
   readonly attributes: Readonly<Record<string, string | number | boolean>>;
 }
 
-/**
- * A stack of this run's own, because it brought its own policy. Policy comes
- * from the request only because there is no policy store yet; when one exists
- * this resolves from the company package, not the caller.
- *
- * Optional fields are spread only when present, so an absent one keeps the
- * stack's own default rather than overwriting it with `undefined`.
- */
-function stackFor(
-  body: StartBody,
-  shared: LocalStack,
-  sandboxProfiles: readonly string[] | undefined,
-): LocalStack {
-  return createLocalStack({
-    rules: body.policy?.rules ?? [],
-    grants: body.policy?.grants ?? [],
-    environment: "production",
-    ...(sandboxProfiles === undefined ? {} : { sandboxProfiles }),
-    // One id source across every stack. Without it each per-policy stack mints
-    // `run_1`, and the second run displaces the first in the run index.
-    ids: shared.ids,
-    ...(body.panel === undefined ? {} : { panel: body.panel }),
-    ...(body.review?.votes === undefined
-      ? {}
-      : { votesFor: () => body.review?.votes ?? {} }),
-    ...(body.branch === undefined
-      ? {}
-      : { branchFor: (nodeId: string) => body.branch?.[nodeId] }),
-  });
-}
-
 export function registerRunRoutes(
   app: FastifyInstance,
   options: RunRoutesOptions,
-): LocalStack {
-  /**
-   * Every run, in the order accepted, and the stack that owns it. A run with
-   * its own policy gets its own stack, so there is no single runtime to ask.
-   */
-  const stacks = new Map<string, LocalStack>();
-  const shared =
-    options.stack ??
-    createLocalStack(
-      options.sandboxProfiles === undefined
-        ? {}
-        : { sandboxProfiles: options.sandboxProfiles },
-    );
-
-  /** Each approval store exactly once, however many runs share it. */
-  const stores = (): readonly LocalStack[] => [
-    ...new Set<LocalStack>([shared, ...stacks.values()]),
-  ];
+): void {
+  const { stack } = options;
 
   app.post("/v1/workflows/compile", async (request, reply) => {
     // Authenticated like every sibling route. Compiling reads and writes no
@@ -201,11 +163,14 @@ export function registerRunRoutes(
       });
     }
 
-    const stack =
-      body.policy === undefined
-        ? shared
-        : stackFor(body, shared, options.sandboxProfiles);
-
+    /**
+     * The run is walked inline, on this request. 006 §10.1 has the control
+     * plane persist and enqueue instead, and it should — but `Runtime.start`
+     * walks, and there is no "create and park" for the API to call. Doing it
+     * properly is a runtime change, not a routing one; what durability needs
+     * is already true either way, because the record and the three ledgers are
+     * written to the store as the walk proceeds.
+     */
     const run = await stack.runtime.start({
       artifact: outcome.artifact,
       capabilities: body.capabilities ?? [],
@@ -214,28 +179,38 @@ export function registerRunRoutes(
       // or a node reading it would proceed on data nobody sent.
       ...(body.payload === undefined ? {} : { payload: body.payload }),
     });
-    stacks.set(run.runId, stack);
 
     return reply.code(201).send(run);
   });
 
-  app.get("/v1/runs", async (request, reply) => {
-    const principal = await options.authenticate(request);
-    if (principal === undefined)
-      return reply.code(401).send({ status: "unauthorized" });
+  app.get<{ Querystring: { status?: string } }>(
+    "/v1/runs",
+    async (request, reply) => {
+      const principal = await options.authenticate(request);
+      if (principal === undefined)
+        return reply.code(401).send({ status: "unauthorized" });
 
-    // Most recent first: an operator is looking for what just happened.
-    // Loaded rather than read from memory, so a run this process did not start
-    // is still a run — the durable store is the record, not the Map.
-    const runs = (
-      await Promise.all(
-        [...stacks]
-          .reverse()
-          .map(([runId, stack]) => stack.runtime.loadRun(runId)),
-      )
-    ).filter((run) => run !== undefined);
-    return reply.send({ runs });
-  });
+      const { status } = request.query;
+      if (status !== undefined && !RUN_STATUSES.has(status)) {
+        // Refused rather than ignored. A misspelt status that quietly listed
+        // everything would show an operator runs they asked to exclude.
+        return reply.code(422).send({
+          status: "invalid",
+          code: "RUN_STATUS_UNKNOWN",
+          message: `status must be one of ${[...RUN_STATUSES].join(", ")}.`,
+        });
+      }
+
+      // From the store, most recent first — an operator is looking for what
+      // just happened. Read from the store rather than from a map of runs this
+      // process started, because after a restart that map is empty while every
+      // one of those runs is still in Postgres.
+      const runs = await stack.runs.list(
+        status === undefined ? {} : { status: status as RunStatus },
+      );
+      return reply.send({ runs });
+    },
+  );
 
   /**
    * The operator inbox. Scoped by the port to gates this principal may decide,
@@ -246,16 +221,16 @@ export function registerRunRoutes(
     if (principal === undefined)
       return reply.code(401).send({ status: "unauthorized" });
 
-    const perStore = await Promise.all(
-      stores().map((stack) =>
-        stack.approvals.listPendingFor(principal.subject, principal.roles),
-      ),
+    const pending = await stack.approvals.listPendingFor(
+      principal.subject,
+      principal.roles,
     );
     // Closest to expiry first: an expired gate times out, it is not a slow yes.
-    const pending = perStore
-      .flat()
-      .sort((left, right) => left.expiresAt.localeCompare(right.expiresAt));
-    return reply.send({ pending });
+    return reply.send({
+      pending: [...pending].sort((left, right) =>
+        left.expiresAt.localeCompare(right.expiresAt),
+      ),
+    });
   });
 
   app.get<{ Params: { runId: string } }>(
@@ -269,7 +244,6 @@ export function registerRunRoutes(
         return reply.code(401).send({ status: "unauthorized" });
       }
 
-      const stack = stacks.get(request.params.runId) ?? shared;
       const run = await stack.runtime.loadRun(request.params.runId);
       if (run === undefined)
         return reply.code(404).send({ status: "not_found" });
@@ -285,7 +259,6 @@ export function registerRunRoutes(
       if (principal === undefined)
         return reply.code(401).send({ status: "unauthorized" });
 
-      const stack = stacks.get(request.params.runId) ?? shared;
       if ((await stack.runtime.loadRun(request.params.runId)) === undefined)
         return reply.code(404).send({ status: "not_found" });
       return reply.send({
@@ -302,14 +275,18 @@ export function registerRunRoutes(
       if (principal === undefined)
         return reply.code(401).send({ status: "unauthorized" });
 
-      const stack = stacks.get(request.params.runId) ?? shared;
       if ((await stack.runtime.loadRun(request.params.runId)) === undefined)
         return reply.code(404).send({ status: "not_found" });
 
       // The runtime's own telemetry, filtered to one run: a second, derived
       // timeline could disagree with the trace. Attributes were redacted when
       // the span was recorded, which is what makes them safe to serve.
-      const events: RunEventView[] = stack.observability.timeline
+      //
+      // Only what *this* process recorded. A run started before a restart is
+      // readable — its record and its gates are durable — but its events were
+      // never durable, and 012 §4.3's stream is what will change that.
+      const events: RunEventView[] = stack
+        .timeline()
         .filter((entry) => entry.attributes.runId === request.params.runId)
         .map((entry) => ({
           seq: entry.seq,
@@ -329,7 +306,6 @@ export function registerRunRoutes(
       if (principal === undefined)
         return reply.code(401).send({ status: "unauthorized" });
 
-      const stack = stacks.get(request.params.runId) ?? shared;
       const body = (request.body ?? {}) as DecisionBody;
 
       const decision = toDecision(body);
@@ -373,6 +349,4 @@ export function registerRunRoutes(
       }
     },
   );
-
-  return shared;
 }

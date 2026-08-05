@@ -121,6 +121,17 @@ export interface RunCreateInput {
   readonly changedPaths: readonly string[];
 }
 
+/**
+ * What to narrow a listing to.
+ *
+ * Deliberately one field. An operator arriving at an inbox wants "what is
+ * waiting on somebody" and "what just happened"; anything past that is a query
+ * language nobody has asked for yet, and a half-built one is worse than none.
+ */
+export interface RunListQuery {
+  readonly status?: RunStatus;
+}
+
 export interface RunStorePort {
   /**
    * Writes a run for the first time. A run id that already exists is refused:
@@ -129,6 +140,20 @@ export interface RunStorePort {
    */
   create(input: RunCreateInput): Promise<void>;
   load(runId: string): Promise<PersistedRun | undefined>;
+  /**
+   * Every run this store holds, **most recent first** — the order an operator
+   * needs, because the run they are looking for is nearly always the one that
+   * just happened.
+   *
+   * "Most recent" is the order runs were created in, not a timestamp: two runs
+   * starting in the same millisecond would tie, and a tie in a list is a run
+   * that moves about between two reads.
+   *
+   * This exists because the control plane used to enumerate its own in-process
+   * map, so a restart emptied the run list while every one of those runs was
+   * still sitting in Postgres. The store is the record; a Map is a cache of it.
+   */
+  list(query?: RunListQuery): Promise<readonly RunRecord[]>;
   /**
    * Replaces the mutable record. Written from the runtime's single transition
    * point, so a status change cannot be persisted at eight call sites and

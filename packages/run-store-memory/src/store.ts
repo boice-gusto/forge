@@ -84,6 +84,21 @@ export function createMemoryRunStore(): RunStorePort {
       return detach(persisted);
     },
 
+    async list(query) {
+      // A Map iterates in insertion order, so reversing it is "most recent
+      // first" without a clock — and without two runs created in the same
+      // millisecond tying, which would let a run move between two reads.
+      const records = [...runs.values()]
+        .reverse()
+        .map((stored) => stored.record);
+      const status = query?.status;
+      return detach(
+        status === undefined
+          ? records
+          : records.filter((record) => record.status === status),
+      );
+    },
+
     async update(record) {
       find(record.runId).record = detach(record);
     },

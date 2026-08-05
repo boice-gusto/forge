@@ -5,7 +5,9 @@ import type { Pool } from "pg";
  *
  * Deliberately not a migration framework: there are four tables, and an
  * operator who can read this file can also apply it with `psql`. Object names
- * are unqualified so the caller chooses the schema with `search_path`.
+ * are unqualified so the caller chooses the schema with `search_path`. The one
+ * `alter table` is there for the same reason — a column added after the fact
+ * still has to arrive on a database that already exists.
  *
  * The record is one `jsonb` document rather than a column per field. Its
  * optional halves — `pendingApprovalId`, `error`, `result` — are meaningfully
@@ -15,13 +17,27 @@ import type { Pool } from "pg";
  * partial update for it to lose.
  */
 export const RUN_STORE_SCHEMA_SQL = `
+create sequence if not exists forge_run_seq;
+
 create table if not exists forge_run (
   run_id       text primary key,
+  -- Creation order, from a sequence rather than a clock. "Most recent first"
+  -- has to be a total order: two runs starting in the same millisecond would
+  -- tie on a timestamp, and a tie is a run that moves between two reads.
+  seq          bigint not null default nextval('forge_run_seq'),
   record       jsonb not null,
   artifact     jsonb not null,
   capabilities jsonb not null,
   changed_paths jsonb not null
 );
+
+-- For a database created before the column existed. \`nextval\` is volatile, so
+-- each existing row is backfilled with a distinct value rather than all
+-- sharing one; the relative order of rows already there is whatever the rewrite
+-- reads them in, which is the best that can be said after the fact.
+alter table forge_run add column if not exists seq bigint not null default nextval('forge_run_seq');
+
+create index if not exists forge_run_by_seq on forge_run (seq desc);
 
 create table if not exists forge_run_value (
   run_id   text not null references forge_run (run_id),

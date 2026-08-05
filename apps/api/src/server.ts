@@ -1,11 +1,19 @@
+import { type ControlPlaneStack, createLocalStack } from "@forge/composition";
+import { createDurableStack } from "@forge/composition/durable";
 import { ANY_ROLE } from "@forge/ports";
 
+import {
+  type DeploymentPolicy,
+  loadDeploymentPolicy,
+  NO_COMPANY_POLICY,
+} from "./company.js";
 import {
   createDevelopmentIdentity,
   type DevelopmentOperator,
   parseOperatorDirectory,
 } from "./identity-development.js";
 import { startApi } from "./main.js";
+import { persistenceFrom } from "./persistence.js";
 
 /**
  * `PORT` matters beyond taste: a suite that cannot choose a port cannot run two
@@ -90,21 +98,75 @@ function directory(): readonly DevelopmentOperator[] {
   ];
 }
 
+const FORGE_VERSION = "0.1.0";
+
+/**
+ * The company package this deployment serves, and the ceiling it serves it
+ * under.
+ *
+ * The ceiling is read from the environment because the deployment operator
+ * owns it — never from the manifest, which is the package asking. A package
+ * that could widen its own grant by editing its own manifest would not have a
+ * ceiling at all (009 §17.3).
+ */
+async function policy(): Promise<DeploymentPolicy> {
+  const root = process.env.FORGE_COMPANY;
+  if (root === undefined) {
+    warn(
+      "No FORGE_COMPANY. Starting with no policy packs, so every gated action " +
+        "is denied by default and no capability is granted. Set FORGE_COMPANY " +
+        "to the company package this deployment serves.",
+    );
+    return NO_COMPANY_POLICY;
+  }
+  return loadDeploymentPolicy({
+    root,
+    hostCapabilities: roleList(process.env.FORGE_HOST_CAPABILITIES ?? ""),
+    forgeVersion: FORGE_VERSION,
+  });
+}
+
+/**
+ * One stack, built once, for the life of the process.
+ *
+ * `FORGE_PERSISTENCE=postgres` selects the durable root; anything else keeps
+ * the in-memory one, so a contributor with no container runtime still gets a
+ * working control plane. Both are constructed here and nowhere else: the
+ * routes are handed a stack and cannot tell which they got.
+ */
+async function stack(rules: DeploymentPolicy): Promise<ControlPlaneStack> {
+  // What this deployment can actually isolate. A workflow naming a profile
+  // that is absent stops rather than running with less isolation than it
+  // declared, so a host serving a company declares that company's profiles.
+  const sandboxProfiles =
+    process.env.FORGE_SANDBOX_PROFILES === undefined
+      ? {}
+      : { sandboxProfiles: roleList(process.env.FORGE_SANDBOX_PROFILES) };
+  const shared = {
+    rules: rules.rules,
+    grants: rules.grants,
+    environment: "production",
+    ...sandboxProfiles,
+  };
+
+  if (persistenceFrom(process.env.FORGE_PERSISTENCE) === "memory") {
+    return createLocalStack(shared);
+  }
+  return createDurableStack(shared);
+}
+
+const resolved = await policy();
+
 await startApi(
   {
     build: {
-      version: process.env.FORGE_VERSION ?? "0.1.0",
+      version: process.env.FORGE_VERSION ?? FORGE_VERSION,
       gitSha: process.env.FORGE_GIT_SHA ?? "local",
       buildTime: process.env.FORGE_BUILD_TIME ?? new Date().toISOString(),
     },
     dependencies: { queue: "healthy", persistence: "healthy" },
     identity: createDevelopmentIdentity(directory()),
-    // What this deployment can actually isolate. A workflow naming a profile
-    // that is absent stops rather than running with less isolation than it
-    // declared, so a host serving a company declares that company's profiles.
-    ...(process.env.FORGE_SANDBOX_PROFILES === undefined
-      ? {}
-      : { sandboxProfiles: roleList(process.env.FORGE_SANDBOX_PROFILES) }),
+    stack: await stack(resolved),
   },
   port,
 );

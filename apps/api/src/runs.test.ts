@@ -1,10 +1,17 @@
 import { readFileSync } from "node:fs";
-import { createLocalStack } from "@forge/composition";
+import { fileURLToPath } from "node:url";
+
+import {
+  createLocalStack,
+  type LocalStack,
+  type LocalStackOptions,
+} from "@forge/composition";
 import { ANY_ROLE } from "@forge/ports";
 import Fastify from "fastify";
 import { describe, expect, test } from "vitest";
 
 import { createRequestAuthenticator } from "./auth.js";
+import { loadDeploymentPolicy } from "./company.js";
 import { createSessionStore } from "./identity.js";
 import { createDevelopmentIdentity } from "./identity-development.js";
 import { createApiApp } from "./main.js";
@@ -13,6 +20,14 @@ import { registerRunRoutes } from "./runs.js";
 const BEARER = "local-test";
 const AUTH = { authorization: `Bearer ${BEARER}` };
 
+/**
+ * The workflow, the panel and the votes come from the fixture; the **policy
+ * does not**. It is loaded from `examples/acme`'s policy packs, exactly as a
+ * deployment loads the company package it serves, because the request body no
+ * longer carries one — `POST /v1/runs` used to build a stack per request from
+ * `body.policy`, which let the caller choose the rules governing their own run
+ * and, with Postgres behind it, would have opened a pool per request.
+ */
 const fixture = JSON.parse(
   readFileSync(
     new URL(
@@ -24,21 +39,65 @@ const fixture = JSON.parse(
 ) as {
   workflow: unknown;
   capabilities: string[];
-  policy: { rules: unknown[]; grants: string[] };
+  panel: NonNullable<LocalStackOptions["panel"]>;
+  review: { votes: ReturnType<NonNullable<LocalStackOptions["votesFor"]>> };
+  branch: Record<string, string>;
+  changedPaths: string[];
 };
+
+const ACME = fileURLToPath(new URL("../../../examples/acme", import.meta.url));
+/** The ceiling this deployment grants. Never read from the manifest. */
+const HOST_CAPABILITIES = ["repo.read", "docs.write", "slack.write"];
+
+const acme = await loadDeploymentPolicy({
+  root: ACME,
+  hostCapabilities: HOST_CAPABILITIES,
+  forgeVersion: "0.1.0",
+});
+
+/**
+ * The stack a deployment serving Acme would build: the company's own rules,
+ * its granted capabilities, and the host bindings that stand in for a review
+ * adapter. Votes and branch arms are the deployment's, not the caller's — a
+ * request that could name its own verdict would be steering the decision it is
+ * asking a human to make.
+ */
+function acmeStack(
+  overrides: LocalStackOptions & {
+    readonly approvers?: readonly string[];
+  } = {},
+): LocalStack {
+  const { approvers, ...rest } = overrides;
+  return createLocalStack({
+    rules:
+      approvers === undefined
+        ? acme.rules
+        : acme.rules.map((rule) => ({ ...rule, approvers })),
+    grants: acme.grants,
+    environment: "production",
+    panel: fixture.panel,
+    votesFor: () => fixture.review.votes,
+    branchFor: (nodeId: string) => fixture.branch[nodeId],
+    ...rest,
+  });
+}
 
 /**
  * An API whose directory says exactly this. Roles are never inferred: an
  * operator holds what the identity provider resolved and nothing more, which
  * is the whole difference from one shared token standing for every role.
  */
-function appWithRoles(roles: readonly string[]) {
+function appWithRoles(
+  roles: readonly string[],
+  stack: LocalStack = acmeStack(),
+) {
   return createApiApp({
     build: { version: "0.1.0", gitSha: "test", buildTime: "2026-01-01" },
     dependencies: { queue: "healthy", persistence: "healthy" },
     identity: createDevelopmentIdentity([
       { subject: "marketing-lead", secret: BEARER, roles },
     ]),
+    stack,
   });
 }
 
@@ -47,39 +106,72 @@ function appWithRoles(roles: readonly string[]) {
  * than assumed. Most of the suite below is about run mechanics rather than
  * authority, so it uses this and says why the caller can decide anything.
  */
-function app() {
-  return appWithRoles([ANY_ROLE]);
+function app(stack?: LocalStack) {
+  return appWithRoles([ANY_ROLE], stack);
 }
 
-const startBody = fixture;
+/** Everything the caller still supplies: a workflow and what it needs. */
+const startBody = {
+  workflow: fixture.workflow,
+  capabilities: fixture.capabilities,
+  changedPaths: fixture.changedPaths,
+};
 
-/** The same workflow, gated for somebody who is not the caller. */
-function gatedFor(approver: string) {
-  return {
-    ...fixture,
-    policy: {
-      ...fixture.policy,
-      rules: fixture.policy.rules.map((rule) => ({
-        ...(rule as Record<string, unknown>),
-        approvers: [approver],
-      })),
-    },
+/**
+ * The same workflow, publishing a different effect under a different id.
+ *
+ * With one stack per deployment, two runs on one host are governed by one rule
+ * set — so showing that two roles cannot decide each other's gates now means
+ * two *actions* with different approvers, which is what a company policy pack
+ * looks like anyway (009 §11).
+ */
+function workflowFor(id: string, effect: string): unknown {
+  const source = JSON.parse(JSON.stringify(fixture.workflow)) as {
+    id: string;
+    sideEffects: string[];
+    nodes: { effect?: string }[];
   };
+  source.id = id;
+  source.sideEffects = [effect];
+  for (const node of source.nodes) {
+    if (node.effect !== undefined) node.effect = effect;
+  }
+  return source;
 }
 
-/** The same workflow, gated but naming nobody: open to any operator. */
-function gatedForNobody() {
-  return {
-    ...fixture,
-    policy: {
-      ...fixture.policy,
-      rules: fixture.policy.rules.map((rule) => ({
-        ...(rule as Record<string, unknown>),
-        approvers: [],
-      })),
-    },
-  };
-}
+const WORKFLOW_A = workflowFor("acme.marketing.a", "slack.post");
+const WORKFLOW_B = workflowFor("acme.marketing.b", "jira.comment");
+const WORKFLOW_UNOWNED = workflowFor("acme.marketing.open", "docs.publish");
+
+/** A pack naming a different approver per action, and one naming nobody. */
+const SEPARATION_RULES: NonNullable<LocalStackOptions["rules"]> = [
+  {
+    id: "acme.a",
+    action: "slack.post",
+    environment: "production",
+    decision: "require-approval",
+    reason: "Publishing externally is a human call.",
+    approvers: ["role-a"],
+  },
+  {
+    id: "acme.b",
+    action: "jira.comment",
+    environment: "production",
+    decision: "require-approval",
+    reason: "Commenting on a ticket is a human call.",
+    approvers: ["role-b"],
+  },
+  {
+    id: "acme.open",
+    action: "docs.publish",
+    environment: "production",
+    decision: "require-approval",
+    reason: "Anyone on call may decide this.",
+    approvers: [],
+  },
+];
+
+const bodyFor = (workflow: unknown) => ({ ...startBody, workflow });
 
 async function startRun(
   server: ReturnType<typeof app> | ReturnType<typeof Fastify>,
@@ -136,22 +228,52 @@ describe("control plane", () => {
   });
 
   test("a branch with no decision fails the run rather than taking every arm", async () => {
-    // The API accepts branch decisions in the body only because run data does
-    // not flow between nodes yet. Omitting them must stop the run, not pick.
-    const { branch, ...withoutBranch } = startBody as Record<string, unknown>;
-    expect(branch).toBeDefined();
+    // A deployment that binds no branch source has nothing to choose with.
+    // Failing closed is the only safe answer: running every arm would make a
+    // branch a fan-out, and picking one would invent a decision nobody made.
+    const stack = createLocalStack({
+      rules: acme.rules,
+      grants: acme.grants,
+      environment: "production",
+      panel: fixture.panel,
+      votesFor: () => fixture.review.votes,
+    });
 
-    const response = await app().inject({
+    const response = await app(stack).inject({
       method: "POST",
       url: "/v1/runs",
       headers: AUTH,
-      payload: withoutBranch,
+      payload: startBody,
     });
 
     expect(response.statusCode).toBe(201);
     const run = response.json();
     expect(run.status).toBe("FAILED");
     expect(run.error).toContain("No arm was chosen");
+    expect(run.performedEffects).toEqual([]);
+  });
+
+  test("a run cannot bring its own policy: a body field is not a rule set", async () => {
+    // The mistake this boundary now prevents, stated as a test. The stack's
+    // rule set requires a human for `slack.post`; a body claiming the action
+    // is allowed must change nothing at all.
+    const run = await startRun(app(), {
+      ...startBody,
+      policy: {
+        grants: ["docs.write", "slack.write"],
+        rules: [
+          {
+            id: "attacker.allow-everything",
+            action: "slack.post",
+            environment: "production",
+            decision: "allow",
+            reason: "Supplied by the caller.",
+          },
+        ],
+      },
+    });
+
+    expect(run.status).toBe("AWAITING_APPROVAL");
     expect(run.performedEffects).toEqual([]);
   });
 
@@ -428,16 +550,9 @@ describe("control plane edges", () => {
     expect(response.statusCode).toBe(401);
   });
 
-  test("a run started without policy uses the shared stack and is retrievable", async () => {
+  test("a started run is retrievable from the one stack this deployment serves", async () => {
     const server = app();
-    const started = (
-      await server.inject({
-        method: "POST",
-        url: "/v1/runs",
-        headers: AUTH,
-        payload: { workflow: fixture.workflow },
-      })
-    ).json();
+    const started = await startRun(server);
 
     const fetched = await server.inject({
       method: "GET",
@@ -467,12 +582,79 @@ describe("the operator can see the estate without knowing a run id first", () =>
     });
 
     expect(response.statusCode).toBe(200);
-    // Each run carries its own policy, so each gets its own stack. Distinct
-    // ids are what stop the second silently displacing the first.
     expect(first.runId).not.toBe(second.runId);
     expect(
       response.json().runs.map((run: { runId: string }) => run.runId),
     ).toEqual([second.runId, first.runId]);
+  });
+
+  test("the list is the store's, not a map of runs this process started", async () => {
+    // A run written straight to the store, which the API never saw start. It
+    // has to appear, because after a restart *every* run is one of these.
+    const stack = acmeStack();
+    const server = app(stack);
+    const mine = await startRun(server);
+    await stack.runs.create({
+      record: {
+        runId: "run_from_another_process",
+        workflowId: "acme.marketing.campaign-brief",
+        fingerprint: "sha256:elsewhere",
+        status: "AWAITING_APPROVAL",
+        attempt: 1,
+        performedEffects: [],
+      },
+      artifact: {
+        workflowId: "acme.marketing.campaign-brief",
+        fingerprint: "sha256:elsewhere",
+        ir: {},
+      },
+      capabilities: [],
+      changedPaths: [],
+    });
+
+    const runs = (
+      await server.inject({ method: "GET", url: "/v1/runs", headers: AUTH })
+    ).json().runs;
+
+    expect(runs.map((run: { runId: string }) => run.runId)).toEqual([
+      "run_from_another_process",
+      mine.runId,
+    ]);
+  });
+
+  test("a status filter narrows the list, and an unknown status is refused", async () => {
+    const server = app();
+    const parked = await startRun(server);
+
+    const awaiting = (
+      await server.inject({
+        method: "GET",
+        url: "/v1/runs?status=AWAITING_APPROVAL",
+        headers: AUTH,
+      })
+    ).json();
+    expect(awaiting.runs.map((run: { runId: string }) => run.runId)).toEqual([
+      parked.runId,
+    ]);
+
+    const none = (
+      await server.inject({
+        method: "GET",
+        url: "/v1/runs?status=SUCCEEDED",
+        headers: AUTH,
+      })
+    ).json();
+    expect(none.runs).toEqual([]);
+
+    // Refused, not ignored: a misspelt status that listed everything would
+    // show an operator exactly the runs they asked to exclude.
+    const bad = await server.inject({
+      method: "GET",
+      url: "/v1/runs?status=awaiting",
+      headers: AUTH,
+    });
+    expect(bad.statusCode).toBe(422);
+    expect(bad.json().code).toBe("RUN_STATUS_UNKNOWN");
   });
 
   test("the run list refuses an unauthenticated caller", async () => {
@@ -501,9 +683,12 @@ describe("the operator can see the estate without knowing a run id first", () =>
   });
 
   test("a gate that names another approver is not in this operator's inbox", async () => {
-    const server = appWithRoles(["marketing-lead"]);
-    const mine = await startRun(server);
-    await startRun(server, gatedFor("finance-lead"));
+    const server = appWithRoles(
+      ["role-a"],
+      acmeStack({ rules: SEPARATION_RULES }),
+    );
+    const mine = await startRun(server, bodyFor(WORKFLOW_A));
+    await startRun(server, bodyFor(WORKFLOW_B));
 
     const inbox = (
       await server.inject({
@@ -521,8 +706,12 @@ describe("the operator can see the estate without knowing a run id first", () =>
   test("a role the caller holds puts the gate in their inbox", async () => {
     // `approvers` names roles, not people. Matching on identity alone found
     // nothing, so every gate naming a role sat in no inbox at all.
-    const server = appWithRoles(["finance-lead"]);
-    const theirs = await startRun(server, gatedFor("finance-lead"));
+    const server = appWithRoles(
+      ["role-b"],
+      acmeStack({ rules: SEPARATION_RULES }),
+    );
+    await startRun(server, bodyFor(WORKFLOW_A));
+    const theirs = await startRun(server, bodyFor(WORKFLOW_B));
 
     const inbox = (
       await server.inject({
@@ -541,9 +730,12 @@ describe("the operator can see the estate without knowing a run id first", () =>
     // The single-operator deployment, now something a directory says rather
     // than something the API assumes: hiding a gate from the only operator
     // there is would stall the run behind a decision nobody can see.
-    const server = appWithRoles([ANY_ROLE]);
-    const mine = await startRun(server);
-    const theirs = await startRun(server, gatedFor("finance-lead"));
+    const server = appWithRoles(
+      [ANY_ROLE],
+      acmeStack({ rules: SEPARATION_RULES }),
+    );
+    const mine = await startRun(server, bodyFor(WORKFLOW_A));
+    const theirs = await startRun(server, bodyFor(WORKFLOW_B));
 
     const inbox = (
       await server.inject({
@@ -795,23 +987,24 @@ describe("a run carries the payload it was started with", () => {
     ],
   };
 
-  const openPolicy = {
-    rules: [
-      {
-        id: "acme.api-data.open",
-        action: "slack.post",
-        environment: "production",
-        decision: "allow",
-        reason: "Test rule.",
-      },
-    ],
-    grants: [],
-  };
+  /** A deployment whose pack allows the action outright, so no gate opens. */
+  const openStack = () =>
+    acmeStack({
+      rules: [
+        {
+          id: "acme.api-data.open",
+          action: "slack.post",
+          environment: "production",
+          decision: "allow",
+          reason: "Test rule.",
+        },
+      ],
+      grants: [],
+    });
 
   test("a payload flows to the effect and the run succeeds", async () => {
-    const run = await startRun(app(), {
+    const run = await startRun(app(openStack()), {
       workflow: dataWorkflow,
-      policy: openPolicy,
       payload: { body: "the copy" },
     });
 
@@ -820,9 +1013,8 @@ describe("a run carries the payload it was started with", () => {
   });
 
   test("an omitted payload is not an empty one; the read fails closed", async () => {
-    const run = await startRun(app(), {
+    const run = await startRun(app(openStack()), {
       workflow: dataWorkflow,
-      policy: openPolicy,
     });
 
     expect(run.status).toBe("FAILED");
@@ -842,19 +1034,27 @@ describe("a role decides its own gates and no one else's", () => {
     { subject: "ash@example.test", secret: "ash-cred", roles: ["role-b"] },
   ];
 
+  /** One deployment, one pack, a different approver per action. */
   function shared() {
     return createApiApp({
       build: { version: "0.1.0", gitSha: "test", buildTime: "2026-01-01" },
       dependencies: { queue: "healthy", persistence: "healthy" },
       identity: createDevelopmentIdentity(DIRECTORY),
+      stack: acmeStack({ rules: SEPARATION_RULES }),
     });
   }
 
   const as = (secret: string) => ({ authorization: `Bearer ${secret}` });
 
+  const WORKFLOW_OF: Readonly<Record<string, unknown>> = {
+    "role-a": WORKFLOW_A,
+    "role-b": WORKFLOW_B,
+    nobody: WORKFLOW_UNOWNED,
+  };
+
   async function gatedRun(
     server: ReturnType<typeof shared>,
-    approver: string,
+    approver: keyof typeof WORKFLOW_OF,
     credential: string,
   ) {
     return (
@@ -862,7 +1062,7 @@ describe("a role decides its own gates and no one else's", () => {
         method: "POST",
         url: "/v1/runs",
         headers: as(credential),
-        payload: gatedFor(approver),
+        payload: bodyFor(WORKFLOW_OF[approver]),
       })
     ).json();
   }
@@ -947,14 +1147,7 @@ describe("a role decides its own gates and no one else's", () => {
     const server = shared();
     const mine = await gatedRun(server, "role-a", "sam-cred");
     const theirs = await gatedRun(server, "role-b", "sam-cred");
-    const unowned = (
-      await server.inject({
-        method: "POST",
-        url: "/v1/runs",
-        headers: as("sam-cred"),
-        payload: gatedForNobody(),
-      })
-    ).json();
+    const unowned = await gatedRun(server, "nobody", "sam-cred");
 
     const inbox = (
       await server.inject({

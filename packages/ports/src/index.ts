@@ -31,6 +31,7 @@ export type {
   RecordedSpan,
   Span,
   SpanAttributes,
+  SpanContext,
 } from "./observability.js";
 export type {
   PolicyDecision,
@@ -58,6 +59,7 @@ export type {
   PinnedRoute,
   PinnedValue,
   RunCreateInput,
+  RunListQuery,
   RunRecord,
   RunStatus,
   RunStorePort,

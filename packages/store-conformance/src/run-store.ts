@@ -1,3 +1,4 @@
+import type { RunStatus } from "@forge/ports";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -44,6 +45,76 @@ function describeIdentity(harness: RunStoreConformanceHarness): void {
       expect(loaded?.record.pendingApprovalId).toBeUndefined();
       expect(loaded?.record.error).toBeUndefined();
       expect(loaded?.record.result).toBeUndefined();
+    });
+  });
+}
+
+function describeList(harness: RunStoreConformanceHarness): void {
+  const runFor = (runId: string, status: RunStatus = "RUNNING") => ({
+    ...CONFORMANCE_RUN,
+    record: { ...CONFORMANCE_RUN.record, runId, status },
+  });
+
+  describe("the estate is readable without knowing a run id first", () => {
+    test("every run is listed, most recent first, through a second handle", async () => {
+      // The one that matters: a control plane that enumerates its own memory
+      // passes nothing here, because the peer never saw those runs created.
+      const handle = await harness.create();
+      for (const runId of ["run_a", "run_b", "run_c"]) {
+        await handle.store.create(runFor(runId));
+      }
+
+      const peer = await handle.peer();
+      expect((await peer.list()).map((record) => record.runId)).toEqual([
+        "run_c",
+        "run_b",
+        "run_a",
+      ]);
+    });
+
+    test("a listing reads the current record, not the one that was created", async () => {
+      const handle = await harness.create();
+      await handle.store.create(runFor("run_a"));
+      await handle.store.update({
+        ...runFor("run_a").record,
+        status: "AWAITING_APPROVAL",
+        pendingApprovalId: "approval_1",
+      });
+
+      const peer = await handle.peer();
+      expect((await peer.list())[0]).toMatchObject({
+        status: "AWAITING_APPROVAL",
+        pendingApprovalId: "approval_1",
+      });
+    });
+
+    test("a status filter narrows to that status and keeps the order", async () => {
+      const handle = await harness.create();
+      await handle.store.create(runFor("run_a", "AWAITING_APPROVAL"));
+      await handle.store.create(runFor("run_b", "SUCCEEDED"));
+      await handle.store.create(runFor("run_c", "AWAITING_APPROVAL"));
+
+      const peer = await handle.peer();
+      expect(
+        (await peer.list({ status: "AWAITING_APPROVAL" })).map(
+          (record) => record.runId,
+        ),
+      ).toEqual(["run_c", "run_a"]);
+    });
+
+    test("a status the filter matches nothing on is empty, not everything", async () => {
+      // A filter that fell back to "all" on no match would show an operator
+      // runs they explicitly excluded, which is worse than showing none.
+      const handle = await harness.create();
+      await handle.store.create(runFor("run_a", "RUNNING"));
+
+      expect(await handle.store.list({ status: "CANCELLED" })).toEqual([]);
+    });
+
+    test("a store with no runs lists nothing", async () => {
+      const { store } = await harness.create();
+
+      expect(await store.list()).toEqual([]);
     });
   });
 }
@@ -369,6 +440,7 @@ export function describeRunStoreConformance(
 ): void {
   describe(`${harness.name} · RunStorePort conformance`, () => {
     describeIdentity(harness);
+    describeList(harness);
     describeRecord(harness);
     describeValues(harness);
     describeRoutes(harness);

@@ -8,7 +8,12 @@ import {
 } from "@forge/observability-memory";
 import type { PanelDefinition, Vote } from "@forge/panel";
 import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
-import type { ApprovalPort, ClockPort, IdPort } from "@forge/ports";
+import type {
+  ApprovalPort,
+  ClockPort,
+  IdPort,
+  RunStorePort,
+} from "@forge/ports";
 import { createMockProvider } from "@forge/provider-mock";
 import { createMemoryRunStore } from "@forge/run-store-memory";
 import {
@@ -20,6 +25,8 @@ import {
 } from "@forge/runtime";
 import { createMemorySandbox } from "@forge/sandbox";
 import type { Diagnostic } from "@forge/types";
+
+import type { ControlPlaneStack } from "./control-plane.js";
 
 /**
  * Local composition root.
@@ -75,9 +82,10 @@ export interface LocalStackOptions {
   readonly ids?: IdPort;
 }
 
-export interface LocalStack {
+export interface LocalStack extends ControlPlaneStack {
   readonly runtime: Runtime;
   readonly approvals: ApprovalPort;
+  readonly runs: RunStorePort;
   readonly clock: ClockPort;
   readonly ids: IdPort;
   /** Effects dispatched, in order, when the default recorder is used. */
@@ -112,6 +120,11 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
   const approvals = createMemoryApprovalStore(clock, ids);
   const observability = createMemoryObservability();
   const sandboxAvailable = options.sandboxAvailable ?? true;
+  // The local stack's run store is a Map, exactly as its checkpoints are. The
+  // runtime cannot tell it from the Postgres one, which is what makes `resume`
+  // work identically in both. Named here rather than inlined because the
+  // control plane reads it directly to list runs.
+  const runs = createMemoryRunStore();
 
   const runtime = createRuntime({
     engine: createMemoryGraphEngine(),
@@ -139,10 +152,7 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
       : { transforms: (ref: string) => options.transforms?.[ref] }),
     effects,
     checkpoints: createMemoryCheckpointStore(),
-    // The local stack's run store is a Map, exactly as its checkpoints are.
-    // The runtime cannot tell it from the Postgres one, which is what makes
-    // `resume` work identically in both.
-    runs: createMemoryRunStore(),
+    runs,
     clock,
     ids,
     actor: options.actor ?? "svc.forge.local",
@@ -153,10 +163,12 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
   return {
     runtime,
     approvals,
+    runs,
     clock,
     ids,
     dispatched,
     observability,
+    timeline: () => observability.timeline,
     advanceClock(ms) {
       instant = new Date(instant.getTime() + ms);
     },

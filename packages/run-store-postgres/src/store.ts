@@ -121,6 +121,20 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
       };
     },
 
+    async list(query) {
+      // Ordered by the creation sequence, descending. `record` is the whole
+      // document, so the status filter reads it out of the same row rather
+      // than from a second column that could disagree with it.
+      const status = query?.status;
+      const { rows } = await pool.query<{ readonly record: RunRecord }>(
+        status === undefined
+          ? `select record from forge_run order by seq desc`
+          : `select record from forge_run where record->>'status' = $1 order by seq desc`,
+        status === undefined ? [] : [status],
+      );
+      return rows.map((row) => row.record);
+    },
+
     async update(record) {
       const { rowCount } = await pool.query(
         `update forge_run set record = $2 where run_id = $1`,
