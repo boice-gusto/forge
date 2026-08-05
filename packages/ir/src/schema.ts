@@ -6,29 +6,16 @@ import {
 import { z } from "zod";
 
 /**
- * Forge IR. The node and edge taxonomy is the shape companies author, so it
- * lives in `@forge/types` where a public authoring package can reach it. What
- * is internal is the compiler's own product: `ForgeIr` is a *compiled*
- * workflow — validated, ordered, and about to be fingerprinted.
+ * Forge IR: the compiler's own product. `ForgeIr` is a *compiled* workflow —
+ * validated, ordered, and about to be fingerprinted.
  *
- * The IR aliases below keep `@forge/compiler`, `@forge/runtime` and the engine
- * adapters reading in IR terms.
+ * The node and edge taxonomy is the shape companies author, so it lives in
+ * `@forge/types` where a public authoring package can reach it, and this
+ * package uses those schemas directly. It used to re-export them as `IrNode`
+ * and `IrEdge`; two names for one type is drift waiting to happen, so the
+ * authored names are the only ones, and this package exports only what it
+ * actually owns.
  */
-
-export {
-  type DataRef,
-  type RetryPolicy,
-  type Role,
-  RoleSchema,
-  type WorkflowSource,
-  WorkflowSourceSchema,
-} from "@forge/types";
-
-export const IrNodeSchema = WorkflowNodeSchema;
-export const IrEdgeSchema = WorkflowEdgeSchema;
-
-export type IrNode = z.infer<typeof IrNodeSchema>;
-export type IrEdge = z.infer<typeof IrEdgeSchema>;
 
 export const ForgeIrSchema = z
   .object({
@@ -39,8 +26,8 @@ export const ForgeIrSchema = z
     roles: z.record(z.string().min(1), RoleSchema).default({}),
     /** The capabilities policy grants, so closure is checkable statically. */
     grantedCapabilities: z.array(z.string().min(1)).default([]),
-    nodes: z.array(IrNodeSchema).min(2),
-    edges: z.array(IrEdgeSchema),
+    nodes: z.array(WorkflowNodeSchema).min(2),
+    edges: z.array(WorkflowEdgeSchema),
   })
   .strict();
 

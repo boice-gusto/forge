@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
-import type { ForgeIr, Role } from "@forge/ir";
+import type { ForgeIr } from "@forge/ir";
+import { failOpen } from "@forge/observability";
 import {
   composePanel,
   type PanelDefinition,
@@ -28,6 +29,7 @@ import type {
   SandboxPort,
   Span,
 } from "@forge/ports";
+import type { Role } from "@forge/types";
 
 /**
  * The run lifecycle (006 §5) and the record that carries it live on
@@ -131,37 +133,6 @@ export function effectHash(input: {
       `${input.runId} ${input.nodeId} ${input.effect} ${input.fingerprint}`,
     )
     .digest("hex");
-}
-
-const NOOP_SPAN: Span = { end: () => undefined };
-
-/**
- * Telemetry is a report, never a dependency: alone among the ports it fails
- * open, because a throwing sink must not fail a run that would otherwise have
- * succeeded, nor abort one midway and leave a gate open.
- */
-function failSafe(port: ObservabilityPort): ObservabilityPort {
-  return {
-    startSpan(name, attributes) {
-      try {
-        const span = port.startSpan(name, attributes);
-        return {
-          end(endAttributes) {
-            try {
-              span.end(endAttributes);
-            } catch {}
-          },
-        };
-      } catch {
-        return NOOP_SPAN;
-      }
-    },
-    event(name, attributes) {
-      try {
-        port.event(name, attributes);
-      } catch {}
-    },
-  };
 }
 
 /**
@@ -343,10 +314,33 @@ interface RunState {
   changedPaths: readonly string[];
   /** Highest maxAttempts declared on any node (006 §7). */
   retryBudget: number;
+  /**
+   * The run's own span, which everything the run records hangs from, so a
+   * trace reads as one run rather than as a pile of roots sharing a `runId`.
+   *
+   * It lives on the run's state rather than in ambient async storage on
+   * purpose. `start()` holds this span open across every node span, and two
+   * runs advance concurrently in one process: a "current span" read from a
+   * stack would be whichever run last touched it. Hanging it off the state the
+   * walk already carries makes misparenting impossible rather than unlikely.
+   *
+   * Absent on a run rehydrated by `resume()` or `decide()`, which may be in a
+   * process that never saw the run start. Those spans are roots until the
+   * trace context travels with the run record, and a missing parent costs a
+   * trace edge, never a run.
+   */
+  span?: Span;
 }
 
 export function createRuntime(options: RuntimeOptions): Runtime {
-  const observability = failSafe(options.observability);
+  /**
+   * Telemetry is a report, never a dependency: alone among the ports it fails
+   * open, because a throwing sink must not fail a run that would otherwise
+   * have succeeded, nor abort one midway and leave a gate open. `failOpen` is
+   * the adapters' own wrapper — one implementation, so the guarantee cannot
+   * hold here and not there.
+   */
+  const observability = failOpen(options.observability);
   const runs = new Map<string, RunState>();
   const ledgers = new Map<string, string[]>();
   /**
@@ -383,13 +377,17 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     state.record = { ...state.record, ...patch };
     await options.runs.update(state.record);
     if (patch.status !== undefined && patch.status !== from) {
-      observability.event("forge.run.transition", {
-        runId: state.record.runId,
-        workflowId: state.record.workflowId,
-        from,
-        to: patch.status,
-        attempt: state.record.attempt,
-      });
+      observability.event(
+        "forge.run.transition",
+        {
+          runId: state.record.runId,
+          workflowId: state.record.workflowId,
+          from,
+          to: patch.status,
+          attempt: state.record.attempt,
+        },
+        state.span,
+      );
     }
     return state.record;
   };
@@ -475,6 +473,9 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
   async function advance(state: RunState): Promise<RunRecord> {
     const runId = state.record.runId;
+    // Everything this walk records belongs to the run, so it all hangs from
+    // the run's span. `undefined` on a rehydrated run, which makes these roots.
+    const parent = state.span;
     const ledger = ledgers.get(runId) as string[];
     const routes = routeLedgers.get(runId) as Map<string, string>;
     const values = valueLedgers.get(runId) as ValueLedger;
@@ -516,12 +517,16 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         runId: state.record.runId,
 
         invokeAgent: async (nodeId, promptRef, role) => {
-          const span = observability.startSpan("forge.node.agent", {
-            runId: state.record.runId,
-            nodeId,
-            promptRef,
-            ...(role === undefined ? {} : { role }),
-          });
+          const span = observability.startSpan(
+            "forge.node.agent",
+            {
+              runId: state.record.runId,
+              nodeId,
+              promptRef,
+              ...(role === undefined ? {} : { role }),
+            },
+            parent,
+          );
 
           // Answered once per run, for the same reason a verdict is.
           if (values.has(nodeId)) {
@@ -572,11 +577,15 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         },
 
         judge: async (nodeId, judgeRef, fromState): Promise<JudgeVerdict> => {
-          const span = observability.startSpan("forge.node.judge", {
-            runId: state.record.runId,
-            nodeId,
-            judgeRef,
-          });
+          const span = observability.startSpan(
+            "forge.node.judge",
+            {
+              runId: state.record.runId,
+              nodeId,
+              judgeRef,
+            },
+            parent,
+          );
 
           // Decided once per run. Re-asking on a resumed walk would let the
           // route change under a decision a human has already made.
@@ -628,11 +637,15 @@ export function createRuntime(options: RuntimeOptions): Runtime {
             );
           }
           await pinRoute(nodeId, chosen);
-          observability.event("forge.node.branch", {
-            runId: state.record.runId,
-            nodeId,
-            arm: chosen,
-          });
+          observability.event(
+            "forge.node.branch",
+            {
+              runId: state.record.runId,
+              nodeId,
+              arm: chosen,
+            },
+            parent,
+          );
           return chosen;
         },
 
@@ -650,13 +663,17 @@ export function createRuntime(options: RuntimeOptions): Runtime {
               { profile, correlationId: state.record.runId },
               async (lease) => {
                 acquired = true;
-                observability.event("forge.node.sandbox", {
-                  runId: state.record.runId,
-                  nodeId,
-                  profile,
-                  sandboxId: lease.sandboxId,
-                  available: true,
-                });
+                observability.event(
+                  "forge.node.sandbox",
+                  {
+                    runId: state.record.runId,
+                    nodeId,
+                    profile,
+                    sandboxId: lease.sandboxId,
+                    available: true,
+                  },
+                  parent,
+                );
                 const outer = inSandbox;
                 inSandbox = lease;
                 try {
@@ -671,12 +688,16 @@ export function createRuntime(options: RuntimeOptions): Runtime {
             // The refusal is the runtime's to word, not the adapter's: whatever
             // a backend says about its socket, what the run must report is that
             // the isolation it declared did not happen and it stopped there.
-            observability.event("forge.node.sandbox", {
-              runId: state.record.runId,
-              nodeId,
-              profile,
-              available: false,
-            });
+            observability.event(
+              "forge.node.sandbox",
+              {
+                runId: state.record.runId,
+                nodeId,
+                profile,
+                available: false,
+              },
+              parent,
+            );
             throw new Error(
               `Sandbox profile '${profile}' could not be provisioned for node '${nodeId}'; host execution is not permitted (${error instanceof Error ? error.message : String(error)}).`,
             );
@@ -736,12 +757,16 @@ export function createRuntime(options: RuntimeOptions): Runtime {
             nodeId,
             produced === undefined ? undefined : pin(nodeId, produced),
           );
-          observability.event("forge.effect.dispatched", {
-            runId,
-            nodeId,
-            effect,
-            sequence: ledger.length,
-          });
+          observability.event(
+            "forge.effect.dispatched",
+            {
+              runId,
+              nodeId,
+              effect,
+              sequence: ledger.length,
+            },
+            parent,
+          );
         },
       },
       state.authorised,
@@ -751,18 +776,26 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     if (result.kind === "failed") {
       // Retry is an attempt, not a state (006 §7): the run stays RUNNING.
       if (result.retryable && state.record.attempt < state.retryBudget) {
-        observability.event("forge.run.retry", {
-          runId: state.record.runId,
-          nodeId: result.nodeId,
-          attempt: state.record.attempt + 1,
-        });
+        observability.event(
+          "forge.run.retry",
+          {
+            runId: state.record.runId,
+            nodeId: result.nodeId,
+            attempt: state.record.attempt + 1,
+          },
+          parent,
+        );
         await update(state, { attempt: state.record.attempt + 1 });
         return advance(state);
       }
-      observability.event("forge.run.failed", {
-        runId: state.record.runId,
-        nodeId: result.nodeId,
-      });
+      observability.event(
+        "forge.run.failed",
+        {
+          runId: state.record.runId,
+          nodeId: result.nodeId,
+        },
+        parent,
+      );
       return update(state, {
         status: "FAILED",
         error: `${result.nodeId}: ${result.reason}`,
@@ -771,10 +804,14 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     }
 
     if (result.kind === "succeeded") {
-      observability.event("forge.run.succeeded", {
-        runId: state.record.runId,
-        effects: ledger.length,
-      });
+      observability.event(
+        "forge.run.succeeded",
+        {
+          runId: state.record.runId,
+          effects: ledger.length,
+        },
+        parent,
+      );
       return update(state, {
         status: "SUCCEEDED",
         performedEffects: [...ledger],
@@ -783,12 +820,16 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     }
 
     // An unauthorised side effect. Ask policy before asking a human.
-    const policySpan = observability.startSpan("forge.policy.decide", {
-      runId: state.record.runId,
-      nodeId: result.nodeId,
-      action: result.effect,
-      environment: options.environment,
-    });
+    const policySpan = observability.startSpan(
+      "forge.policy.decide",
+      {
+        runId: state.record.runId,
+        nodeId: result.nodeId,
+        action: result.effect,
+        environment: options.environment,
+      },
+      parent,
+    );
     const decision = await options.policy.decide({
       actor: options.actor,
       action: result.effect,
@@ -847,16 +888,20 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
     // Approvers are counted rather than named: who may decide is on the durable
     // record, and how many is what a dashboard needs.
-    observability.event("forge.approval.requested", {
-      runId: state.record.runId,
-      nodeId: result.nodeId,
-      approvalId: approval.approvalId,
-      effect: result.effect,
-      effectHash: binding,
-      policyId: decision.policyId,
-      approverCount: decision.approvers.length,
-      expiresAt: approval.expiresAt,
-    });
+    observability.event(
+      "forge.approval.requested",
+      {
+        runId: state.record.runId,
+        nodeId: result.nodeId,
+        approvalId: approval.approvalId,
+        effect: result.effect,
+        effectHash: binding,
+        policyId: decision.policyId,
+        approverCount: decision.approvers.length,
+        expiresAt: approval.expiresAt,
+      },
+      parent,
+    );
 
     return update(state, {
       status: "AWAITING_APPROVAL",
@@ -917,24 +962,32 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       approval.decidedAt === undefined ||
       approval.decidedAt > approval.expiresAt
     ) {
-      observability.event("forge.approval.expired", {
-        runId: state.record.runId,
-        nodeId: approval.nodeId,
-        approvalId,
-        effect: approval.effect,
-        expiresAt: approval.expiresAt,
-      });
+      observability.event(
+        "forge.approval.expired",
+        {
+          runId: state.record.runId,
+          nodeId: approval.nodeId,
+          approvalId,
+          effect: approval.effect,
+          expiresAt: approval.expiresAt,
+        },
+        state.span,
+      );
       return refuse(
         `Approval ${approvalId} was not decided within its deadline.`,
       );
     }
 
-    observability.event("forge.run.resumed", {
-      runId: state.record.runId,
-      nodeId: approval.nodeId,
-      approvalId,
-      effectHash: approval.effectHash,
-    });
+    observability.event(
+      "forge.run.resumed",
+      {
+        runId: state.record.runId,
+        nodeId: approval.nodeId,
+        approvalId,
+        effectHash: approval.effectHash,
+      },
+      state.span,
+    );
     return carry(state, approval.nodeId);
   }
 
@@ -961,6 +1014,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         roles: input.artifact.ir.roles,
         changedPaths: input.changedPaths ?? [],
         retryBudget: retryBudgetFor(input.artifact.ir),
+        span,
       };
       runs.set(runId, state);
       ledgers.set(runId, []);
@@ -1050,15 +1104,19 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           { kind: "timeout" },
           principal,
         );
-        observability.event("forge.approval.expired", {
-          runId: approval.runId,
-          nodeId: approval.nodeId,
-          approvalId,
-          effect: approval.effect,
-          expiresAt: approval.expiresAt,
-          // The decision the clock refused.
-          attempted: decision.kind,
-        });
+        observability.event(
+          "forge.approval.expired",
+          {
+            runId: approval.runId,
+            nodeId: approval.nodeId,
+            approvalId,
+            effect: approval.effect,
+            expiresAt: approval.expiresAt,
+            // The decision the clock refused.
+            attempted: decision.kind,
+          },
+          state.span,
+        );
         return update(state, {
           status: "FAILED",
           error: `Approval ${approvalId} expired before a decision was recorded.`,
@@ -1067,15 +1125,19 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       }
 
       await options.approvals.decide(approvalId, decision, principal);
-      observability.event("forge.approval.decided", {
-        runId: approval.runId,
-        nodeId: approval.nodeId,
-        approvalId,
-        effect: approval.effect,
-        effectHash: approval.effectHash,
-        decision: decision.kind,
-        principalHash: principalTag(principal),
-      });
+      observability.event(
+        "forge.approval.decided",
+        {
+          runId: approval.runId,
+          nodeId: approval.nodeId,
+          approvalId,
+          effect: approval.effect,
+          effectHash: approval.effectHash,
+          decision: decision.kind,
+          principalHash: principalTag(principal),
+        },
+        state.span,
+      );
 
       if (decision.kind === "reject") {
         return update(state, {
@@ -1105,15 +1167,19 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           approvers: approval.approvers,
           expiresAt: expiry(),
         });
-        observability.event("forge.approval.edited", {
-          runId: approval.runId,
-          nodeId: approval.nodeId,
-          approvalId,
-          effect: approval.effect,
-          // Names the successor, so the audit shows which gate authorised the
-          // amended action.
-          reissuedAs: reissued.approvalId,
-        });
+        observability.event(
+          "forge.approval.edited",
+          {
+            runId: approval.runId,
+            nodeId: approval.nodeId,
+            approvalId,
+            effect: approval.effect,
+            // Names the successor, so the audit shows which gate authorised
+            // the amended action.
+            reissuedAs: reissued.approvalId,
+          },
+          state.span,
+        );
         return update(state, {
           status: "AWAITING_APPROVAL",
           pendingApprovalId: reissued.approvalId,

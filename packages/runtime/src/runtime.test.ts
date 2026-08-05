@@ -1147,6 +1147,138 @@ describe("telemetry can neither leak a payload nor break a run", () => {
 });
 
 /**
+ * 011 §6.1: a run is one trace, not a pile of roots sharing a `runId`.
+ *
+ * `runId` correlates; it does not nest. A backend handed twelve roots draws
+ * twelve unrelated events and can tell you neither what contained what nor
+ * that anything is missing. The parent is what makes a trace readable as the
+ * run it describes.
+ */
+describe("a run's telemetry is one trace", () => {
+  /** The `seq` of the `forge.run.start` span for a given run. */
+  function runSpanSeq(
+    observability: ReturnType<typeof createMemoryObservability>,
+    runId: string,
+  ): number {
+    const entry = observability.timeline.find(
+      (item) =>
+        item.name === "forge.run.start" && item.attributes.runId === runId,
+    );
+    if (entry === undefined) throw new Error(`No run span for ${runId}.`);
+    return entry.seq;
+  }
+
+  test("every span and event a run records hangs from that run's span", async () => {
+    // Asserted over the whole timeline rather than over a chosen span, so a
+    // call site that forgets the parent is caught by the test that exists
+    // rather than by the one nobody wrote for it.
+    const { runtime, observability } = harness(REQUIRE_APPROVAL, [
+      "slack.write",
+    ]);
+    const started = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const finished = await runtime.decide(
+      started.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+    expect(finished.status).toBe("SUCCEEDED");
+
+    const root = runSpanSeq(observability, started.runId);
+    const orphans = observability.timeline
+      .filter((entry) => entry.seq !== root && entry.parentSeq !== root)
+      .map((entry) => entry.name);
+
+    expect(orphans).toEqual([]);
+    // A lifecycle's worth of records, so "no orphans" is not vacuously true of
+    // a timeline holding only the run span.
+    expect(observability.timeline.length).toBeGreaterThan(6);
+    expect(observability.timeline.map((entry) => entry.name)).toEqual(
+      expect.arrayContaining([
+        "forge.run.start",
+        "forge.node.agent",
+        "forge.policy.decide",
+        "forge.approval.requested",
+        "forge.approval.decided",
+        "forge.effect.dispatched",
+        "forge.run.succeeded",
+      ]),
+    );
+  });
+
+  test("two runs in flight at once keep their own children", async () => {
+    // Why the parent is carried on the run's state and not in ambient
+    // storage. Both runs hold their span open across every await in the walk;
+    // a "current span" would be whichever of them last touched it.
+    const { runtime, observability } = harness(REQUIRE_APPROVAL, [
+      "slack.write",
+    ]);
+
+    const [first, second] = await Promise.all([
+      runtime.start({ artifact: artifact(), capabilities: ["slack.write"] }),
+      runtime.start({ artifact: artifact(), capabilities: ["slack.write"] }),
+    ]);
+    expect(first.runId).not.toBe(second.runId);
+
+    for (const runId of [first.runId, second.runId]) {
+      const root = runSpanSeq(observability, runId);
+      const belonging = observability.timeline.filter(
+        (entry) => entry.attributes.runId === runId && entry.seq !== root,
+      );
+      expect(belonging.length).toBeGreaterThan(2);
+      for (const entry of belonging) {
+        expect({ name: entry.name, parentSeq: entry.parentSeq }).toEqual({
+          name: entry.name,
+          parentSeq: root,
+        });
+      }
+    }
+  });
+
+  test("a parent the sink cannot read costs a trace edge, never the run", async () => {
+    // Telemetry fails open all the way down. A span handle whose context
+    // cannot even be read is the worst case, and it is still only a report.
+    const recorded: string[] = [];
+    const brokenParents: ObservabilityPort = {
+      startSpan(name) {
+        recorded.push(name);
+        return {
+          end: () => undefined,
+          get context(): never {
+            throw new Error("this handle cannot be read");
+          },
+        };
+      },
+      event(name) {
+        recorded.push(name);
+      },
+    };
+    const { runtime, dispatched } = harness(
+      REQUIRE_APPROVAL,
+      ["slack.write"],
+      false,
+      brokenParents,
+    );
+
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const decided = await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(decided.status).toBe("SUCCEEDED");
+    expect(dispatched).toEqual(["slack.post"]);
+    expect(recorded).toContain("forge.effect.dispatched");
+  });
+});
+
+/**
  * The run data plane.
  *
  * Values flow along declared reads, and every one of them is pinned per run for

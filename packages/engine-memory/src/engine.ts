@@ -1,4 +1,4 @@
-import type { DataRef, ForgeIr, IrEdge, IrNode } from "@forge/ir";
+import type { ForgeIr } from "@forge/ir";
 import type {
   AuthorisedEffects,
   EngineExecutionResult,
@@ -8,6 +8,7 @@ import type {
   JsonValue,
   RunValues,
 } from "@forge/ports";
+import type { DataRef, WorkflowEdge, WorkflowNode } from "@forge/types";
 
 /**
  * In-memory graph engine. Deliberately not LangGraph: ADR-002 puts a vendor
@@ -22,14 +23,14 @@ import type {
 interface MaterializedPlan {
   readonly ir: ForgeIr;
   readonly entryId: string;
-  readonly order: readonly IrNode[];
+  readonly order: readonly WorkflowNode[];
   readonly gatesFor: ReadonlyMap<string, readonly string[]>;
 }
 
 const plans = new WeakMap<object, MaterializedPlan>();
 
 /** Two arms can share a target, so identity is the whole edge. */
-const edgeKey = (edge: IrEdge): string =>
+const edgeKey = (edge: WorkflowEdge): string =>
   JSON.stringify([edge.from, edge.to, edge.conditionId ?? null]);
 
 /** Nodes reachable from the entry node, following edges no verdict pruned. */
@@ -59,7 +60,7 @@ function reachableFrom(
   return seen;
 }
 
-function topologicalOrder(ir: ForgeIr): readonly IrNode[] {
+function topologicalOrder(ir: ForgeIr): readonly WorkflowNode[] {
   const byId = new Map(ir.nodes.map((node) => [node.id, node]));
   const indegree = new Map(ir.nodes.map((node) => [node.id, 0]));
   const outgoing = new Map<string, string[]>(
@@ -75,7 +76,7 @@ function topologicalOrder(ir: ForgeIr): readonly IrNode[] {
     .filter((node) => (indegree.get(node.id) ?? 0) === 0)
     .map((node) => node.id)
     .sort();
-  const order: IrNode[] = [];
+  const order: WorkflowNode[] = [];
 
   while (ready.length > 0) {
     const id = ready.shift() as string;
@@ -146,7 +147,7 @@ function inputFor(
  * keeps the older, narrower rule — only `pass` continues.
  */
 async function judgeStep(
-  node: Extract<IrNode, { kind: "judge" }>,
+  node: Extract<WorkflowNode, { kind: "judge" }>,
   context: EngineRunContext,
   values: RunValues,
 ): Promise<StepOutcome> {
@@ -196,7 +197,7 @@ async function dataStep(
  * approval has to name something that exists.
  */
 async function toolStep(
-  node: Extract<IrNode, { kind: "tool" }>,
+  node: Extract<WorkflowNode, { kind: "tool" }>,
   context: EngineRunContext,
   authorised: AuthorisedEffects,
   materialized: MaterializedPlan,
@@ -233,7 +234,7 @@ async function toolStep(
  * the rest of the walk rather than being a step that starts and returns.
  */
 async function step(
-  node: IrNode,
+  node: WorkflowNode,
   context: EngineRunContext,
   authorised: AuthorisedEffects,
   materialized: MaterializedPlan,
@@ -330,12 +331,12 @@ interface WalkState {
  */
 async function walk(
   state: WalkState,
-  nodes: readonly IrNode[],
+  nodes: readonly WorkflowNode[],
 ): Promise<EngineExecutionResult | undefined> {
   const { ir, entryId } = state.materialized;
 
   for (let index = 0; index < nodes.length; index += 1) {
-    const node = nodes[index] as IrNode;
+    const node = nodes[index] as WorkflowNode;
     // A pruned arm is not "skipped": it is no longer part of this run, exactly
     // like a node the graph never reaches.
     if (!state.live.has(node.id)) continue;
@@ -376,8 +377,8 @@ async function walk(
  */
 async function enterScope(
   state: WalkState,
-  node: Extract<IrNode, { kind: "sandbox" }>,
-  rest: readonly IrNode[],
+  node: Extract<WorkflowNode, { kind: "sandbox" }>,
+  rest: readonly WorkflowNode[],
 ): Promise<EngineExecutionResult | undefined> {
   const scope = reachableFrom(state.materialized.ir, node.id, state.pruned);
   const before = await walk(

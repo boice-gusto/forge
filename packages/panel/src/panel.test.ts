@@ -1,4 +1,4 @@
-import type { Role } from "@forge/ir";
+import type { Role } from "@forge/types";
 import { describe, expect, test } from "vitest";
 
 import {

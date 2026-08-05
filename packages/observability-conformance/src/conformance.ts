@@ -1,3 +1,4 @@
+import type { Span } from "@forge/ports";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -26,12 +27,28 @@ function named(
   return found;
 }
 
+/** The one record whose `runId` says which of two concurrent runs it belongs to. */
+function forRun(
+  records: readonly ExportedRecord[],
+  name: string,
+  runId: string,
+): ExportedRecord {
+  return named(
+    records.filter((record) => record.attributes.runId === runId),
+    name,
+  );
+}
+
 async function drain(
   subject: ObservabilitySubject,
 ): Promise<readonly ExportedRecord[]> {
   await subject.flush();
   return subject.recorded();
 }
+
+/** Yields to the event loop, so what follows is a genuinely later turn. */
+const tick = (): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, 0));
 
 function describeRecording(harness: ObservabilityConformanceHarness): void {
   describe("what the runtime records is what the sink is handed", () => {
@@ -82,6 +99,166 @@ function describeRecording(harness: ObservabilityConformanceHarness): void {
       subject.observability.startSpan("forge.node.agent").end();
 
       expect(named(await drain(subject), "forge.node.agent").kind).toBe("span");
+      await subject.shutdown();
+    });
+  });
+}
+
+/**
+ * A trace has to read as one run. Correlating on a `runId` attribute is not the
+ * same thing: it makes a dashboard's job possible and a trace viewer's job
+ * impossible, and it says nothing about ordering or containment.
+ *
+ * Every assertion here is about the parent the *sink* was told about, not about
+ * an attribute the caller wrote, because the caller writing `runId` on both is
+ * exactly the state this replaces.
+ */
+function describeParenting(harness: ObservabilityConformanceHarness): void {
+  describe("a run's spans form one trace", () => {
+    test("a span started under a parent arrives as that parent's child", async () => {
+      const subject = await harness.create();
+
+      const run = subject.observability.startSpan("forge.run.start", {
+        runId: "run_1",
+      });
+      subject.observability
+        .startSpan("forge.node.agent", { runId: "run_1" }, run)
+        .end();
+      run.end({ status: "SUCCEEDED" });
+
+      const records = await drain(subject);
+      const parent = named(records, "forge.run.start");
+      const child = named(records, "forge.node.agent");
+
+      expect(child.parentSpanId).toBe(parent.spanId);
+      // The run itself is the root, so the trace has one and not two.
+      expect(parent.parentSpanId).toBeUndefined();
+      await subject.shutdown();
+    });
+
+    test("an event recorded under a parent hangs from it too", async () => {
+      const subject = await harness.create();
+
+      const run = subject.observability.startSpan("forge.run.start", {
+        runId: "run_1",
+      });
+      subject.observability.event(
+        "forge.effect.dispatched",
+        { runId: "run_1" },
+        run,
+      );
+      run.end();
+
+      const records = await drain(subject);
+      expect(named(records, "forge.effect.dispatched").parentSpanId).toBe(
+        named(records, "forge.run.start").spanId,
+      );
+      await subject.shutdown();
+    });
+
+    test("a span started with no parent is a root", async () => {
+      const subject = await harness.create();
+
+      subject.observability.startSpan("forge.run.start").end();
+
+      expect(
+        named(await drain(subject), "forge.run.start").parentSpanId,
+      ).toBeUndefined();
+      await subject.shutdown();
+    });
+
+    test("two runs open at once do not adopt each other's children", async () => {
+      // The reason the parent is a handle rather than ambient state. Both runs
+      // hold an open span across an await; anything that remembers "the
+      // current span" gets this wrong, and gets it wrong silently.
+      const subject = await harness.create();
+
+      const runA = subject.observability.startSpan("forge.run.start", {
+        runId: "run_a",
+      });
+      const runB = subject.observability.startSpan("forge.run.start", {
+        runId: "run_b",
+      });
+
+      await Promise.all([
+        (async () => {
+          await tick();
+          subject.observability
+            .startSpan("forge.node.agent", { runId: "run_a" }, runA)
+            .end();
+        })(),
+        (async () => {
+          await tick();
+          subject.observability
+            .startSpan("forge.node.agent", { runId: "run_b" }, runB)
+            .end();
+        })(),
+      ]);
+      runA.end();
+      runB.end();
+
+      const records = await drain(subject);
+      expect(forRun(records, "forge.node.agent", "run_a").parentSpanId).toBe(
+        forRun(records, "forge.run.start", "run_a").spanId,
+      );
+      expect(forRun(records, "forge.node.agent", "run_b").parentSpanId).toBe(
+        forRun(records, "forge.run.start", "run_b").spanId,
+      );
+      await subject.shutdown();
+    });
+
+    test("a span from another adapter is a root here, not a failure", async () => {
+      // Two sinks in one process is a real configuration, and a handle only
+      // one of them can read is the ordinary case, not a corrupt one.
+      const elsewhere = await harness.create();
+      const subject = await harness.create();
+      const foreign = elsewhere.observability.startSpan("forge.run.start", {
+        runId: "somewhere_else",
+      });
+
+      expect(() => {
+        subject.observability.startSpan("forge.node.agent", {}, foreign).end();
+        subject.observability.event("forge.effect.dispatched", {}, foreign);
+      }).not.toThrow();
+      foreign.end();
+
+      const records = await drain(subject);
+      expect(named(records, "forge.node.agent").parentSpanId).toBeUndefined();
+      expect(
+        named(records, "forge.effect.dispatched").parentSpanId,
+      ).toBeUndefined();
+      // Nor did the other adapter quietly acquire the children.
+      expect(
+        (await drain(elsewhere)).map((record) => record.name),
+      ).not.toContain("forge.node.agent");
+      await subject.shutdown();
+      await elsewhere.shutdown();
+    });
+
+    test("a parent whose context throws when read never reaches the run", async () => {
+      const subject = await harness.create();
+      const run = subject.observability.startSpan("forge.run.start", {
+        runId: "run_1",
+      });
+      const broken: Span = {
+        end: () => run.end(),
+        get context(): never {
+          throw new Error("the parent handle is broken");
+        },
+      };
+
+      expect(() => {
+        subject.observability.startSpan("forge.node.judge", {}, broken).end();
+        subject.observability.event("forge.node.branch", {}, broken);
+      }).not.toThrow();
+      broken.end();
+
+      const records = await drain(subject);
+      expect(named(records, "forge.node.judge").parentSpanId).toBeUndefined();
+      expect(named(records, "forge.node.branch").parentSpanId).toBeUndefined();
+      // The run span itself still landed, so this is a lost edge and not a
+      // lost record.
+      expect(named(records, "forge.run.start").attributes.runId).toBe("run_1");
       await subject.shutdown();
     });
   });
@@ -268,6 +445,7 @@ export function describeObservabilityConformance(
 ): void {
   describe(`${harness.name} · ObservabilityPort conformance`, () => {
     describeRecording(harness);
+    describeParenting(harness);
     describeRedaction(harness);
     describePrincipal(harness);
     describeFailOpen(harness);

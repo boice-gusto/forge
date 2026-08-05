@@ -119,6 +119,84 @@ describe("nothing sensitive reaches the collector", () => {
   });
 });
 
+interface WireSpan {
+  readonly name: string;
+  readonly traceId: string;
+  readonly spanId: string;
+  readonly parentSpanId?: string;
+}
+
+/** Every span in every delivery, as OTLP/JSON put them on the socket. */
+function wireSpans(sink: Collector): readonly WireSpan[] {
+  return sink.deliveries.flatMap((delivery) => {
+    const payload = JSON.parse(delivery.body) as {
+      resourceSpans?: readonly {
+        scopeSpans?: readonly { spans?: readonly WireSpan[] }[];
+      }[];
+    };
+    return (payload.resourceSpans ?? []).flatMap((resource) =>
+      (resource.scopeSpans ?? []).flatMap((scope) => scope.spans ?? []),
+    );
+  });
+}
+
+function wireSpan(sink: Collector, name: string): WireSpan {
+  const found = wireSpans(sink).find((span) => span.name === name);
+  if (found === undefined) {
+    throw new Error(
+      `${name} never reached the collector; it received ${
+        wireSpans(sink)
+          .map((span) => span.name)
+          .join(", ") || "nothing"
+      }.`,
+    );
+  }
+  return found;
+}
+
+/**
+ * The parenting claim, made where it cannot be faked. The conformance suite
+ * reads a `ReadableSpan` the adapter handed an exporter; this reads the bytes,
+ * which is the only view that settles whether a backend would draw one trace
+ * or four unrelated ones.
+ */
+describe("a run arrives at the collector as one trace", () => {
+  test("the node spans carry the run's span as their parent, in its trace", async () => {
+    const sink = await receiving();
+    const observability = createOtelObservability({
+      endpoint: sink.url,
+      env: {},
+      shutdownTimeoutMs: 2_000,
+    });
+
+    // Two children, not one: a single child would pass even if the adapter
+    // parented on whatever it happened to have started last.
+    const run = observability.startSpan("forge.run.start", { runId: "run_1" });
+    observability.startSpan("forge.node.agent", { runId: "run_1" }, run).end();
+    observability.event("forge.effect.dispatched", { runId: "run_1" }, run);
+    // Started with no parent, so a trace still shows what does not belong.
+    observability.startSpan("forge.node.judge", { runId: "run_1" }).end();
+    run.end({ status: "SUCCEEDED" });
+    await observability.shutdown();
+
+    const parent = wireSpan(sink, "forge.run.start");
+    const agent = wireSpan(sink, "forge.node.agent");
+    const dispatched = wireSpan(sink, "forge.effect.dispatched");
+    const orphan = wireSpan(sink, "forge.node.judge");
+
+    expect(parent.parentSpanId ?? "").toBe("");
+    expect(agent.parentSpanId).toBe(parent.spanId);
+    expect(dispatched.parentSpanId).toBe(parent.spanId);
+    // A parent id without a shared trace id is a dangling reference, and a
+    // backend would still draw two traces.
+    expect(agent.traceId).toBe(parent.traceId);
+    expect(dispatched.traceId).toBe(parent.traceId);
+
+    expect(orphan.parentSpanId ?? "").toBe("");
+    expect(orphan.traceId).not.toBe(parent.traceId);
+  });
+});
+
 describe("the transport is configured, not compiled in", () => {
   test("the service name and auth header come from the environment", async () => {
     const sink = await receiving();

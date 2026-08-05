@@ -97,6 +97,10 @@ function toRecord(span: ReadableSpan): ExportedRecord {
     kind:
       span.attributes[TELEMETRY_KIND_ATTRIBUTE] === "event" ? "event" : "span",
     attributes,
+    spanId: span.spanContext().spanId,
+    ...(span.parentSpanContext === undefined
+      ? {}
+      : { parentSpanId: span.parentSpanContext.spanId }),
   };
 }
 

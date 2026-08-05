@@ -5,3 +5,4 @@ export {
   type LogSink,
 } from "./logger.js";
 export { redact, redactAttributes } from "./redaction.js";
+export { createSpanContexts, type SpanContexts } from "./span-context.js";

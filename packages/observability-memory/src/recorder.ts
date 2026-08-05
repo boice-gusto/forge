@@ -1,4 +1,8 @@
-import { failOpen, redactAttributes } from "@forge/observability";
+import {
+  createSpanContexts,
+  failOpen,
+  redactAttributes,
+} from "@forge/observability";
 import type {
   ClockPort,
   ObservabilityPort,
@@ -17,6 +21,13 @@ export interface ObservedEvent extends RecordedSpan {
   readonly seq: number;
   readonly at: string;
   readonly kind: "span" | "event";
+  /**
+   * The `seq` of the span this one hangs from, if it was started under a
+   * parent. This is the recorder's whole trace structure: the OTel adapter
+   * builds a real parent/child edge, and this records the same relationship so
+   * a test can assert a run's nodes belong to the run.
+   */
+  readonly parentSeq?: number;
 }
 
 export interface MemoryObservability extends ObservabilityPort {
@@ -32,6 +43,7 @@ interface MutableEntry {
   readonly at: string;
   readonly kind: "span" | "event";
   readonly name: string;
+  readonly parentSeq?: number;
   attributes: SpanAttributes;
   ended: boolean;
 }
@@ -47,18 +59,22 @@ export function createMemoryObservability(
   const timeline: MutableEntry[] = [];
   const spans: RecordedSpan[] = [];
   const events: RecordedSpan[] = [];
+  const contexts = createSpanContexts<number>();
 
   const record = (
     kind: "span" | "event",
     name: string,
     attributes: SpanAttributes,
     ended: boolean,
+    parent: Span | undefined,
   ): MutableEntry => {
+    const parentSeq = contexts.resolve(parent);
     const entry: MutableEntry = {
       seq: timeline.length,
       at: clock.now().toISOString(),
       kind,
       name,
+      ...(parentSeq === undefined ? {} : { parentSeq }),
       attributes: redactAttributes(attributes),
       ended,
     };
@@ -68,8 +84,12 @@ export function createMemoryObservability(
   };
 
   const port: ObservabilityPort = {
-    startSpan(name: string, attributes: SpanAttributes = {}): Span {
-      const entry = record("span", name, attributes, false);
+    startSpan(
+      name: string,
+      attributes: SpanAttributes = {},
+      parent?: Span,
+    ): Span {
+      const entry = record("span", name, attributes, false, parent);
       return {
         end(endAttributes?: SpanAttributes) {
           entry.ended = true;
@@ -80,10 +100,11 @@ export function createMemoryObservability(
             };
           }
         },
+        context: contexts.issue(entry.seq),
       };
     },
-    event(name: string, attributes: SpanAttributes = {}) {
-      record("event", name, attributes, true);
+    event(name: string, attributes: SpanAttributes = {}, parent?: Span) {
+      record("event", name, attributes, true, parent);
     },
   };
 

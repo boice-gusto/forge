@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 
+import type { ForgeIr } from "@forge/ir";
 import {
-  type ForgeIr,
-  type IrEdge,
-  type IrNode,
+  type Diagnostic,
   type Role,
+  type WorkflowEdge,
+  type WorkflowNode,
   WorkflowSourceSchema,
-} from "@forge/ir";
-import type { Diagnostic } from "@forge/types";
+} from "@forge/types";
 
 const COMPILER_VERSION = "0.1.0";
 
@@ -30,8 +30,8 @@ function diagnostic(
 }
 
 function successors(
-  nodes: readonly IrNode[],
-  edges: readonly IrEdge[],
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
 ): ReadonlyMap<string, readonly string[]> {
   const outgoing = new Map<string, string[]>(
     nodes.map((node) => [node.id, [] as string[]]),
@@ -41,11 +41,14 @@ function successors(
 }
 
 /** Where a walk starts. Every other node must be reachable from it. */
-function entryOf(nodes: readonly IrNode[]): IrNode | undefined {
+function entryOf(nodes: readonly WorkflowNode[]): WorkflowNode | undefined {
   return nodes.find((node) => node.kind === "input") ?? nodes[0];
 }
 
-function hasCycle(nodes: readonly IrNode[], edges: readonly IrEdge[]): boolean {
+function hasCycle(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+): boolean {
   const adjacency = successors(nodes, edges);
 
   const visiting = new Set<string>();
@@ -84,10 +87,10 @@ function reachableAvoiding(
   return false;
 }
 
-type ApprovalNode = Extract<IrNode, { kind: "approval" }>;
-type ToolNode = Extract<IrNode, { kind: "tool" }>;
-type BranchNode = Extract<IrNode, { kind: "branch" }>;
-type JudgeNode = Extract<IrNode, { kind: "judge" }>;
+type ApprovalNode = Extract<WorkflowNode, { kind: "approval" }>;
+type ToolNode = Extract<WorkflowNode, { kind: "tool" }>;
+type BranchNode = Extract<WorkflowNode, { kind: "branch" }>;
+type JudgeNode = Extract<WorkflowNode, { kind: "judge" }>;
 
 /**
  * Capability closure (007 §12, ADR-009). A role may not require a capability
@@ -96,7 +99,7 @@ type JudgeNode = Extract<IrNode, { kind: "judge" }>;
  * convention.
  */
 function checkRoles(
-  nodes: readonly IrNode[],
+  nodes: readonly WorkflowNode[],
   roles: Readonly<Record<string, Role>>,
   granted: readonly string[],
 ): Diagnostic[] {
@@ -147,8 +150,8 @@ function checkRoles(
  * WF_UNTYPED_EDGE (007 §11).
  */
 function checkBranches(
-  nodes: readonly IrNode[],
-  edges: readonly IrEdge[],
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const branches = nodes.filter(
@@ -201,8 +204,8 @@ function checkBranches(
  * continues), so a label on one of its edges is an arm that routes nowhere.
  */
 function checkJudges(
-  nodes: readonly IrNode[],
-  edges: readonly IrEdge[],
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const judges = nodes.filter(
@@ -256,8 +259,8 @@ function checkJudges(
  * check passes vacuously. Refuse the shape instead of reasoning about it.
  */
 function checkReachability(
-  nodes: readonly IrNode[],
-  edges: readonly IrEdge[],
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
 ): Diagnostic[] {
   const entry = entryOf(nodes);
   if (entry === undefined) return [];
@@ -298,8 +301,8 @@ function checkReachability(
  * fail-closed read is what covers that.
  */
 function checkDataFlow(
-  nodes: readonly IrNode[],
-  edges: readonly IrEdge[],
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
 ): Diagnostic[] {
   const adjacency = successors(nodes, edges);
   const known = new Set(nodes.map((node) => node.id));
@@ -342,8 +345,8 @@ function checkDataFlow(
  * action, exactly as the runtime binds a decision to one (006 §6.4).
  */
 function checkSideEffects(
-  nodes: readonly IrNode[],
-  edges: readonly IrEdge[],
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
   declaredEffects: readonly string[],
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];

@@ -1,5 +1,10 @@
-import { failOpen, redactAttributes } from "@forge/observability";
-import type { ObservabilityPort, SpanAttributes } from "@forge/ports";
+import {
+  createSpanContexts,
+  failOpen,
+  redactAttributes,
+} from "@forge/observability";
+import type { ObservabilityPort, Span, SpanAttributes } from "@forge/ports";
+import { type Context, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
@@ -19,11 +24,10 @@ import {
 
 /**
  * The port has spans and events; OpenTelemetry has spans. An event becomes a
- * zero-duration span carrying this marker rather than an OTel span *event*,
- * because a span event needs a parent and the port carries no context to
- * attach one to. A span with no duration is the honest shape for "this
- * happened", and it is queryable in every backend, which a dropped event is
- * not.
+ * zero-duration span rather than an OTel span *event* because a span with no
+ * duration is queryable in every backend, and it is marked with this attribute
+ * so the two remain distinguishable. Given a `parent` it is nested like any
+ * other child, so an event is part of the run's trace rather than beside it.
  */
 export const TELEMETRY_KIND_ATTRIBUTE = "forge.telemetry.kind";
 
@@ -118,15 +122,34 @@ export function createOtelObservability(
   // root, and makes two stacks in one process impossible to test.
   const tracer = provider.getTracer(TRACER_NAME);
   const timeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
+  const contexts = createSpanContexts<Context>();
 
-  const port: ObservabilityPort = {
-    startSpan(name: string, attributes: SpanAttributes = {}) {
-      const span = tracer.startSpan(name, {
+  /**
+   * `ROOT_CONTEXT` rather than `context.active()`: this provider is
+   * deliberately not registered globally, so there is no active context to
+   * read, and reading one would make the parent depend on whatever else in the
+   * process happens to have installed a context manager.
+   */
+  const startOtelSpan = (
+    name: string,
+    attributes: SpanAttributes,
+    kind: "span" | "event",
+    parent: Span | undefined,
+  ) =>
+    tracer.startSpan(
+      name,
+      {
         attributes: {
           ...redactAttributes(attributes),
-          [TELEMETRY_KIND_ATTRIBUTE]: "span",
+          [TELEMETRY_KIND_ATTRIBUTE]: kind,
         },
-      });
+      },
+      contexts.resolve(parent) ?? ROOT_CONTEXT,
+    );
+
+  const port: ObservabilityPort = {
+    startSpan(name: string, attributes: SpanAttributes = {}, parent?: Span) {
+      const span = startOtelSpan(name, attributes, "span", parent);
       return {
         end(endAttributes?: SpanAttributes) {
           if (endAttributes !== undefined) {
@@ -134,17 +157,11 @@ export function createOtelObservability(
           }
           span.end();
         },
+        context: contexts.issue(trace.setSpan(ROOT_CONTEXT, span)),
       };
     },
-    event(name: string, attributes: SpanAttributes = {}) {
-      tracer
-        .startSpan(name, {
-          attributes: {
-            ...redactAttributes(attributes),
-            [TELEMETRY_KIND_ATTRIBUTE]: "event",
-          },
-        })
-        .end();
+    event(name: string, attributes: SpanAttributes = {}, parent?: Span) {
+      startOtelSpan(name, attributes, "event", parent).end();
     },
   };
 

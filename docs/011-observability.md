@@ -71,11 +71,18 @@ interface LoggerPort {
 }
 
 interface ObservabilityPort {
-  startSpan(name: string, attrs?: SpanAttributes): SpanHandle
+  startSpan(name: string, attrs?: SpanAttributes, parent?: Span): Span
+  event(name: string, attrs?: SpanAttributes, parent?: Span): void
   recordMetric(name: string, value: number, attrs?: MetricAttributes): void
-  withContext<T>(ctx: TraceContext, fn: () => T): T
 }
 ```
+
+The parent is **data on the returned handle**, not a `withContext(ctx, fn)` that
+takes the caller's continuation. A port that owns the continuation can drop it,
+and this is the one port that fails open — the worst a bad parent may cost is a
+trace edge. Async-local storage was considered and rejected for the same reason
+plus one more: it does not survive the queue hop, so the explicit handle is also
+the shape the cross-process case will need.
 
 Adapters implement these at the composition root (`apps/api`, `apps/worker`). Tests use in-memory OTEL exporters and stub loggers.
 
@@ -172,6 +179,13 @@ forge.run
 ```
 
 Parent context must propagate across API → queue → worker → sandbox RPC.
+
+**Built:** in-process. The runtime holds the run's span on the run's state and
+passes it as the `parent` of every span and event the walk records, so one run
+is one trace. **Not built:** the hop between processes. A run re-entered by
+`resume()` or `decide()` in a worker that never saw it start has no parent to
+hang from and records roots, because W3C trace context does not yet travel on
+the run record. That costs a trace edge and never a dispatch.
 
 ### 6.2 Cardinality budgets (Phase 2+)
 

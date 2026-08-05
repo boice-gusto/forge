@@ -15,6 +15,15 @@ export interface ExportedRecord {
   readonly name: string;
   readonly kind: "span" | "event";
   readonly attributes: Readonly<Record<string, string | number | boolean>>;
+  /**
+   * How the sink identifies this record, and what it was told this record
+   * hangs from. Unique per record and opaque to the suite — a real span id for
+   * an exporting adapter, a sequence number for the in-memory recorder — so
+   * "this node belongs to that run" is asserted against the structure the sink
+   * received rather than against a `runId` attribute the caller wrote on both.
+   */
+  readonly spanId: string;
+  readonly parentSpanId?: string;
 }
 
 /**

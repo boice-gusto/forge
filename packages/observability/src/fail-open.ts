@@ -15,23 +15,27 @@ const NOOP_SPAN: Span = { end: () => undefined };
  */
 export function failOpen(port: ObservabilityPort): ObservabilityPort {
   return {
-    startSpan(name, attributes) {
+    startSpan(name, attributes, parent) {
       try {
-        const span = port.startSpan(name, attributes);
+        const span = port.startSpan(name, attributes, parent);
         return {
           end(endAttributes) {
             try {
               span.end(endAttributes);
             } catch {}
           },
+          // The wrapper is a different object from the span the adapter made,
+          // so a child parented on it would find nothing unless the handle
+          // travels with it.
+          ...(span.context === undefined ? {} : { context: span.context }),
         };
       } catch {
         return NOOP_SPAN;
       }
     },
-    event(name, attributes) {
+    event(name, attributes, parent) {
       try {
-        port.event(name, attributes);
+        port.event(name, attributes, parent);
       } catch {}
     },
   };

@@ -9,6 +9,7 @@
   "dependencies": {
     "@forge/ir": "workspace:*",
     "@forge/ports": "workspace:*",
+    "@forge/types": "workspace:*",
     "@forge/compiler": "workspace:*"
   },
   "scripts": {

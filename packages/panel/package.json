@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@forge/ir": "workspace:*"
+    "@forge/types": "workspace:*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

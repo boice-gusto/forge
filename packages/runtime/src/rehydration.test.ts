@@ -289,6 +289,30 @@ describe("a run is re-entered, not re-walked", () => {
     expect(second.modelCalls()).toBe(0);
   });
 
+  test("a second process records roots, because the trace did not travel with the run", async () => {
+    // The honest boundary of the parenting change. A run's span lives in the
+    // process that opened it; a runtime that has only a run id has no parent
+    // to hang anything from, and W3C trace context is not yet on the run
+    // record. What must not happen is the run noticing — a missing parent
+    // costs a trace edge, never a dispatch.
+    const forge = world();
+    const { run } = await parked(forge);
+
+    const second = forge.start();
+    const finished = await second.runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(finished.status).toBe("SUCCEEDED");
+    expect(second.acted).toEqual([DRAFT_ONE]);
+    expect(second.observability.timeline.length).toBeGreaterThan(2);
+    expect(
+      second.observability.timeline.map((entry) => entry.parentSeq),
+    ).toEqual(second.observability.timeline.map(() => undefined));
+  });
+
   test("the arm the run took is replayed, so a second runtime cannot reroute it", async () => {
     const forge = world();
     const { run } = await parked(forge);

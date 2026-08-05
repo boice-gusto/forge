@@ -1,4 +1,4 @@
-import type { Role } from "@forge/ir";
+import type { Role } from "@forge/types";
 
 /**
  * Panel composition (ADR-009). A review panel is a consequence of what changed,
