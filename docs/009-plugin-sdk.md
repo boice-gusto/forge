@@ -251,22 +251,10 @@ Workflows are declared with `defineWorkflow` — see `007`. From the plugin auth
 - `failurePolicy`, `timeouts`, `retries` as structured fields
 - No hand-wired graph edges to engine primitives
 
-```ts
-// examples/acme/domains/marketing/workflows/campaign-brief.ts
-export const campaignBrief = defineWorkflow({
-  id: 'marketing.campaign-brief',
-  version: '1.0.0',
-  input: LaunchBriefInput,
-  output: CampaignDraftOutput,
-  sideEffects: ['external.publish'],
-  steps: [
-    skill('acme.extract-goals'),
-    skill('acme.draft-copy', { promptRef: { id: 'acme.marketing.draft', version: '^1.0.0' } }),
-    approval({ gate: 'publish', schema: PublishApprovalSchema }),
-    skill('acme.slack-publish-request'),
-  ],
-});
-```
+See `examples/acme/domains/marketing/workflows/brief-approval.ts` for a working
+example, and `007 §3` for the authoring surface as implemented. The `steps: [...]`
+builder sketched in earlier drafts of this document does not exist; workflows are
+declared as nodes and edges.
 
 ---
 

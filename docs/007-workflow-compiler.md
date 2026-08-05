@@ -60,20 +60,45 @@ The runtime loads artifacts by `workflowVersionId`; it never re-parses manifests
 
 Public API lives in `@forge/manifest`. Authors write typed workflow definitions; the compiler is the only path to a runnable graph.
 
+`defineWorkflow` takes the graph the IR and compiler actually consume — nodes and
+edges — and resolves the workflow's internal references in the type system as it
+is written:
+
 ```ts
 import { defineWorkflow } from '@forge/manifest';
-import { ClaimInput, ClaimOutput } from './schemas';
 
 export const claimReview = defineWorkflow({
-  id: 'benefits.claim_review',
+  id: 'benefits.claim-review',
   version: '1.2.0',
-  input: ClaimInput,
-  output: ClaimOutput,
-  steps: [
-    // typed step builders — skill, agent, approval, branch, …
+  sideEffects: ['claim.decide'],
+  grantedCapabilities: ['claims.read'],
+  roles: { adjudicator: { version: '1.0.0', capabilities: { requires: ['claims.read'], forbids: [] } } },
+  nodes: [
+    { id: 'intake', kind: 'input', schemaRef: 'benefits.claim@1' },
+    { id: 'review', kind: 'agent', promptRef: 'benefits.adjudicate@1', role: 'adjudicator' },
+    { id: 'gate', kind: 'approval', gateSchemaRef: 'benefits.decide@1', gates: ['decide'] },
+    { id: 'decide', kind: 'tool', skillRef: 'benefits.decide@1', effect: 'claim.decide' },
+    { id: 'result', kind: 'output', schemaRef: 'benefits.decision@1' },
+  ],
+  edges: [
+    { from: 'intake', to: 'review' }, { from: 'review', to: 'gate' },
+    { from: 'gate', to: 'decide' }, { from: 'decide', to: 'result' },
   ],
 });
 ```
+
+An edge to a node that does not exist, a gate naming one, a node using an
+undeclared role, or a tool causing an effect missing from `sideEffects` is a
+**type error here**, before the compiler runs. All of those are schema-valid, so
+the type system is the only place they can be caught this early. The compiler
+keeps every analysis that needs the whole graph — reachability, gate bypass,
+capability closure — because `defineWorkflow` cannot see a path.
+
+> **Not yet implemented.** A `steps: [...]` builder DSL over `skill()` /
+> `approval()` / `branch()`, and `input` / `output` Zod schemas on the workflow.
+> The schemas wait on a run data plane: nothing currently flows between nodes,
+> so a declared input schema would validate a payload no node can read. Node
+> `schemaRef`s are refs the compiler resolves, not live schemas.
 
 **Forbidden in company/plugin code:**
 
@@ -95,18 +120,15 @@ await forge.workflows.start({ workflowId: 'benefits.claim_review', version: '1.2
 ```ts
 interface CompiledWorkflowArtifact {
   workflowId: WorkflowId;
-  workflowVersionId: WorkflowVersionId;
-  compilerVersion: string;
   fingerprint: Sha256;
   ir: ForgeIR;                    // inspectable internally / debug UIs
-  enginePlan: EnginePlan;         // opaque; langgraph adapter only
-  publicSurface: {
-    inputSchema: ZodTypeAny;
-    outputSchema: ZodTypeAny;
-    approvalGates: ApprovalGateSummary[];
-    requiredCapabilities: CapabilityId[];
-  };
 }
+
+// Not yet implemented: `workflowVersionId`, `compilerVersion`, and a carried
+// `enginePlan` — the plan is materialised by the engine from the IR rather than
+// sealed into the artifact, so there is one owner of it. The public surface is
+// derived on demand (see `POST /v1/workflows/compile`) rather than stored;
+// `inputSchema`/`outputSchema` wait on the data plane.
 ```
 
 | Field | Visibility |
