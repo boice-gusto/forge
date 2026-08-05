@@ -1,4 +1,4 @@
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
@@ -7,6 +7,20 @@ import { collectImports, packageOf } from "./scan-imports.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCANNED_ROOTS = ["packages", "apps", "examples", "tooling", "scripts"];
+
+/**
+ * Company packages live in sibling repositories (`forge.gusto`, `forge.buzz`),
+ * so the rules that govern them were never run against them here — only
+ * against hand-written examples. Point this at checked-out company repos and
+ * CI enforces the boundary on the code that actually has to obey it.
+ *
+ * Colon-separated absolute paths, e.g.
+ * `FORGE_SCAN_ROOTS=/src/forge.gusto:/src/forge.buzz`.
+ */
+const EXTRA_ROOTS = (process.env.FORGE_SCAN_ROOTS ?? "")
+  .split(":")
+  .map((entry) => entry.trim())
+  .filter(Boolean);
 
 describe("architecture rules", () => {
   test("rejects a public package importing a private adapter", () => {
@@ -123,6 +137,43 @@ describe("architecture rules", () => {
     ).not.toThrow();
   });
 
+  test("a company's acceptance harness may construct the host", () => {
+    // It is the composition root for that repository. Core's own acme
+    // acceptance test does exactly this from packages/composition.
+    for (const internal of ["@forge/company", "@forge/composition"]) {
+      expect(() =>
+        assertArchitecture({
+          sourcePath: "forge.gusto/acceptance/harness.ts",
+          importedPath: internal,
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  test("shipped company code gets no such licence", () => {
+    for (const source of [
+      "forge.gusto/plugins/benefits.ts",
+      "forge.gusto/domains/benefits/workflows/inquiry.ts",
+      "forge.gusto/policies/pii.ts",
+    ]) {
+      expect(() =>
+        assertArchitecture({
+          sourcePath: source,
+          importedPath: "@forge/company",
+        }),
+      ).toThrow("FORGE_INTERNAL_IMPORT");
+    }
+  });
+
+  test("a harness still may not pull in a vendor", () => {
+    expect(() =>
+      assertArchitecture({
+        sourcePath: "forge.gusto/acceptance/harness.ts",
+        importedPath: "@langchain/langgraph",
+      }),
+    ).toThrow("FORGE_VENDOR_LEAK");
+  });
+
   test("permits an extension importing a public SDK", () => {
     expect(() =>
       assertArchitecture({
@@ -177,7 +228,14 @@ describe("import scanner", () => {
 });
 
 describe("the repository obeys its own rules", () => {
-  const imports = collectImports(REPO_ROOT, SCANNED_ROOTS);
+  const imports = [
+    ...collectImports(REPO_ROOT, SCANNED_ROOTS),
+    // Each extra root is scanned from its own parent, so a company repo's
+    // paths read as `forge.gusto/...` and the company rules match them.
+    ...EXTRA_ROOTS.flatMap((root) =>
+      collectImports(dirname(root), [basename(root)]),
+    ),
+  ];
 
   test("the scan reaches real source", () => {
     // Guards against the failure this suite was written to fix: rules that

@@ -83,8 +83,28 @@ function isPublicPackage(sourcePath: string): boolean {
   return PUBLIC_PACKAGE.test(sourcePath);
 }
 
+/**
+ * A company repository's acceptance and demo suites are its composition root:
+ * they stand in for `apps/api`, bind a stack, and load the company. Core's own
+ * equivalent lives in `packages/composition` and reaches internals freely for
+ * the same reason.
+ *
+ * Shipped company code — plugins, workflows, policies, adapters — gets no such
+ * licence, which is the boundary that actually matters. A harness that cannot
+ * construct the host cannot test that the host refuses anything.
+ */
+const COMPANY_COMPOSITION_ROOT = new RegExp(
+  `(?:^|/)(?:examples/[^/]+|${COMPANY_EXTENSION_PREFIXES.map((prefix) =>
+    prefix.replace(".", "\\."),
+  ).join("|")})/(?:acceptance|demos)/`,
+);
+
 function isCompanyPackage(sourcePath: string): boolean {
   return COMPANY_PATH.test(sourcePath);
+}
+
+function isCompanyCompositionRoot(sourcePath: string): boolean {
+  return COMPANY_COMPOSITION_ROOT.test(sourcePath);
 }
 
 /** The package a `@forge/*` specifier names, or undefined if it is not one. */
@@ -113,7 +133,9 @@ export function assertArchitecture({
   importedPath,
 }: ArchitectureImport): void {
   const fromPublic = isPublicPackage(sourcePath);
-  const fromCompany = isCompanyPackage(sourcePath);
+  // A company harness is a host, not a company contribution.
+  const fromCompany =
+    isCompanyPackage(sourcePath) && !isCompanyCompositionRoot(sourcePath);
 
   // Checked before the general internal-import rule so a developer sees the
   // more specific failure.
@@ -132,7 +154,10 @@ export function assertArchitecture({
     throw new Error("FORGE_INTERNAL_IMPORT");
   }
 
-  if ((fromPublic || fromCompany) && leaksVendor(importedPath)) {
+  if (
+    (fromPublic || fromCompany || isCompanyCompositionRoot(sourcePath)) &&
+    leaksVendor(importedPath)
+  ) {
     throw new Error("FORGE_VENDOR_LEAK");
   }
 

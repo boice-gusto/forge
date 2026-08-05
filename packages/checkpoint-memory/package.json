@@ -12,5 +12,8 @@
   },
   "dependencies": {
     "@forge/ports": "workspace:*"
+  },
+  "devDependencies": {
+    "@forge/store-conformance": "workspace:*"
   }
 }
