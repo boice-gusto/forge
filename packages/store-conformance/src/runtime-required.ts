@@ -14,8 +14,8 @@ export function decideRuntimeRequirement(
   if (reachable) return true;
 
   const detail =
-    `[${suiteName}] No container runtime is reachable, so the Postgres suite ` +
-    "did not run and this adapter is UNVERIFIED. Start Docker, or set " +
+    `[${suiteName}] No container runtime is reachable, so its container ` +
+    "suite did not run and this adapter is UNVERIFIED. Start Docker, or set " +
     "DOCKER_HOST (Testcontainers does not read Docker contexts).";
 
   if (required) {

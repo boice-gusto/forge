@@ -1,5 +1,5 @@
 {
-  "name": "@forge/sandbox",
+  "name": "@forge/sandbox-docker",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -10,9 +10,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@forge/ports": "workspace:*"
+    "@forge/ports": "workspace:*",
+    "@forge/sandbox": "workspace:*"
   },
   "devDependencies": {
-    "@forge/sandbox-conformance": "workspace:*"
+    "@forge/sandbox-conformance": "workspace:*",
+    "@forge/store-conformance": "workspace:*"
   }
 }

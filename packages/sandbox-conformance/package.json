@@ -1,5 +1,5 @@
 {
-  "name": "@forge/sandbox",
+  "name": "@forge/sandbox-conformance",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -11,8 +11,5 @@
   },
   "dependencies": {
     "@forge/ports": "workspace:*"
-  },
-  "devDependencies": {
-    "@forge/sandbox-conformance": "workspace:*"
   }
 }
