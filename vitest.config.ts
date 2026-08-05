@@ -86,6 +86,14 @@ export default defineConfig({
           branches: 81,
           statements: 100,
         },
+        // The extension surface. Everything a company contributes passes
+        // through here, so the floor is the full 100 on every metric.
+        "packages/plugin-sdk/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 100,
+          statements: 100,
+        },
       },
     },
   },
