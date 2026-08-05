@@ -1,5 +1,5 @@
 {
-  "name": "@forge/observability",
+  "name": "@forge/observability-conformance",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -10,7 +10,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@forge/ports": "workspace:*",
-    "pino": "^10.3.1"
+    "@forge/ports": "workspace:*"
   }
 }

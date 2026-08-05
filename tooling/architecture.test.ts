@@ -117,6 +117,8 @@ describe("architecture rules", () => {
       ["bullmq", "transport"],
       ["@anthropic-ai/sdk", "provider"],
       ["dockerode", "sandbox"],
+      ["@opentelemetry/exporter-trace-otlp-http", "telemetry"],
+      ["langsmith", "telemetry"],
     ];
     for (const [vendor] of leaks) {
       expect(() =>

@@ -207,6 +207,34 @@ export default defineConfig({
           branches: 73,
           statements: 91,
         },
+        // Redaction and the fail-open wrapper are the last place a payload
+        // can be stopped before it leaves the process.
+        "packages/observability/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 93,
+          statements: 100,
+        },
+        "packages/observability-memory/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 100,
+          statements: 100,
+        },
+        "packages/observability-otel/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 96,
+          statements: 100,
+        },
+        // Branches sit low on purpose: the uncovered arms are diagnostics that
+        // only run once a conformance test has already failed.
+        "packages/observability-conformance/src/**": {
+          lines: 98,
+          functions: 96,
+          branches: 25,
+          statements: 98,
+        },
         "packages/sandbox/src/**": {
           lines: 100,
           functions: 94,

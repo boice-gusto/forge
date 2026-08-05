@@ -1,3 +1,4 @@
+export { failOpen } from "./fail-open.js";
 export {
   createForgeLogger,
   type ForgeLogContext,

@@ -40,6 +40,11 @@ const VENDOR_LEAKS = [
   "acpx",
   "dockerode",
   "e2b",
+  // 011 §11: telemetry is a port. A company package or a public SDK reaching
+  // for an exporter directly would put a vendor between Forge and its own
+  // redaction, which is where every payload is stopped.
+  "@opentelemetry/",
+  "langsmith",
 ] as const;
 
 /**

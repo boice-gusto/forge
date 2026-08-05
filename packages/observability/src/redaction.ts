@@ -41,6 +41,39 @@ const PROMPT_BODY_WORDS: ReadonlySet<string> = new Set([
   "content",
 ]);
 
+/**
+ * Words that name a *person*. A principal never reaches a span: who decided
+ * something belongs on the durable `ApprovalRecord`, and a trace only needs to
+ * tell two deciders apart.
+ *
+ * The runtime already hashes the principal before it emits
+ * `forge.approval.decided`, so this is the second line: an adapter cannot rely
+ * on every present and future call site having remembered.
+ */
+const IDENTITY_WORDS: ReadonlySet<string> = new Set([
+  "actor",
+  "approver",
+  "approvers",
+  "decider",
+  "principal",
+  "requester",
+  "subject",
+  "user",
+  "username",
+]);
+
+/**
+ * What turns an identity key into a reference rather than a person.
+ * `principalHash` and `approverCount` are exactly the attributes the taxonomy
+ * asks for; `approverId` is not one of them, because a per-person identifier
+ * still identifies the person.
+ */
+const IDENTITY_REFERENCE_WORDS: ReadonlySet<string> = new Set([
+  "count",
+  "hash",
+  "ref",
+]);
+
 /** Values that are PII whatever the key is called. */
 const VALUE_PATTERNS: readonly RegExp[] = [
   /[\w.+-]+@[\w-]+\.[\w.-]+/g,
@@ -63,6 +96,11 @@ function isRedactedKey(key: string): boolean {
 
   const parts = words(key);
   if (parts.some((part) => PII_WORDS.has(part))) return true;
+
+  if (parts.some((part) => IDENTITY_WORDS.has(part))) {
+    return !parts.some((part) => IDENTITY_REFERENCE_WORDS.has(part));
+  }
+
   if (!parts.includes("prompt")) return false;
   return (
     parts.length === 1 || parts.some((part) => PROMPT_BODY_WORDS.has(part))

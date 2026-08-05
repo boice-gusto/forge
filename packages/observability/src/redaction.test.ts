@@ -93,6 +93,52 @@ describe("payroll data never survives redaction", () => {
   });
 });
 
+/**
+ * The runtime hashes the principal before it emits `forge.approval.decided`.
+ * This is the second line: an adapter cannot rely on every present and future
+ * call site having remembered to.
+ */
+describe("a principal never survives redaction, but its hash does", () => {
+  test("a person is replaced while the reference to them is kept", () => {
+    expect(
+      redact({
+        principal: "ada.lovelace",
+        principalHash: "9f2a5c1e",
+        approverId: "u_88",
+        approverCount: 2,
+        decidedBySubject: "ada.lovelace",
+        actor: "svc.forge.worker",
+      }),
+    ).toEqual({
+      principal: "[REDACTED]",
+      principalHash: "9f2a5c1e",
+      // 011 §4.1 lists `approverId`; the invariant that a principal never
+      // reaches a span is the stronger claim, and a per-person identifier
+      // still identifies the person.
+      approverId: "[REDACTED]",
+      approverCount: 2,
+      decidedBySubject: "[REDACTED]",
+      actor: "[REDACTED]",
+    });
+  });
+
+  test("a key that merely contains an identity word is left alone", () => {
+    // Matching on whole words rather than substrings: `subjectiveScore` is not
+    // a subject, and over-redaction hides the signal an operator came for.
+    expect(
+      redact({
+        nodeId: "publish",
+        policyId: "acme.publish.external",
+        subjectiveScore: 0.8,
+      }),
+    ).toEqual({
+      nodeId: "publish",
+      policyId: "acme.publish.external",
+      subjectiveScore: 0.8,
+    });
+  });
+});
+
 describe("redactAttributes keeps a span's shape while scrubbing it", () => {
   test("scalars stay scalar and identifiers stay readable", () => {
     expect(

@@ -1,4 +1,4 @@
-import { redactAttributes } from "@forge/observability";
+import { failOpen, redactAttributes } from "@forge/observability";
 import type {
   ClockPort,
   ObservabilityPort,
@@ -67,11 +67,7 @@ export function createMemoryObservability(
     return entry;
   };
 
-  return {
-    spans,
-    events,
-    timeline,
-    names: () => spans.map((span) => span.name),
+  const port: ObservabilityPort = {
     startSpan(name: string, attributes: SpanAttributes = {}): Span {
       const entry = record("span", name, attributes, false);
       return {
@@ -89,5 +85,16 @@ export function createMemoryObservability(
     event(name: string, attributes: SpanAttributes = {}) {
       record("event", name, attributes, true);
     },
+  };
+
+  return {
+    spans,
+    events,
+    timeline,
+    names: () => spans.map((span) => span.name),
+    // Telemetry fails open here too, not only where the runtime happens to
+    // wrap it. An injected clock, or the next thing recorded through this
+    // adapter, must not be able to fail a run by throwing.
+    ...failOpen(port),
   };
 }
