@@ -18,7 +18,8 @@
     "@forge/types": "workspace:*",
     "@forge/observability-memory": "workspace:*",
     "@forge/panel": "workspace:*",
-    "@forge/provider-mock": "workspace:*"
+    "@forge/provider-mock": "workspace:*",
+    "@forge/company": "workspace:*"
   },
   "scripts": {
     "build": "tsc --noEmit",

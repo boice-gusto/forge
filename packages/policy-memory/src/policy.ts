@@ -12,10 +12,17 @@ import type { PolicyDecision, PolicyPort, PolicyRequest } from "@forge/ports";
 export interface PolicyRule {
   readonly id: string;
   readonly action: string;
-  readonly environment?: string;
+  /**
+   * `| undefined` is explicit because these rules arrive from a parsed company
+   * policy pack, and a Zod optional yields a present-but-undefined property
+   * rather than an absent one. Under `exactOptionalPropertyTypes` those are
+   * different types, and the alternative is a mapper stripping undefined at
+   * every boundary where a pack meets the evaluator.
+   */
+  readonly environment?: string | undefined;
   readonly decision: "allow" | "deny" | "require-approval";
   readonly reason: string;
-  readonly approvers?: readonly string[];
+  readonly approvers?: readonly string[] | undefined;
 }
 
 export interface MemoryPolicyOptions {

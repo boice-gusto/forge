@@ -94,6 +94,13 @@ export default defineConfig({
           branches: 100,
           statements: 100,
         },
+        // The loader decides what a company package is allowed to become.
+        "packages/company/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 96,
+          statements: 100,
+        },
       },
     },
   },
