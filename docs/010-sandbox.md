@@ -43,44 +43,41 @@ Firecracker / Kata     → untrusted / multi-tenant gold standard; managed platf
 Conceptual interface — Zod-validated at every boundary in `@forge/ports`.
 
 ```ts
-declare const SandboxIdBrand: unique symbol;
-export type SandboxId = { readonly [SandboxIdBrand]: true };
-
 interface SandboxPort {
-  create(spec: SandboxCreateSpec): Promise<SandboxHandle>;
-  exec(id: SandboxId, cmd: ExecRequest): Promise<ExecResult>;
-  readFile(id: SandboxId, path: string): Promise<Uint8Array>;
-  writeFile(id: SandboxId, path: string, data: Uint8Array): Promise<void>;
-  snapshot?(id: SandboxId): Promise<SnapshotId>;
-  destroy(id: SandboxId): Promise<void>;
+  /** Profiles this adapter can provision. An undeclared one is refused. */
+  readonly profiles: readonly SandboxProfile[];
+  health(): Promise<{ readonly available: boolean }>;
+  /** The lease *is* the scope: release is this method's own `finally`. */
+  withSandbox<T>(
+    request: SandboxLeaseRequest,
+    work: (lease: SandboxLease) => Promise<T>,
+  ): Promise<T>;
 }
 
-interface SandboxCreateSpec {
-  template: SandboxTemplateId;     // Forge alias — not docker:// or e2b raw id
-  workspace: WorkspaceSpec;
-  network: NetworkPolicy;
-  resources: ResourceLimits;
-  secrets: SecretRefs;             // injected by runtime — never from prompts
-  capabilities: CapabilitySet;     // policy-derived
-}
-
-type WorkspaceSpec =
-  | { kind: 'empty' }
-  | { kind: 'git-worktree'; repo: RepoRef; ref: string; branch?: string }
-  | { kind: 'copy'; sourcePath: string };   // adapter-internal use only
-
-interface NetworkPolicy {
-  default: 'deny' | 'allow';
-  egressAllowlist?: string[];      // hostnames/CIDR — from policy
-}
-
-interface ResourceLimits {
-  cpuMillis?: number;
-  memoryMb: number;
-  timeoutMs: number;
-  diskMb?: number;
+interface SandboxLease {
+  readonly sandboxId: string;
+  readonly profile: string;
+  readonly workspacePath: string;
+  exec(argv: readonly string[]): Promise<SandboxExecResult>;
+  readFile(path: string): Promise<Uint8Array>;
+  writeFile(path: string, data: Uint8Array): Promise<void>;
 }
 ```
+
+Scoped rather than `create`/`destroy`: release becomes the adapter's own
+`finally` and no caller can forget it. A leaked container is both a resource
+leak and an isolation boundary left open after the run that justified it ended.
+
+`exec` takes argv, not a shell line, so nothing assembled from workflow content
+can become a second command. Supported profiles are declared, because silently
+substituting a weaker one is the failure this exists to prevent.
+
+At the engine boundary the same shape appears as
+`EngineRunContext.withSandbox(nodeId, profile, work)`: a `sandbox` node opens a
+scope over the nodes reachable from it, and anything still pending that the
+sandbox does not reach is walked first, outside the lease. Those nodes never
+declared isolation, and a topological order permits them earlier precisely
+because no path leads from the sandbox to them.
 
 ### Template aliases
 
@@ -239,10 +236,17 @@ Tool calls → SandboxPort.exec (after policy per command class)
         │
 ObservabilityPort spans: sandbox.created, exec, destroyed
         │
-SandboxPort.destroy (finally block — even on failure)
+lease released when the scope ends — at the end, at a failure, or at a gate
 ```
 
-Provider and sandbox adapters do not import each other. Runtime passes workspace path from sandbox handle to provider session opts.
+Provider and sandbox adapters do not import each other. The runtime passes the
+lease's `workspacePath` as the provider session's working directory, which is
+what makes the isolation load-bearing rather than ceremonial — an agent inside a
+scope genuinely runs there.
+
+There is no `health()` pre-check before taking a lease. It would be a TOCTOU,
+and `withSandbox` failing closed is the guarantee; `health()` remains for
+operator probes.
 
 ---
 

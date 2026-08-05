@@ -19,7 +19,13 @@ function context(performed: string[]) {
     chooseBranch: async (nodeId: string): Promise<string> => {
       throw new Error(`No arm was chosen for branch '${nodeId}'.`);
     },
-    enterSandbox: async () => undefined,
+    // The default runs the scope, so a test that does not care about isolation
+    // still walks the nodes inside one.
+    withSandbox: async <T>(
+      _nodeId: string,
+      _profile: string,
+      work: () => Promise<T>,
+    ): Promise<T> => work(),
     perform: async (_nodeId: string, effect: string) => {
       performed.push(effect);
     },
@@ -512,5 +518,167 @@ describe("nodes read what they declared", () => {
     );
 
     expect(offered).toEqual([{ writer: "pass" }]);
+  });
+});
+
+/**
+ * A `sandbox` node is a scope, not a step. What is being proved here is that
+ * the lease spans the work the graph reaches from it: before this, the engine
+ * asked for a sandbox, was told it existed, and then ran everything on the
+ * host anyway.
+ */
+describe("a sandbox node scopes what the graph reaches from it", () => {
+  const isolated = {
+    id: "probe.sandbox",
+    version: "1.0.0",
+    sideEffects: ["prod.write"],
+    nodes: [
+      { id: "intake", kind: "input", schemaRef: "s@1" },
+      { id: "isolate", kind: "sandbox", profile: "docker" },
+      { id: "work", kind: "agent", promptRef: "p@1" },
+      { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["act"] },
+      { id: "act", kind: "tool", skillRef: "t@1", effect: "prod.write" },
+      { id: "result", kind: "output", schemaRef: "s@1" },
+    ],
+    edges: [
+      { from: "intake", to: "isolate" },
+      { from: "isolate", to: "work" },
+      { from: "work", to: "gate" },
+      { from: "gate", to: "act" },
+      { from: "act", to: "result" },
+    ],
+  } as const;
+
+  /**
+   * Records what happened and, for each node, whether a lease was open at the
+   * time. "Ran inside the sandbox" is not observable any other way from here.
+   */
+  function tracing(options: { readonly provision?: () => void } = {}) {
+    const log: string[] = [];
+    let open = 0;
+    return {
+      log,
+      hooks: {
+        ...context([]),
+        withSandbox: async <T>(
+          nodeId: string,
+          profile: string,
+          work: () => Promise<T>,
+        ): Promise<T> => {
+          options.provision?.();
+          log.push(`enter ${nodeId} ${profile}`);
+          open += 1;
+          try {
+            return await work();
+          } finally {
+            open -= 1;
+            log.push(`release ${nodeId}`);
+          }
+        },
+        invokeAgent: async (nodeId: string) => {
+          log.push(`agent ${nodeId} inside=${open > 0}`);
+        },
+        perform: async (nodeId: string) => {
+          log.push(`perform ${nodeId} inside=${open > 0}`);
+        },
+        emitOutput: async (nodeId: string) => {
+          log.push(`output ${nodeId} inside=${open > 0}`);
+        },
+      },
+    };
+  }
+
+  async function execute(source: unknown, trace: ReturnType<typeof tracing>) {
+    const compiled = compileWorkflow(source);
+    if (!compiled.ok) throw new Error("Fixture must compile.");
+    const engine = createMemoryGraphEngine();
+    const plan = await engine.materialize(compiled.value.ir);
+    return engine.execute(plan, trace.hooks, new Set(["act"]), store());
+  }
+
+  test("the downstream nodes run inside the lease, and it closes after them", async () => {
+    const trace = tracing();
+
+    const result = await execute(isolated, trace);
+
+    expect(result.kind).toBe("succeeded");
+    expect(trace.log).toEqual([
+      "enter isolate docker",
+      "agent work inside=true",
+      "perform act inside=true",
+      "release isolate",
+    ]);
+  });
+
+  test("a node the sandbox does not reach runs outside it", async () => {
+    // `sibling` is not downstream of `isolate`, so it never declared isolation
+    // and must not silently acquire it. Its id sorts after `isolate` on
+    // purpose: the topological order therefore offers it *after* the sandbox
+    // node, which is the only arrangement in which the scope has to be
+    // partitioned rather than simply followed.
+    const trace = tracing();
+
+    const result = await execute(
+      {
+        ...isolated,
+        id: "probe.sandbox-sibling",
+        nodes: [
+          ...isolated.nodes,
+          { id: "sibling", kind: "agent", promptRef: "p@2" },
+        ],
+        edges: [
+          ...isolated.edges,
+          { from: "intake", to: "sibling" },
+          { from: "sibling", to: "result" },
+        ],
+      },
+      trace,
+    );
+
+    expect(result.kind).toBe("succeeded");
+    expect(trace.log).toContain("agent sibling inside=false");
+    // Scheduled before the lease opens, so the environment is held for the
+    // scope that asked for it and no longer.
+    expect(trace.log.indexOf("agent sibling inside=false")).toBeLessThan(
+      trace.log.indexOf("enter isolate docker"),
+    );
+    expect(trace.log).toContain("agent work inside=true");
+  });
+
+  test("a sandbox that cannot be provisioned stops the walk, and nothing downstream runs", async () => {
+    const trace = tracing({
+      provision: () => {
+        throw new Error("no container runtime is reachable");
+      },
+    });
+
+    const result = await execute(isolated, trace);
+
+    expect(result.kind).toBe("failed");
+    if (result.kind !== "failed") throw new Error("unreachable");
+    expect(result.nodeId).toBe("isolate");
+    expect(result.reason).toContain("no container runtime is reachable");
+    // Not retryable: a host that cannot isolate will not isolate on a retry,
+    // and the walk must never continue un-isolated.
+    expect(result.retryable).toBe(false);
+    expect(trace.log).toEqual([]);
+  });
+
+  test("an interrupt inside the scope releases the lease before it is reported", async () => {
+    const trace = tracing();
+    const compiled = compileWorkflow(isolated);
+    if (!compiled.ok) throw new Error("Fixture must compile.");
+    const engine = createMemoryGraphEngine();
+    const plan = await engine.materialize(compiled.value.ir);
+
+    // Nothing authorised: the walk stops at the gated effect.
+    const result = await engine.execute(plan, trace.hooks, new Set(), store());
+
+    expect(result.kind).toBe("interrupted");
+    if (result.kind !== "interrupted") throw new Error("unreachable");
+    expect(result.nodeId).toBe("act");
+    // A lease must not be held across a decision that may take days.
+    expect(trace.log.at(-1)).toBe("release isolate");
+    expect(trace.log).not.toContain("perform act inside=true");
   });
 });

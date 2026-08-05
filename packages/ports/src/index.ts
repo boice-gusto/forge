@@ -51,4 +51,10 @@ export {
   operationKey,
   type QueuePort,
 } from "./queue.js";
-export type { SandboxPort } from "./sandbox.js";
+export type {
+  SandboxExecResult,
+  SandboxLease,
+  SandboxLeaseRequest,
+  SandboxPort,
+  SandboxProfile,
+} from "./sandbox.js";

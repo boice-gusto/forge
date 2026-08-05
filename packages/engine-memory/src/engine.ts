@@ -118,7 +118,12 @@ const failed = (
   nodeId: string,
   reason: string,
   retryable: boolean,
-): StepOutcome => ({ kind: "failed", nodeId, reason, retryable });
+): Extract<EngineExecutionResult, { kind: "failed" }> => ({
+  kind: "failed",
+  nodeId,
+  reason,
+  retryable,
+});
 
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -223,8 +228,9 @@ async function toolStep(
 
 /**
  * One node, one outcome. Each kind owns its failure semantics: an agent may be
- * retried, a judge or a sandbox may not, and an unauthorised effect interrupts
- * rather than failing.
+ * retried, a judge may not, and an unauthorised effect interrupts rather than
+ * failing. A `sandbox` node is absent here on purpose — it opens a scope around
+ * the rest of the walk rather than being a step that starts and returns.
  */
 async function step(
   node: IrNode,
@@ -273,15 +279,6 @@ async function step(
         context.emitOutput(node.id, value),
       );
 
-    case "sandbox":
-      try {
-        await context.enterSandbox(node.id, node.profile);
-        return "continue";
-      } catch (error) {
-        // No host fallback. An unavailable sandbox stops the walk.
-        return failed(node.id, messageOf(error), false);
-      }
-
     case "policy_check":
       try {
         await context.assertCapability(node.id, node.capability);
@@ -311,6 +308,96 @@ function pruneArms(
   for (const edge of ir.edges) {
     if (edge.from !== nodeId || edge.conditionId === arm) continue;
     pruned.add(edgeKey(edge));
+  }
+}
+
+/** Everything one walk of a plan mutates, in one place rather than five. */
+interface WalkState {
+  readonly materialized: MaterializedPlan;
+  readonly context: EngineRunContext;
+  readonly authorised: AuthorisedEffects;
+  readonly values: RunValues;
+  readonly visited: string[];
+  readonly pruned: Set<string>;
+  /** Shrinks as arms are pruned; never grows. */
+  live: ReadonlySet<string>;
+}
+
+/**
+ * Walks a list of nodes in order. `undefined` means the list ran out — the
+ * caller decides whether that is the whole run succeeding or a sandbox scope
+ * having finished.
+ */
+async function walk(
+  state: WalkState,
+  nodes: readonly IrNode[],
+): Promise<EngineExecutionResult | undefined> {
+  const { ir, entryId } = state.materialized;
+
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index] as IrNode;
+    // A pruned arm is not "skipped": it is no longer part of this run, exactly
+    // like a node the graph never reaches.
+    if (!state.live.has(node.id)) continue;
+
+    if (node.kind === "sandbox") {
+      return enterScope(state, node, nodes.slice(index + 1));
+    }
+
+    state.visited.push(node.id);
+    const outcome = await step(
+      node,
+      state.context,
+      state.authorised,
+      state.materialized,
+      state.values,
+    );
+    if (outcome === "continue") continue;
+    if (outcome.kind === "routed") {
+      pruneArms(ir, outcome.nodeId, outcome.arm, state.pruned);
+      state.live = reachableFrom(ir, entryId, state.pruned);
+      continue;
+    }
+    // `failed` carries no visited list in the port contract; `interrupted` does.
+    return outcome.kind === "failed"
+      ? outcome
+      : { ...outcome, visited: state.visited };
+  }
+  return undefined;
+}
+
+/**
+ * A `sandbox` node isolates what the graph reaches *from it* — nothing else.
+ * Anything still pending that is not downstream of it is walked first, outside
+ * the lease: those nodes never declared isolation, and a topological order
+ * permits them before the sandbox precisely because no path leads from it to
+ * them. The scope is then a contiguous tail, so one lease spans it and is
+ * released the moment the tail stops — at the end, at a failure, or at a gate.
+ */
+async function enterScope(
+  state: WalkState,
+  node: Extract<IrNode, { kind: "sandbox" }>,
+  rest: readonly IrNode[],
+): Promise<EngineExecutionResult | undefined> {
+  const scope = reachableFrom(state.materialized.ir, node.id, state.pruned);
+  const before = await walk(
+    state,
+    rest.filter((next) => !scope.has(next.id)),
+  );
+  if (before !== undefined) return before;
+
+  state.visited.push(node.id);
+  try {
+    return await state.context.withSandbox(node.id, node.profile, () =>
+      walk(
+        state,
+        rest.filter((next) => scope.has(next.id)),
+      ),
+    );
+  } catch (error) {
+    // No host fallback. A sandbox that could not be provisioned — or that was
+    // lost mid-scope — stops the walk rather than continuing on the host.
+    return failed(node.id, messageOf(error), false);
   }
 }
 
@@ -353,33 +440,22 @@ export function createMemoryGraphEngine(): GraphEnginePort {
         };
       }
 
-      const visited: string[] = [];
-      const pruned = new Set<string>();
-      let live = reachableFrom(materialized.ir, materialized.entryId);
+      const state: WalkState = {
+        materialized,
+        context,
+        authorised,
+        values,
+        visited: [],
+        pruned: new Set<string>(),
+        live: reachableFrom(materialized.ir, materialized.entryId),
+      };
 
-      for (const node of materialized.order) {
-        // A pruned arm is not "skipped": it is no longer part of this run,
-        // exactly like a node the graph never reaches.
-        if (!live.has(node.id)) continue;
-        visited.push(node.id);
-        const outcome = await step(
-          node,
-          context,
-          authorised,
-          materialized,
-          values,
-        );
-        if (outcome === "continue") continue;
-        if (outcome.kind === "routed") {
-          pruneArms(materialized.ir, outcome.nodeId, outcome.arm, pruned);
-          live = reachableFrom(materialized.ir, materialized.entryId, pruned);
-          continue;
+      return (
+        (await walk(state, materialized.order)) ?? {
+          kind: "succeeded",
+          visited: state.visited,
         }
-        // `failed` carries no visited list in the port contract; `interrupted` does.
-        return outcome.kind === "failed" ? outcome : { ...outcome, visited };
-      }
-
-      return { kind: "succeeded", visited };
+      );
     },
   };
 }

@@ -82,8 +82,22 @@ export interface EngineRunContext {
     judgeRef: string,
     fromState: JsonValue | undefined,
   ): Promise<JudgeVerdict>;
-  /** Acquire disposable compute. Unavailable means stop, never host fallback. */
-  enterSandbox(nodeId: string, profile: string): Promise<void>;
+  /**
+   * Run `work` inside disposable compute provisioned for `profile`.
+   *
+   * A scope, not a probe: everything the callback does happens inside the
+   * environment, and the environment is released when the callback settles —
+   * including when the walk stops at a gate, so a lease is never held across a
+   * human decision that may take days.
+   *
+   * Fails closed. If the profile cannot be provisioned this rejects and `work`
+   * is never invoked; there is no host fallback.
+   */
+  withSandbox<T>(
+    nodeId: string,
+    profile: string,
+    work: () => Promise<T>,
+  ): Promise<T>;
   /** The value this output node resolved to becomes the run's result. */
   emitOutput(nodeId: string, value: JsonValue): Promise<void>;
 }

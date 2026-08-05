@@ -495,6 +495,71 @@ describe("attack: exploit a failure to fail open", () => {
     expect(forge.dispatched).toEqual([]);
   });
 
+  /**
+   * The sandbox is now a scope the run executes inside, which makes it a new
+   * shape to try a bypass in: isolation is not authorisation, and an effect
+   * that happens to run in a container still reaches a customer.
+   */
+  test("an effect inside a sandbox is refused at compile when nothing gates it", () => {
+    const result = compileWorkflow({
+      ...guarded,
+      id: "attack.sandbox-ungated",
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1" },
+        { id: "isolate", kind: "sandbox", profile: "docker" },
+        { id: "act", kind: "tool", skillRef: "t@1", effect: "prod.write" },
+        { id: "done", kind: "output", schemaRef: "s@1" },
+      ],
+      edges: [
+        { from: "intake", to: "isolate" },
+        { from: "isolate", to: "act" },
+        { from: "act", to: "done" },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.diagnostics[0]?.code).toBe("WF_MISSING_APPROVAL");
+    expect(result.diagnostics[0]?.path).toEqual(["nodes", "act"]);
+  });
+
+  test("an effect inside a sandbox still waits for the approval that names it", async () => {
+    const forge = stack();
+    const artifact = compileToArtifact({
+      ...guarded,
+      id: "attack.sandbox-gated",
+      nodes: [
+        { id: "intake", kind: "input", schemaRef: "s@1" },
+        { id: "isolate", kind: "sandbox", profile: "docker" },
+        { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["act"] },
+        { id: "act", kind: "tool", skillRef: "t@1", effect: "prod.write" },
+        { id: "done", kind: "output", schemaRef: "s@1" },
+      ],
+      edges: [
+        { from: "intake", to: "isolate" },
+        { from: "isolate", to: "gate" },
+        { from: "gate", to: "act" },
+        { from: "act", to: "done" },
+      ],
+    });
+    if (!artifact.ok) throw new Error("must compile");
+
+    const parked = await forge.runtime.start({ artifact: artifact.artifact });
+
+    // The walk reached the effect inside the sandbox and stopped there.
+    expect(parked.status).toBe("AWAITING_APPROVAL");
+    expect(forge.dispatched).toEqual([]);
+
+    const decided = await forge.runtime.decide(
+      parked.pendingApprovalId as string,
+      { kind: "approve" },
+      "operator",
+    );
+
+    expect(decided.status).toBe("SUCCEEDED");
+    expect(forge.dispatched).toEqual(["prod.write"]);
+  });
+
   test("a cancelled run refuses a decision that arrives afterwards", async () => {
     const forge = stack();
     const artifact = compileToArtifact(guarded);

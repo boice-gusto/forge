@@ -22,6 +22,7 @@ import type {
   PolicyPort,
   ProviderPort,
   RunValues,
+  SandboxLease,
   SandboxPort,
   Span,
 } from "@forge/ports";
@@ -250,15 +251,20 @@ function snapshot(values: ValueLedger): Record<string, JsonValue> {
  * One agent turn, reduced to what the data plane keeps: the text it streamed,
  * or nothing if it streamed none. The session is destroyed either way — a
  * throw here is an agent that produced nothing, not one that produced silence.
+ *
+ * `workspacePath` is the sandbox's when the node is inside one (010 §10): the
+ * session runs with the lease's workspace as its cwd, which is what makes the
+ * isolation reach the work rather than merely surround it.
  */
 async function runAgent(
   provider: ProviderPort,
   runId: string,
   promptRef: string,
   span: Span,
+  workspacePath: string,
 ): Promise<string | undefined> {
   const session = await provider.createSession({
-    workspacePath: `/workspace/${runId}`,
+    workspacePath,
     correlationId: runId,
     capabilities: [],
   });
@@ -383,6 +389,13 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     const routes = routeLedgers.get(state.record.runId) as Map<string, string>;
     const values = valueLedgers.get(state.record.runId) as ValueLedger;
 
+    /**
+     * The lease the walk is currently inside, if any. Scoped to this attempt on
+     * purpose: the walk that resumes after an approval enters the sandbox
+     * again, rather than reaching for one that was released at the gate.
+     */
+    let inSandbox: SandboxLease | undefined;
+
     // The engine reads; only the hooks below write. A walk cannot invent a
     // value, and a value cannot be produced twice under one run.
     const view: RunValues = {
@@ -417,6 +430,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
               state.record.runId,
               promptRef,
               span,
+              inSandbox?.workspacePath ?? `/workspace/${state.record.runId}`,
             ),
           );
         },
@@ -508,17 +522,49 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           return chosen;
         },
 
-        enterSandbox: async (nodeId, profile) => {
-          const health = await options.sandbox.health();
-          observability.event("forge.node.sandbox", {
-            runId: state.record.runId,
-            nodeId,
-            profile,
-            available: health.available,
-          });
-          if (!health.available) {
+        /**
+         * The lease spans the scope the engine hands over, and the adapter's
+         * own `finally` ends it. Nothing here can forget to release: the walk
+         * stopping at a gate returns out of `work`, which closes the lease
+         * before the run parks — a container must not sit idle across a
+         * decision that may take days (006 §"Sandbox during long HITL waits").
+         */
+        withSandbox: async (nodeId, profile, work) => {
+          let acquired = false;
+          try {
+            return await options.sandbox.withSandbox(
+              { profile, correlationId: state.record.runId },
+              async (lease) => {
+                acquired = true;
+                observability.event("forge.node.sandbox", {
+                  runId: state.record.runId,
+                  nodeId,
+                  profile,
+                  sandboxId: lease.sandboxId,
+                  available: true,
+                });
+                const outer = inSandbox;
+                inSandbox = lease;
+                try {
+                  return await work();
+                } finally {
+                  inSandbox = outer;
+                }
+              },
+            );
+          } catch (error) {
+            if (acquired) throw error;
+            // The refusal is the runtime's to word, not the adapter's: whatever
+            // a backend says about its socket, what the run must report is that
+            // the isolation it declared did not happen and it stopped there.
+            observability.event("forge.node.sandbox", {
+              runId: state.record.runId,
+              nodeId,
+              profile,
+              available: false,
+            });
             throw new Error(
-              `Required sandbox profile '${profile}' is unavailable; host execution is not permitted.`,
+              `Sandbox profile '${profile}' could not be provisioned for node '${nodeId}'; host execution is not permitted (${error instanceof Error ? error.message : String(error)}).`,
             );
           }
         },

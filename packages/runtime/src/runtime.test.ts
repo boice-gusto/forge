@@ -722,27 +722,39 @@ function reviewHarness(opts: {
   const ids = createSequentialIds();
   const clock = { now: () => new Date("2026-08-04T00:00:00.000Z") };
 
+  const mock = createMockProvider({
+    providerId: "mock",
+    events: opts.providerFails
+      ? [
+          {
+            type: "error",
+            code: "PROVIDER_TIMEOUT",
+            message: "timed out",
+            retryable: true,
+          },
+        ]
+      : [{ type: "completed" }],
+  });
+  /** Where each agent session was told to work; the sandbox is visible here. */
+  const workspaces: string[] = [];
+  const provider: ProviderPort = {
+    ...mock,
+    createSession: async (input) => {
+      workspaces.push(input.workspacePath);
+      return mock.createSession(input);
+    },
+  };
+  const sandbox = createMemorySandbox({
+    profiles: ["docker"],
+    available: opts.sandboxAvailable ?? true,
+  });
+
   const runtime = createRuntime({
     engine: createMemoryGraphEngine(),
     policy: createMemoryPolicy({ rules: REQUIRE_APPROVAL, grants: [] }),
     approvals: createMemoryApprovalStore(clock, ids),
-    provider: createMockProvider({
-      providerId: "mock",
-      events: opts.providerFails
-        ? [
-            {
-              type: "error",
-              code: "PROVIDER_TIMEOUT",
-              message: "timed out",
-              retryable: true,
-            },
-          ]
-        : [{ type: "completed" }],
-    }),
-    sandbox: createMemorySandbox({
-      profiles: ["docker"],
-      available: opts.sandboxAvailable ?? true,
-    }),
+    provider,
+    sandbox,
     observability,
     panel: { standing: ["writer"], summonable: ["security"], quorum: 0.5 },
     votesFor: () => opts.votes ?? {},
@@ -759,7 +771,7 @@ function reviewHarness(opts: {
     environment: "production",
     approvalTtlMs: 1000,
   });
-  return { runtime, dispatched, observability };
+  return { runtime, dispatched, observability, sandbox, workspaces };
 }
 
 describe("agent, judge and sandbox nodes are live", () => {
@@ -1828,5 +1840,123 @@ describe("run data never reaches telemetry", () => {
     const serialised = JSON.stringify(recorded);
     expect(serialised).not.toContain("ada@example.test");
     expect(serialised).not.toContain("123-45-6789");
+  });
+});
+
+/**
+ * 010 §10 makes the runtime the owner of the sandbox lifecycle, and the point
+ * of owning it is that the work happens inside. Until the lease spanned the
+ * walk, a workflow declaring a sandbox provisioned one, released it, and then
+ * ran every step on the host.
+ */
+describe("a sandbox is a scope the run executes inside", () => {
+  /** The sandboxes a run entered, in order, out of its own telemetry. */
+  function entered(
+    observability: ReturnType<typeof createMemoryObservability>,
+  ): readonly string[] {
+    return observability.events
+      .filter((event) => event.name === "forge.node.sandbox")
+      .map((event) => event.attributes.sandboxId)
+      .filter((id): id is string => typeof id === "string");
+  }
+
+  test("an agent inside the scope works in the lease's workspace, not the host's", async () => {
+    const { runtime, workspaces } = reviewHarness({
+      votes: { writer: "pass" },
+    });
+
+    await runtime.start({ artifact: reviewedArtifact() });
+
+    // The lease's own workspace. `/workspace/<runId>` here would mean the
+    // session ran beside the sandbox rather than in it.
+    expect(workspaces).toEqual(["/workspace"]);
+  });
+
+  test("the lease is released before the run parks at its gate", async () => {
+    const { runtime, sandbox, observability } = reviewHarness({
+      votes: { writer: "pass" },
+    });
+
+    const run = await runtime.start({ artifact: reviewedArtifact() });
+
+    expect(run.status).toBe("AWAITING_APPROVAL");
+    const leases = entered(observability);
+    expect(leases).toHaveLength(1);
+    // A container must not sit idle across a decision that may take days.
+    expect(sandbox.isReleased(leases[0] as string)).toBe(true);
+  });
+
+  test("resuming takes a new lease rather than one held across the decision", async () => {
+    const { runtime, sandbox, dispatched, observability } = reviewHarness({
+      votes: { writer: "pass" },
+    });
+    const parked = await runtime.start({ artifact: reviewedArtifact() });
+
+    const run = await runtime.decide(
+      parked.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(run.status).toBe("SUCCEEDED");
+    // Still exactly once, though the walk entered a sandbox twice.
+    expect(dispatched).toEqual(["slack.post"]);
+    const leases = entered(observability);
+    expect(leases).toHaveLength(2);
+    expect(new Set(leases).size).toBe(2);
+    for (const lease of leases) expect(sandbox.isReleased(lease)).toBe(true);
+  });
+
+  test("a value pinned inside a sandbox is not recomputed when the run re-enters one", async () => {
+    const { runtime, workspaces } = reviewHarness({
+      votes: { writer: "pass" },
+    });
+    const parked = await runtime.start({ artifact: reviewedArtifact() });
+
+    await runtime.decide(
+      parked.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    // One session, though two leases: the resumed walk replayed the agent's
+    // pinned value rather than asking the provider again inside a fresh
+    // sandbox, so the action performed is the action that was approved.
+    expect(workspaces).toEqual(["/workspace"]);
+  });
+
+  test("a failure inside the scope still releases every lease the run took", async () => {
+    const { runtime, sandbox, observability } = reviewHarness({
+      votes: { writer: "pass" },
+      providerFails: true,
+    });
+
+    const run = await runtime.start({ artifact: reviewedArtifact() });
+
+    expect(run.status).toBe("FAILED");
+    // One per attempt: the retry budget is 3, and each attempt re-enters.
+    const leases = entered(observability);
+    expect(leases).toHaveLength(3);
+    for (const lease of leases) expect(sandbox.isReleased(lease)).toBe(true);
+  });
+
+  test("a sandbox that cannot be provisioned runs nothing inside it", async () => {
+    const { runtime, workspaces, dispatched, observability } = reviewHarness({
+      votes: { writer: "pass" },
+      sandboxAvailable: false,
+    });
+
+    const run = await runtime.start({ artifact: reviewedArtifact() });
+
+    expect(run.status).toBe("FAILED");
+    // Not one host session, not one effect: the scope never opened.
+    expect(workspaces).toEqual([]);
+    expect(dispatched).toEqual([]);
+    expect(entered(observability)).toEqual([]);
+    expect(
+      observability.events.filter(
+        (event) => event.name === "forge.node.sandbox",
+      )[0]?.attributes,
+    ).toMatchObject({ available: false, profile: "docker" });
   });
 });

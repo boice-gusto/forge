@@ -60,6 +60,13 @@ export interface LocalStackOptions {
   /** Set false to prove a required sandbox failing closed. */
   readonly sandboxAvailable?: boolean;
   /**
+   * Profiles this deployment can provision. A workflow naming one that is
+   * absent stops rather than running with less isolation than it declared, so
+   * a host that serves a company must declare what that company's workflows
+   * ask for.
+   */
+  readonly sandboxProfiles?: readonly string[];
+  /**
    * Shared so that a host building one stack per run does not mint `run_1`
    * twice. Two runs with the same id are one run as far as any index is
    * concerned, and the second silently displaces the first.
@@ -117,7 +124,7 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
       events: [{ type: "completed" }],
     }),
     sandbox: createMemorySandbox({
-      profiles: ["docker"],
+      profiles: options.sandboxProfiles ?? ["docker"],
       available: sandboxAvailable,
     }),
     observability,
