@@ -1,160 +1,36 @@
+import {
+  RoleSchema,
+  WorkflowEdgeSchema,
+  WorkflowNodeSchema,
+} from "@forge/types";
 import { z } from "zod";
 
-const NodeIdSchema = z.string().min(1);
-const SchemaRefSchema = z.string().min(1);
-
-const RetryPolicySchema = z
-  .object({
-    maxAttempts: z.number().int().min(1).max(10),
-    backoff: z.enum(["fixed", "exponential"]).default("fixed"),
-    retryableErrors: z.array(z.string().min(1)).default([]),
-  })
-  .strict();
-
-/** What a judge can conclude (007 §10). Mirrors `JudgeVerdict` in ports. */
-const JudgeVerdictSchema = z.enum(["pass", "fail", "review"]);
-
-export const IrNodeSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      id: NodeIdSchema,
-      kind: z.literal("input"),
-      schemaRef: SchemaRefSchema,
-    })
-    .strict(),
-  z
-    .object({
-      id: NodeIdSchema,
-      kind: z.literal("output"),
-      schemaRef: SchemaRefSchema,
-    })
-    .strict(),
-  z
-    .object({
-      id: NodeIdSchema,
-      kind: z.literal("agent"),
-      promptRef: z.string().min(1),
-      role: z.string().min(1).optional(),
-      retry: RetryPolicySchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      id: NodeIdSchema,
-      kind: z.literal("judge"),
-      judgeRef: z.string().min(1),
-      // Verdict arms (007 §10). Each declared verdict must be carried by an
-      // outgoing edge labelled with it, and every outgoing edge must carry one
-      // of them. Omitting the field keeps the fail-closed default: only `pass`
-      // continues. A verdict with no arm stops the run either way — it never
-      // falls through onto the pass path.
-      verdicts: z.array(JudgeVerdictSchema).min(1).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      id: NodeIdSchema,
-      kind: z.literal("tool"),
-      skillRef: z.string().min(1),
-      role: z.string().min(1).optional(),
-      retry: RetryPolicySchema.optional(),
-      // Naming an effect makes this node a side-effect carrier, which the
-      // compiler then requires an approval gate for.
-      effect: z.string().min(1).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      id: NodeIdSchema,
-      kind: z.literal("approval"),
-      gateSchemaRef: SchemaRefSchema,
-      // The node ids this approval authorises. An approval never authorises
-      // an effect it does not name, mirroring the runtime rule that a
-      // decision binds to a specific action.
-      gates: z.array(NodeIdSchema).default([]),
-    })
-    .strict(),
-  z
-    .object({
-      id: NodeIdSchema,
-      kind: z.literal("transform"),
-      transformRef: z.string().min(1),
-    })
-    .strict(),
-  z
-    .object({
-      id: NodeIdSchema,
-      kind: z.literal("branch"),
-      // Every outgoing edge must carry one of these, and every one of these
-      // must be carried by an outgoing edge (007 §11 WF_UNTYPED_EDGE).
-      conditionIds: z.array(z.string().min(1)).min(1),
-    })
-    .strict(),
-  z
-    .object({
-      id: NodeIdSchema,
-      kind: z.literal("parallel"),
-      branches: z.array(NodeIdSchema).min(2),
-    })
-    .strict(),
-  z
-    .object({
-      id: NodeIdSchema,
-      kind: z.literal("policy_check"),
-      // Asserted against the policy closure before a privileged step.
-      capability: z.string().min(1),
-    })
-    .strict(),
-  z
-    .object({
-      id: NodeIdSchema,
-      kind: z.literal("sandbox"),
-      profile: z.string().min(1),
-    })
-    .strict(),
-]);
-
 /**
- * A role is a versioned asset with up to three faces (ADR-009): it produces
- * artifacts, it reviews through a lens, and it may map to a human approver
- * group. Core owns this contract and nothing more — the roster that fills it
- * is a company concern and lives in a company package.
+ * Forge IR.
+ *
+ * The node and edge taxonomy is the shape companies author, so it lives in
+ * `@forge/types` where a public authoring package can reach it. What is
+ * internal is the compiler's own product: `ForgeIr` is a *compiled* workflow —
+ * validated, ordered, and about to be fingerprinted — and nothing outside the
+ * application layer constructs one.
+ *
+ * The IR names are kept as the internal vocabulary so `@forge/compiler`,
+ * `@forge/runtime` and the engine adapters keep reading in IR terms.
  */
-export const RoleSchema = z
-  .object({
-    version: z.string().regex(/^\d+\.\d+\.\d+$/),
-    capabilities: z
-      .object({
-        requires: z.array(z.string().min(1)).default([]),
-        forbids: z.array(z.string().min(1)).default([]),
-      })
-      .strict()
-      .default({ requires: [], forbids: [] }),
-    review: z
-      .object({
-        weight: z.number().positive().default(1),
-        blocking: z.boolean().default(false),
-      })
-      .strict()
-      .optional(),
-    /** Specialty roles join a panel only when their predicate matches. */
-    summon: z
-      .object({ anyPathMatches: z.array(z.string().min(1)).min(1) })
-      .strict()
-      .optional(),
-  })
-  .strict();
 
-export type Role = z.infer<typeof RoleSchema>;
-export type RetryPolicy = z.infer<typeof RetryPolicySchema>;
+export {
+  type RetryPolicy,
+  type Role,
+  RoleSchema,
+  type WorkflowSource,
+  WorkflowSourceSchema,
+} from "@forge/types";
 
-export const IrEdgeSchema = z
-  .object({
-    from: NodeIdSchema,
-    to: NodeIdSchema,
-    conditionId: z.string().min(1).optional(),
-  })
-  .strict();
+export const IrNodeSchema = WorkflowNodeSchema;
+export const IrEdgeSchema = WorkflowEdgeSchema;
+
+export type IrNode = z.infer<typeof IrNodeSchema>;
+export type IrEdge = z.infer<typeof IrEdgeSchema>;
 
 export const ForgeIrSchema = z
   .object({
@@ -170,20 +46,4 @@ export const ForgeIrSchema = z
   })
   .strict();
 
-export const WorkflowSourceSchema = z
-  .object({
-    id: z.string().min(1),
-    version: z.string().regex(/^\d+\.\d+\.\d+$/),
-    sideEffects: z.array(z.string().min(1)).default([]),
-    roles: z.record(z.string().min(1), RoleSchema).default({}),
-    /** The capabilities policy grants, so closure is checkable statically. */
-    grantedCapabilities: z.array(z.string().min(1)).default([]),
-    nodes: z.array(IrNodeSchema).min(2),
-    edges: z.array(IrEdgeSchema),
-  })
-  .strict();
-
-export type IrNode = z.infer<typeof IrNodeSchema>;
-export type IrEdge = z.infer<typeof IrEdgeSchema>;
 export type ForgeIr = z.infer<typeof ForgeIrSchema>;
-export type WorkflowSource = z.infer<typeof WorkflowSourceSchema>;

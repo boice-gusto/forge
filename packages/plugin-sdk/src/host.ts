@@ -6,6 +6,7 @@ import {
   type AdapterBinding,
   AdapterBindingSchema,
   type PluginManifest,
+  type PluginManifestInput,
   PluginManifestSchema,
   type PolicyPack,
   PolicyPackSchema,
@@ -43,7 +44,12 @@ export interface PluginContext {
 }
 
 export interface ForgePlugin {
-  readonly manifest: PluginManifest;
+  /**
+   * The authoring shape: a plugin that claims no capabilities says so by
+   * omission rather than by writing `providedCapabilities: []`. The host reads
+   * the parsed manifest, never this one.
+   */
+  readonly manifest: PluginManifestInput;
   register(context: PluginContext): void | Promise<void>;
 }
 

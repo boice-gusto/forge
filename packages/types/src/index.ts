@@ -7,3 +7,18 @@ export {
   type Success,
   success,
 } from "./result.js";
+export {
+  type RetryPolicy,
+  type Role,
+  type RoleInput,
+  RoleSchema,
+  type WorkflowEdge,
+  type WorkflowEdgeInput,
+  WorkflowEdgeSchema,
+  type WorkflowNode,
+  type WorkflowNodeInput,
+  WorkflowNodeSchema,
+  type WorkflowSource,
+  type WorkflowSourceInput,
+  WorkflowSourceSchema,
+} from "./workflow.js";

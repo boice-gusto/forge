@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "dependencies": {
+    "@forge/manifest": "workspace:*",
     "@forge/plugin-sdk": "workspace:*"
   },
   "scripts": {

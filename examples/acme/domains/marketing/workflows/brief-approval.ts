@@ -1,11 +1,16 @@
+import { defineWorkflow } from "@forge/manifest";
+
 /**
  * Acme marketing — brief approval.
  *
  * A generic company workflow: draft copy, then publish externally behind a
- * human gate. No Acme-specific machinery, and no Forge internals — this file
- * imports nothing, because a workflow is a declaration.
+ * human gate. No Acme-specific machinery, and no Forge internals — the one
+ * import is the public authoring surface, which resolves this workflow's own
+ * references as it is written: an edge to a node that does not exist, a gate
+ * naming a node that does not exist, an undeclared effect, or an unknown role
+ * is a type error here rather than a diagnostic after a compile.
  */
-export const briefApproval = {
+export const briefApproval = defineWorkflow({
   id: "acme.marketing.brief-approval",
   version: "1.0.0",
   sideEffects: ["slack.post"],
@@ -49,4 +54,4 @@ export const briefApproval = {
     { from: "gate", to: "publish" },
     { from: "publish", to: "result" },
   ],
-} as const;
+});
