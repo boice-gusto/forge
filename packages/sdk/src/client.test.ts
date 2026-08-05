@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { createForgeClient } from "./client.js";
+import { createForgeClient, createForgeSessionClient } from "./client.js";
 
 /**
  * A fetch double that records requests, so the client's contract can be
@@ -290,5 +290,119 @@ describe("cross-run and history queries", () => {
 
     if (!result.ok) throw new Error("unreachable");
     expect(result.value[0]?.effectHash).toBe("abc123");
+  });
+});
+
+/**
+ * The browser's credential is the session cookie, which the SDK never sees and
+ * never sets: it travels with a same-origin request on its own. What the SDK
+ * has to carry is the CSRF token, because that is the part another origin
+ * cannot obtain.
+ */
+describe("a browser session, rather than a bearer token", () => {
+  test("a client with no token sends no Authorization header at all", async () => {
+    const { fetchLike, calls } = stubFetch(() => ({ status: 200, body: {} }));
+    const forge = createForgeClient({
+      baseUrl: "http://localhost:3100",
+      csrfToken: "csrf-1",
+      fetch: fetchLike,
+    });
+    await forge.getRun("run_1");
+
+    expect(calls[0]?.init.headers).not.toHaveProperty("authorization");
+    expect(calls[0]?.init.headers).toMatchObject({ "x-forge-csrf": "csrf-1" });
+  });
+
+  test("the CSRF token rides on unsafe calls, which are the ones that matter", async () => {
+    const { fetchLike, calls } = stubFetch(() => ({ status: 200, body: {} }));
+    const forge = createForgeClient({
+      baseUrl: "http://localhost:3100",
+      csrfToken: "csrf-1",
+      fetch: fetchLike,
+    });
+    await forge.decide("run_1", "approval_1", { kind: "approve" });
+
+    expect(calls[0]?.init.headers).toMatchObject({ "x-forge-csrf": "csrf-1" });
+  });
+
+  test("a bearer client sends no CSRF header, having no ambient credential", async () => {
+    const { forge, calls } = client(() => ({ status: 200, body: {} }));
+    await forge.getRun("run_1");
+
+    expect(calls[0]?.init.headers).not.toHaveProperty("x-forge-csrf");
+  });
+});
+
+describe("establishing a session", () => {
+  const sessions = (
+    responder: (
+      url: string,
+      init: RequestInit,
+    ) => { status: number; body: unknown },
+  ) => {
+    const { fetchLike, calls } = stubFetch(responder);
+    return {
+      forge: createForgeSessionClient({
+        baseUrl: "http://localhost:3100",
+        fetch: fetchLike,
+      }),
+      calls,
+    };
+  };
+
+  const SESSION = {
+    subject: "sam@example.test",
+    roles: ["role-a"],
+    expiresAt: "2026-01-01T20:00:00.000Z",
+    csrfToken: "csrf-1",
+  };
+
+  test("signing in posts the credential untouched and returns the resolved principal", async () => {
+    const { forge, calls } = sessions(() => ({ status: 201, body: SESSION }));
+    const result = await forge.signIn({
+      kind: "operator-secret",
+      value: "sam-cred",
+    });
+
+    expect(calls[0]?.url).toBe("http://localhost:3100/v1/auth/session");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+      credential: { kind: "operator-secret", value: "sam-cred" },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    // Roles come back from the server. The client never asserts its own.
+    expect(result.value.roles).toEqual(["role-a"]);
+  });
+
+  test("a refused credential is a result, not a thrown error", async () => {
+    const { forge } = sessions(() => ({
+      status: 401,
+      body: { status: "unauthorized" },
+    }));
+    const result = await forge.signIn({ kind: "operator-secret", value: "no" });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.status).toBe(401);
+  });
+
+  test("the current session is read with no credential of its own", async () => {
+    const { forge, calls } = sessions(() => ({ status: 200, body: SESSION }));
+    await forge.current();
+
+    expect(calls[0]?.init.method).toBe("GET");
+    expect(calls[0]?.init.headers).not.toHaveProperty("authorization");
+  });
+
+  test("signing out is an unsafe call and carries the CSRF token", async () => {
+    const { forge, calls } = sessions(() => ({
+      status: 200,
+      body: { status: "signed_out" },
+    }));
+    const result = await forge.signOut("csrf-1");
+
+    expect(calls[0]?.init.method).toBe("DELETE");
+    expect(calls[0]?.init.headers).toMatchObject({ "x-forge-csrf": "csrf-1" });
+    expect(result.ok).toBe(true);
   });
 });

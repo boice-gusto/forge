@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
 
+import { createDevelopmentIdentity } from "./identity-development.js";
 import { createApiApp } from "./main.js";
+
+const identity = () =>
+  createDevelopmentIdentity([
+    { subject: "operator", secret: "test-token", roles: [] },
+  ]);
 
 describe("Forge API health endpoints", () => {
   test("keeps liveness independent of degraded dependencies and attaches build headers", async () => {
@@ -11,7 +17,7 @@ describe("Forge API health endpoints", () => {
         buildTime: "2026-08-02T00:00:00.000Z",
       },
       dependencies: { queue: "unavailable" },
-      adminToken: "test-token",
+      identity: identity(),
     });
 
     const response = await app.inject({ method: "GET", url: "/health/live" });
@@ -30,7 +36,7 @@ describe("Forge API health endpoints", () => {
         buildTime: "2026-08-02T00:00:00.000Z",
       },
       dependencies: { queue: "unavailable" },
-      adminToken: "test-token",
+      identity: identity(),
     });
 
     const response = await app.inject({ method: "GET", url: "/health/ready" });
@@ -39,7 +45,7 @@ describe("Forge API health endpoints", () => {
     expect(response.json()).toMatchObject({ status: "unready" });
   });
 
-  test("protects detailed health with an admin bearer token", async () => {
+  test("protects detailed health with an authenticated caller", async () => {
     const app = createApiApp({
       build: {
         version: "0.1.0",
@@ -47,7 +53,7 @@ describe("Forge API health endpoints", () => {
         buildTime: "2026-08-02T00:00:00.000Z",
       },
       dependencies: { queue: "healthy" },
-      adminToken: "test-token",
+      identity: identity(),
     });
 
     const denied = await app.inject({ method: "GET", url: "/health" });

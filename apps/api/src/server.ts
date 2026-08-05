@@ -1,3 +1,10 @@
+import { ANY_ROLE } from "@forge/ports";
+
+import {
+  createDevelopmentIdentity,
+  type DevelopmentOperator,
+  parseOperatorDirectory,
+} from "./identity-development.js";
 import { startApi } from "./main.js";
 
 /**
@@ -12,6 +19,77 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
   throw new Error(`PORT must be a valid port number; got ${process.env.PORT}.`);
 }
 
+/**
+ * This binary ships one identity provider and it is the development one, so it
+ * refuses to be the thing it is not. A production deployment binds a real IdP
+ * to `IdentityPort` and starts from its own entry point; until then, running
+ * this with `NODE_ENV=production` would be a control plane whose authentication
+ * is a list of preshared strings in an environment variable.
+ */
+if (process.env.NODE_ENV === "production") {
+  throw new Error(
+    "apps/api ships only the development identity provider. Bind a real IdP to IdentityPort before running in production.",
+  );
+}
+
+/** The zero-configuration local credential. Not a secret; it protects nothing. */
+const LOCAL_CREDENTIAL = "local-development-only";
+
+const warn = (message: string): void => {
+  process.stderr.write(`[forge-api] ${message}\n`);
+};
+
+const roleList = (spec: string): readonly string[] =>
+  spec
+    .split(",")
+    .map((role) => role.trim())
+    .filter((role) => role !== "");
+
+/**
+ * The operator directory this process authenticates against.
+ *
+ * `FORGE_OPERATORS` is the real path: several operators, each with their own
+ * credential and their own roles, which is what makes an approval inbox mean
+ * anything and what stops two roles deciding each other's gates.
+ *
+ * The single-operator paths below are the documented stopgap, and roles are
+ * never inferred for them — an operator holds what the deployment said they
+ * hold. `ANY_ROLE` appears exactly once, in the zero-configuration case where
+ * there is one operator and no directory at all, and it is announced.
+ */
+function directory(): readonly DevelopmentOperator[] {
+  const spec = process.env.FORGE_OPERATORS;
+  if (spec !== undefined) return parseOperatorDirectory(spec);
+
+  const credential = process.env.FORGE_ADMIN_TOKEN;
+  if (credential === undefined) {
+    warn(
+      `No FORGE_OPERATORS and no FORGE_ADMIN_TOKEN. Starting with one local operator holding every role (${ANY_ROLE}), credential "${LOCAL_CREDENTIAL}". This is a development stopgap, not authentication.`,
+    );
+    return [
+      {
+        subject: "local-operator",
+        secret: LOCAL_CREDENTIAL,
+        roles: [ANY_ROLE],
+      },
+    ];
+  }
+
+  const roles = roleList(process.env.FORGE_ROLES ?? "");
+  if (roles.length === 0) {
+    warn(
+      "FORGE_ADMIN_TOKEN is set but FORGE_ROLES is not, so this operator holds no roles and will see and decide only gates that name nobody. Set FORGE_ROLES, or FORGE_OPERATORS for a directory.",
+    );
+  }
+  return [
+    {
+      subject: process.env.FORGE_PRINCIPAL ?? "local-operator",
+      secret: credential,
+      roles,
+    },
+  ];
+}
+
 await startApi(
   {
     build: {
@@ -20,20 +98,13 @@ await startApi(
       buildTime: process.env.FORGE_BUILD_TIME ?? new Date().toISOString(),
     },
     dependencies: { queue: "healthy", persistence: "healthy" },
-    adminToken: process.env.FORGE_ADMIN_TOKEN ?? "local-development-only",
-    ...(process.env.FORGE_PRINCIPAL === undefined
+    identity: createDevelopmentIdentity(directory()),
+    // What this deployment can actually isolate. A workflow naming a profile
+    // that is absent stops rather than running with less isolation than it
+    // declared, so a host serving a company declares that company's profiles.
+    ...(process.env.FORGE_SANDBOX_PROFILES === undefined
       ? {}
-      : { principal: process.env.FORGE_PRINCIPAL }),
-    // Roles the token holds. Unset keeps the single-operator default of every
-    // role; setting it is how a deployment — or a company's acceptance suite —
-    // narrows the approval inbox to real membership.
-    ...(process.env.FORGE_ROLES === undefined
-      ? {}
-      : {
-          roles: process.env.FORGE_ROLES.split(",")
-            .map((role) => role.trim())
-            .filter(Boolean),
-        }),
+      : { sandboxProfiles: roleList(process.env.FORGE_SANDBOX_PROFILES) }),
   },
   port,
 );

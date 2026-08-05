@@ -85,13 +85,25 @@ GET  /v1/runs/:runId/approvals                              → { pending, appro
 GET  /v1/runs/:runId/events                                 → the run's forge.* stream
 GET  /v1/approvals                                          → the global inbox, scoped to the caller
 POST /v1/runs/:runId/approvals/:approvalId/decision         → approve | reject | edit | timeout
+POST /v1/auth/session                                       → establish a cookie session (UI)
+GET  /v1/auth/session                                       → who am I
+DELETE /v1/auth/session                                     → sign out
 ```
 
-A gate is in your inbox if it names a role you hold, or names nobody. A policy
-rule's `approvers` names **roles**, not people, so membership is resolved at the
-authenticated boundary and never read from the request. With no directory to
-ask, one shared admin token holds `ANY_ROLE` — hiding a gate from the only
-operator there is would stall the run behind a decision nobody could see.
+A caller presents a credential that the bound `IdentityPort` resolves to a
+subject and a set of roles. Two transports, one identity: `Authorization:
+Bearer` for programmatic callers, and an `HttpOnly; SameSite=Strict` cookie for
+the UI — cookies are ambient authority, so every unsafe cookie-borne request
+must also carry `X-Forge-CSRF`.
+
+A gate is in your inbox **and decidable by you** if it names a role you hold, or
+names nobody. Both halves matter: until the decision route checked authority,
+the inbox was only a filtered *view*, and any authenticated caller could decide
+any gate by naming its id and be recorded as the person who did.
+
+`apps/api` ships only the development identity provider and refuses to start
+with `NODE_ENV=production`. A real deployment binds an IdP to `IdentityPort`;
+nothing else moves.
 
 Authorisation is `Bearer <admin token>`. **The principal comes from the authenticated
 caller, never from the body.** Do not add a `principal` field to a request payload —
@@ -139,6 +151,11 @@ change pass, that is the signal to stop.
   verdict ledger pins it, so the route cannot change underneath a decision a human
   already made. Without it a run could report SUCCEEDED having dispatched nothing,
   after an operator explicitly approved the effect.
+- **A sandbox is a scope, not a flag.** A `sandbox` node leases an environment
+  for the nodes reachable from it, and the lease is released when that tail
+  stops — including at a gate, so nothing is held across a human decision that
+  may take days. Nodes the sandbox does not reach run outside it: they never
+  declared isolation.
 - **Everything fails closed.** Policy evaluator errors deny. A judge that errors,
   returns a verdict it declared no arm for, or has no votes stops the run. An empty
   panel is never a pass. An unavailable sandbox stops the walk — there is no host

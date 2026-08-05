@@ -1,35 +1,43 @@
 import { randomUUID } from "node:crypto";
 
-import { ANY_ROLE } from "@forge/ports";
 import Fastify, { type FastifyInstance } from "fastify";
 
+import { createRequestAuthenticator, registerAuthRoutes } from "./auth.js";
 import {
   type BuildInfo,
   createHealthSnapshot,
   type DependencyStatus,
 } from "./health.js";
+import {
+  createSessionStore,
+  type IdentityPort,
+  type SessionStore,
+} from "./identity.js";
 import { registerRunRoutes } from "./runs.js";
 
 export interface ApiOptions {
   readonly build: BuildInfo;
   readonly dependencies: Readonly<Record<string, DependencyStatus>>;
-  readonly adminToken: string;
-  /** Principal attributed to an authenticated caller. */
-  readonly principal?: string;
-  /** Scopes the approval inbox: a rule's `approvers` names roles, not people. */
-  readonly roles?: readonly string[];
+  /**
+   * The bound identity provider. There is no default and no fallback: a
+   * control plane that cannot tell two callers apart has no boundary, and the
+   * previous shared-token comparison was that in all but name — every caller
+   * was the same person, holding every role.
+   */
+  readonly identity: IdentityPort;
+  /** Sandbox profiles this deployment can provision. */
+  readonly sandboxProfiles?: readonly string[];
+  /** Overridable so a suite can age a session out without waiting for one. */
+  readonly sessions?: SessionStore;
 }
-
-/**
- * One shared admin token is, in effect, every role: one operator and no
- * directory to ask. Stated rather than left as a matching accident, because it
- * is the assumption an IdP replaces (012 §8), narrowing the inbox to real
- * membership.
- */
-const ALL_ROLES = [ANY_ROLE] as const;
 
 export function createApiApp(options: ApiOptions): FastifyInstance {
   const app = Fastify({ logger: false });
+  const sessions = options.sessions ?? createSessionStore();
+  const authenticate = createRequestAuthenticator({
+    identity: options.identity,
+    sessions,
+  });
   const snapshot = () =>
     createHealthSnapshot("forge-api", options.build, options.dependencies);
 
@@ -49,19 +57,18 @@ export function createApiApp(options: ApiOptions): FastifyInstance {
     return reply.code(health.status === "healthy" ? 200 : 503).send(health);
   });
   app.get("/health", async (request, reply) => {
-    if (request.headers.authorization !== `Bearer ${options.adminToken}`) {
+    if ((await authenticate(request)) === undefined) {
       return reply.code(401).send({ status: "unauthorized" });
     }
     return reply.send(snapshot());
   });
 
+  registerAuthRoutes(app, { identity: options.identity, sessions });
   registerRunRoutes(app, {
-    rolesFor: () => options.roles ?? ALL_ROLES,
-    // The boundary decides who is acting. A body field never does.
-    principalFor: (authorization) =>
-      authorization === `Bearer ${options.adminToken}`
-        ? (options.principal ?? "local-operator")
-        : undefined,
+    authenticate,
+    ...(options.sandboxProfiles === undefined
+      ? {}
+      : { sandboxProfiles: options.sandboxProfiles }),
   });
 
   return app;

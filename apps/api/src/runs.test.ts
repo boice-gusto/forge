@@ -1,8 +1,12 @@
 import { readFileSync } from "node:fs";
 import { createLocalStack } from "@forge/composition";
+import { ANY_ROLE } from "@forge/ports";
 import Fastify from "fastify";
 import { describe, expect, test } from "vitest";
 
+import { createRequestAuthenticator } from "./auth.js";
+import { createSessionStore } from "./identity.js";
+import { createDevelopmentIdentity } from "./identity-development.js";
 import { createApiApp } from "./main.js";
 import { registerRunRoutes } from "./runs.js";
 
@@ -23,28 +27,28 @@ const fixture = JSON.parse(
   policy: { rules: unknown[]; grants: string[] };
 };
 
-function app() {
-  return createApiApp({
-    build: { version: "0.1.0", gitSha: "test", buildTime: "2026-01-01" },
-    dependencies: { queue: "healthy", persistence: "healthy" },
-    adminToken: BEARER,
-    principal: "marketing-lead",
-  });
-}
-
 /**
- * An API whose caller holds exactly these roles, standing in for a directory.
- * The default `app()` grants every role, which is the right stance for one
- * shared admin token but the wrong one for testing that scoping works.
+ * An API whose directory says exactly this. Roles are never inferred: an
+ * operator holds what the identity provider resolved and nothing more, which
+ * is the whole difference from one shared token standing for every role.
  */
 function appWithRoles(roles: readonly string[]) {
   return createApiApp({
     build: { version: "0.1.0", gitSha: "test", buildTime: "2026-01-01" },
     dependencies: { queue: "healthy", persistence: "healthy" },
-    adminToken: BEARER,
-    principal: "marketing-lead",
-    roles,
+    identity: createDevelopmentIdentity([
+      { subject: "marketing-lead", secret: BEARER, roles },
+    ]),
   });
+}
+
+/**
+ * The single-operator deployment: one credential, every role, stated rather
+ * than assumed. Most of the suite below is about run mechanics rather than
+ * authority, so it uses this and says why the caller can decide anything.
+ */
+function app() {
+  return appWithRoles([ANY_ROLE]);
 }
 
 const startBody = fixture;
@@ -58,6 +62,20 @@ function gatedFor(approver: string) {
       rules: fixture.policy.rules.map((rule) => ({
         ...(rule as Record<string, unknown>),
         approvers: [approver],
+      })),
+    },
+  };
+}
+
+/** The same workflow, gated but naming nobody: open to any operator. */
+function gatedForNobody() {
+  return {
+    ...fixture,
+    policy: {
+      ...fixture.policy,
+      rules: fixture.policy.rules.map((rule) => ({
+        ...(rule as Record<string, unknown>),
+        approvers: [],
       })),
     },
   };
@@ -519,10 +537,11 @@ describe("the operator can see the estate without knowing a run id first", () =>
     ]);
   });
 
-  test("with no directory to ask, one admin token sees every gate", async () => {
-    // The deployment stance behind `ALL_ROLES`: hiding a gate from the only
-    // operator there is would stall the run behind a decision nobody can see.
-    const server = app();
+  test("an operator explicitly granted every role sees every gate", async () => {
+    // The single-operator deployment, now something a directory says rather
+    // than something the API assumes: hiding a gate from the only operator
+    // there is would stall the run behind a decision nobody can see.
+    const server = appWithRoles([ANY_ROLE]);
     const mine = await startRun(server);
     const theirs = await startRun(server, gatedFor("finance-lead"));
 
@@ -716,8 +735,12 @@ describe("an event family this build does not know is served, not dropped", () =
     const stack = createLocalStack();
     const server = Fastify({ logger: false });
     registerRunRoutes(server, {
-      principalFor: (authorization) =>
-        authorization === `Bearer ${BEARER}` ? "marketing-lead" : undefined,
+      authenticate: createRequestAuthenticator({
+        identity: createDevelopmentIdentity([
+          { subject: "marketing-lead", secret: BEARER, roles: [ANY_ROLE] },
+        ]),
+        sessions: createSessionStore(),
+      }),
       stack,
     });
 
@@ -808,6 +831,176 @@ describe("a run carries the payload it was started with", () => {
   });
 });
 
+/**
+ * The acceptance this unblocks: two operators, two roles, and neither able to
+ * decide the other's gate. Until now every caller held `ANY_ROLE`, so "who
+ * decided this" was "whoever had the token".
+ */
+describe("a role decides its own gates and no one else's", () => {
+  const DIRECTORY = [
+    { subject: "sam@example.test", secret: "sam-cred", roles: ["role-a"] },
+    { subject: "ash@example.test", secret: "ash-cred", roles: ["role-b"] },
+  ];
+
+  function shared() {
+    return createApiApp({
+      build: { version: "0.1.0", gitSha: "test", buildTime: "2026-01-01" },
+      dependencies: { queue: "healthy", persistence: "healthy" },
+      identity: createDevelopmentIdentity(DIRECTORY),
+    });
+  }
+
+  const as = (secret: string) => ({ authorization: `Bearer ${secret}` });
+
+  async function gatedRun(
+    server: ReturnType<typeof shared>,
+    approver: string,
+    credential: string,
+  ) {
+    return (
+      await server.inject({
+        method: "POST",
+        url: "/v1/runs",
+        headers: as(credential),
+        payload: gatedFor(approver),
+      })
+    ).json();
+  }
+
+  test("the holder of the other role is refused, and nothing dispatches", async () => {
+    const server = shared();
+    const run = await gatedRun(server, "role-a", "sam-cred");
+
+    const refused = await server.inject({
+      method: "POST",
+      url: `/v1/runs/${run.runId}/approvals/${run.pendingApprovalId}/decision`,
+      headers: as("ash-cred"),
+      payload: { decision: "approve" },
+    });
+
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json().code).toBe("DECISION_FORBIDDEN");
+
+    const after = (
+      await server.inject({
+        method: "GET",
+        url: `/v1/runs/${run.runId}`,
+        headers: as("sam-cred"),
+      })
+    ).json();
+    expect(after.status).toBe("AWAITING_APPROVAL");
+    expect(after.performedEffects).toEqual([]);
+  });
+
+  test("the role the gate names decides it, and the record says who", async () => {
+    const server = shared();
+    const run = await gatedRun(server, "role-a", "sam-cred");
+
+    const decided = await server.inject({
+      method: "POST",
+      url: `/v1/runs/${run.runId}/approvals/${run.pendingApprovalId}/decision`,
+      headers: as("sam-cred"),
+      payload: { decision: "approve" },
+    });
+
+    expect(decided.statusCode).toBe(200);
+    expect(decided.json().performedEffects).toEqual(["publish"]);
+
+    const history = (
+      await server.inject({
+        method: "GET",
+        url: `/v1/runs/${run.runId}/approvals`,
+        headers: as("sam-cred"),
+      })
+    ).json();
+    // The durable audit trail names the human; the span never does.
+    expect(history.approvals[0].decidedBy).toBe("sam@example.test");
+  });
+
+  test("each inbox holds only its own role's gates", async () => {
+    const server = shared();
+    const mine = await gatedRun(server, "role-a", "sam-cred");
+    const theirs = await gatedRun(server, "role-b", "sam-cred");
+
+    const inboxOf = async (credential: string) =>
+      (
+        await server.inject({
+          method: "GET",
+          url: "/v1/approvals",
+          headers: as(credential),
+        })
+      )
+        .json()
+        .pending.map((gate: { runId: string }) => gate.runId);
+
+    expect(await inboxOf("sam-cred")).toEqual([mine.runId]);
+    expect(await inboxOf("ash-cred")).toEqual([theirs.runId]);
+  });
+
+  /**
+   * The inbox and the decision route apply the same rule from two places — the
+   * approval store filters the list, `mayDecide` guards the decision. If they
+   * ever disagree, an operator either sees a gate they cannot decide or can
+   * decide one they never saw. This is the assertion that would catch it.
+   */
+  test("what an inbox shows is exactly what its holder may decide", async () => {
+    const server = shared();
+    const mine = await gatedRun(server, "role-a", "sam-cred");
+    const theirs = await gatedRun(server, "role-b", "sam-cred");
+    const unowned = (
+      await server.inject({
+        method: "POST",
+        url: "/v1/runs",
+        headers: as("sam-cred"),
+        payload: gatedForNobody(),
+      })
+    ).json();
+
+    const inbox = (
+      await server.inject({
+        method: "GET",
+        url: "/v1/approvals",
+        headers: as("sam-cred"),
+      })
+    ).json().pending;
+
+    const visible = new Set(inbox.map((gate: { runId: string }) => gate.runId));
+    expect(visible).toEqual(new Set([mine.runId, unowned.runId]));
+
+    for (const run of [mine, theirs, unowned]) {
+      const response = await server.inject({
+        method: "POST",
+        url: `/v1/runs/${run.runId}/approvals/${run.pendingApprovalId}/decision`,
+        headers: as("sam-cred"),
+        payload: { decision: "approve" },
+      });
+      expect(`${run.runId} ${response.statusCode !== 403}`).toBe(
+        `${run.runId} ${visible.has(run.runId)}`,
+      );
+    }
+  });
+
+  test("a body cannot name the principal that decides", async () => {
+    // The one mistake this boundary exists to prevent. `principal` and
+    // `roles` in a payload are ignored entirely — the credential decides.
+    const server = shared();
+    const run = await gatedRun(server, "role-a", "sam-cred");
+
+    const refused = await server.inject({
+      method: "POST",
+      url: `/v1/runs/${run.runId}/approvals/${run.pendingApprovalId}/decision`,
+      headers: as("ash-cred"),
+      payload: {
+        decision: "approve",
+        principal: "sam@example.test",
+        roles: ["role-a"],
+      },
+    });
+
+    expect(refused.statusCode).toBe(403);
+  });
+});
+
 describe("every control-plane route is authenticated", () => {
   test("compile refuses an unauthenticated caller", async () => {
     // It reads no run state, so it looked harmless and was left open. It is
@@ -824,7 +1017,7 @@ describe("every control-plane route is authenticated", () => {
 
   test("no route answers without a bearer token", async () => {
     const server = app();
-    const routes: readonly ["POST" | "GET", string][] = [
+    const routes: readonly ["POST" | "GET" | "DELETE", string][] = [
       ["POST", "/v1/workflows/compile"],
       ["POST", "/v1/runs"],
       ["GET", "/v1/runs"],
@@ -833,6 +1026,12 @@ describe("every control-plane route is authenticated", () => {
       ["GET", "/v1/runs/run_1/approvals"],
       ["GET", "/v1/runs/run_1/events"],
       ["POST", "/v1/runs/run_1/approvals/approval_1/decision"],
+      // Sign-in is the one route that may be reached without a session,
+      // because it is the route that establishes one. Reading or ending a
+      // session still needs one.
+      ["GET", "/v1/auth/session"],
+      ["DELETE", "/v1/auth/session"],
+      ["GET", "/health"],
     ];
 
     for (const [method, url] of routes) {
@@ -841,5 +1040,37 @@ describe("every control-plane route is authenticated", () => {
         `${method} ${url} -> 401`,
       );
     }
+  });
+
+  test("a credential the directory does not know is refused everywhere", async () => {
+    const server = app();
+    const headers = { authorization: "Bearer not-a-real-credential" };
+
+    for (const [method, url] of [
+      ["POST", "/v1/workflows/compile"],
+      ["GET", "/v1/approvals"],
+      ["GET", "/health"],
+    ] as const) {
+      const response = await server.inject({
+        method,
+        url,
+        headers,
+        payload: {},
+      });
+      expect(`${method} ${url} -> ${response.statusCode}`).toBe(
+        `${method} ${url} -> 401`,
+      );
+    }
+
+    // And it cannot be traded for a session either.
+    const login = await server.inject({
+      method: "POST",
+      url: "/v1/auth/session",
+      payload: {
+        credential: { kind: "operator-secret", value: "not-a-real-credential" },
+      },
+    });
+    expect(login.statusCode).toBe(401);
+    expect(login.headers["set-cookie"]).toBeUndefined();
   });
 });

@@ -96,9 +96,136 @@ export type Decision =
 
 export interface ForgeClientOptions {
   readonly baseUrl: string;
-  readonly token: string;
+  /**
+   * Bearer credential for a programmatic caller — a CLI, a worker, a company's
+   * acceptance suite. Nothing attaches it on the caller's behalf, so it needs
+   * no CSRF token.
+   */
+  readonly token?: string;
+  /**
+   * Browser session. The session cookie travels with a same-origin request on
+   * its own; this header is what proves the request came from the Forge UI and
+   * not from another origin the browser also attached the cookie to (012 §8).
+   */
+  readonly csrfToken?: string;
   /** Injected so callers can supply their own instrumented fetch. */
   readonly fetch?: typeof globalThis.fetch;
+}
+
+/**
+ * A credential for the bound identity provider, passed through untouched. Its
+ * shape is the provider's business: `operator-secret` for the development
+ * provider, an OIDC token for a deployment that has an IdP.
+ */
+export interface SessionCredential {
+  readonly kind: string;
+  readonly value: string;
+}
+
+/** An established session, as its owner is allowed to see it. */
+export interface SessionView {
+  readonly subject: string;
+  /** Membership the server resolved. Reported, never asserted by the client. */
+  readonly roles: readonly string[];
+  readonly expiresAt: string;
+  readonly csrfToken: string;
+}
+
+/**
+ * Establishing a session, which is separate from using one: a client needs the
+ * CSRF token before it can make an unsafe request, and only signing in yields
+ * that token.
+ */
+export interface ForgeSessionClient {
+  signIn(credential: SessionCredential): Promise<ForgeResult<SessionView>>;
+  /** The session the cookie already names, so a reload need not sign in again. */
+  current(): Promise<ForgeResult<SessionView>>;
+  signOut(csrfToken: string): Promise<ForgeResult<{ readonly status: string }>>;
+}
+
+interface Wire {
+  readonly baseUrl: string;
+  readonly token?: string;
+  readonly csrfToken?: string;
+  readonly fetch?: typeof globalThis.fetch;
+}
+
+/**
+ * One request, one place. Both clients go through here so an error envelope,
+ * a credential and a CSRF header cannot be handled two subtly different ways.
+ */
+async function request<Value>(
+  options: Wire,
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<ForgeResult<Value>> {
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const base = options.baseUrl.replace(/\/$/, "");
+
+  let response: Response;
+  try {
+    response = await doFetch(`${base}${path}`, {
+      method,
+      headers: {
+        ...(options.token === undefined
+          ? {}
+          : { authorization: `Bearer ${options.token}` }),
+        ...(options.csrfToken === undefined
+          ? {}
+          : { "x-forge-csrf": options.csrfToken }),
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      code: "FORGE_UNREACHABLE",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const text = await response.text();
+  const payload: unknown = text === "" ? {} : JSON.parse(text);
+
+  if (!response.ok) {
+    const shape = payload as {
+      code?: string;
+      message?: string;
+      status?: string;
+      diagnostics?: readonly Diagnostic[];
+    };
+    return {
+      ok: false,
+      status: response.status,
+      code: shape.code ?? shape.status ?? "FORGE_ERROR",
+      message: shape.message ?? `Request failed with ${response.status}.`,
+      ...(shape.diagnostics === undefined
+        ? {}
+        : { diagnostics: shape.diagnostics }),
+    };
+  }
+
+  return { ok: true, value: payload as Value };
+}
+
+export function createForgeSessionClient(options: {
+  readonly baseUrl: string;
+  readonly fetch?: typeof globalThis.fetch;
+}): ForgeSessionClient {
+  return {
+    signIn: (credential) =>
+      request<SessionView>(options, "POST", "/v1/auth/session", { credential }),
+    current: () => request<SessionView>(options, "GET", "/v1/auth/session"),
+    signOut: (csrfToken) =>
+      request<{ status: string }>(
+        { ...options, csrfToken },
+        "DELETE",
+        "/v1/auth/session",
+      ),
+  };
 }
 
 export interface StartRunInput {
@@ -135,56 +262,11 @@ export interface ForgeClient {
 }
 
 export function createForgeClient(options: ForgeClientOptions): ForgeClient {
-  const doFetch = options.fetch ?? globalThis.fetch;
-  const base = options.baseUrl.replace(/\/$/, "");
-
-  async function call<Value>(
+  const call = <Value>(
     method: "GET" | "POST",
     path: string,
     body?: unknown,
-  ): Promise<ForgeResult<Value>> {
-    let response: Response;
-    try {
-      response = await doFetch(`${base}${path}`, {
-        method,
-        headers: {
-          authorization: `Bearer ${options.token}`,
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-    } catch (error) {
-      return {
-        ok: false,
-        status: 0,
-        code: "FORGE_UNREACHABLE",
-        message: error instanceof Error ? error.message : String(error),
-      };
-    }
-
-    const text = await response.text();
-    const payload: unknown = text === "" ? {} : JSON.parse(text);
-
-    if (!response.ok) {
-      const shape = payload as {
-        code?: string;
-        message?: string;
-        status?: string;
-        diagnostics?: readonly Diagnostic[];
-      };
-      return {
-        ok: false,
-        status: response.status,
-        code: shape.code ?? shape.status ?? "FORGE_ERROR",
-        message: shape.message ?? `Request failed with ${response.status}.`,
-        ...(shape.diagnostics === undefined
-          ? {}
-          : { diagnostics: shape.diagnostics }),
-      };
-    }
-
-    return { ok: true, value: payload as Value };
-  }
+  ): Promise<ForgeResult<Value>> => request<Value>(options, method, path, body);
 
   /** Unwraps the one-key envelope every collection route replies with. */
   async function collection<Item, Key extends string>(

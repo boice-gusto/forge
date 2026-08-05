@@ -134,7 +134,7 @@ export default defineConfig({
         "apps/api/src/**": {
           lines: 100,
           functions: 100,
-          branches: 81,
+          branches: 92,
           statements: 100,
         },
         // The extension surface. Everything a company contributes passes
@@ -168,10 +168,10 @@ export default defineConfig({
         // The UI is tested with Vitest rather than deferred to a Playwright
         // suite that does not exist, so it is measured like everything else.
         "apps/ui/src/**": {
-          lines: 98,
-          functions: 95,
-          branches: 93,
-          statements: 97,
+          lines: 100,
+          functions: 98,
+          branches: 97,
+          statements: 99,
         },
         "packages/sandbox/src/**": {
           lines: 100,

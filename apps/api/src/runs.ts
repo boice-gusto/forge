@@ -6,7 +6,9 @@ import {
 import type { PanelDefinition, Vote } from "@forge/panel";
 import type { PolicyRule } from "@forge/policy-memory";
 import type { ApprovalDecision, JsonValue } from "@forge/ports";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+
+import { mayDecide, type Principal } from "./identity.js";
 
 /**
  * Control-plane routes.
@@ -54,16 +56,16 @@ function toDecision(body: DecisionBody): ApprovalDecision | undefined {
 }
 
 export interface RunRoutesOptions {
+  /** Sandbox profiles this deployment can provision. */
+  readonly sandboxProfiles?: readonly string[];
   /**
-   * Roles the caller holds. A policy rule names roles, not people, so an inbox
-   * matching on identity alone would show almost nothing. Resolved at the
-   * authenticated boundary, never read from the request (012 §8).
+   * Resolves the acting principal — subject *and* roles — from the request, at
+   * the trusted boundary. A rule's `approvers` names roles rather than people,
+   * so membership is settled here and never read from the request (012 §8).
    */
-  readonly rolesFor?: (principal: string) => readonly string[];
-  /** Resolves the acting principal from the request, at the trusted boundary. */
-  readonly principalFor: (
-    authorization: string | undefined,
-  ) => string | undefined;
+  readonly authenticate: (
+    request: FastifyRequest,
+  ) => Promise<Principal | undefined>;
   /** Overridable so tests and the local stack share one wiring. */
   readonly stack?: LocalStack;
 }
@@ -106,11 +108,16 @@ interface RunEventView {
  * Optional fields are spread only when present, so an absent one keeps the
  * stack's own default rather than overwriting it with `undefined`.
  */
-function stackFor(body: StartBody, shared: LocalStack): LocalStack {
+function stackFor(
+  body: StartBody,
+  shared: LocalStack,
+  sandboxProfiles: readonly string[] | undefined,
+): LocalStack {
   return createLocalStack({
     rules: body.policy?.rules ?? [],
     grants: body.policy?.grants ?? [],
     environment: "production",
+    ...(sandboxProfiles === undefined ? {} : { sandboxProfiles }),
     // One id source across every stack. Without it each per-policy stack mints
     // `run_1`, and the second run displaces the first in the run index.
     ids: shared.ids,
@@ -133,7 +140,13 @@ export function registerRunRoutes(
    * its own policy gets its own stack, so there is no single runtime to ask.
    */
   const stacks = new Map<string, LocalStack>();
-  const shared = options.stack ?? createLocalStack();
+  const shared =
+    options.stack ??
+    createLocalStack(
+      options.sandboxProfiles === undefined
+        ? {}
+        : { sandboxProfiles: options.sandboxProfiles },
+    );
 
   /** Each approval store exactly once, however many runs share it. */
   const stores = (): readonly LocalStack[] => [
@@ -145,7 +158,7 @@ export function registerRunRoutes(
     // run state, which is why this was overlooked — but it is unmetered work
     // on a control plane, and one endpoint that behaves differently from the
     // rest is the one nobody thinks about.
-    if (options.principalFor(request.headers.authorization) === undefined) {
+    if ((await options.authenticate(request)) === undefined) {
       return reply.code(401).send({ status: "unauthorized" });
     }
 
@@ -174,7 +187,7 @@ export function registerRunRoutes(
   });
 
   app.post("/v1/runs", async (request, reply) => {
-    const principal = options.principalFor(request.headers.authorization);
+    const principal = await options.authenticate(request);
     if (principal === undefined)
       return reply.code(401).send({ status: "unauthorized" });
 
@@ -188,7 +201,10 @@ export function registerRunRoutes(
       });
     }
 
-    const stack = body.policy === undefined ? shared : stackFor(body, shared);
+    const stack =
+      body.policy === undefined
+        ? shared
+        : stackFor(body, shared, options.sandboxProfiles);
 
     const run = await stack.runtime.start({
       artifact: outcome.artifact,
@@ -204,7 +220,7 @@ export function registerRunRoutes(
   });
 
   app.get("/v1/runs", async (request, reply) => {
-    const principal = options.principalFor(request.headers.authorization);
+    const principal = await options.authenticate(request);
     if (principal === undefined)
       return reply.code(401).send({ status: "unauthorized" });
 
@@ -221,16 +237,13 @@ export function registerRunRoutes(
    * so widening the query cannot widen who sees what.
    */
   app.get("/v1/approvals", async (request, reply) => {
-    const principal = options.principalFor(request.headers.authorization);
+    const principal = await options.authenticate(request);
     if (principal === undefined)
       return reply.code(401).send({ status: "unauthorized" });
 
     const perStore = await Promise.all(
       stores().map((stack) =>
-        stack.approvals.listPendingFor(
-          principal,
-          options.rolesFor?.(principal) ?? [],
-        ),
+        stack.approvals.listPendingFor(principal.subject, principal.roles),
       ),
     );
     // Closest to expiry first: an expired gate times out, it is not a slow yes.
@@ -247,7 +260,7 @@ export function registerRunRoutes(
       // routes check; this one did not, so the whole record was readable
       // unauthenticated. Checked before the lookup, so an anonymous caller
       // cannot tell a missing run from one they may not see.
-      if (options.principalFor(request.headers.authorization) === undefined) {
+      if ((await options.authenticate(request)) === undefined) {
         return reply.code(401).send({ status: "unauthorized" });
       }
 
@@ -263,7 +276,7 @@ export function registerRunRoutes(
     "/v1/runs/:runId/approvals",
     async (request, reply) => {
       // Authenticated because the reply names who decided each gate.
-      const principal = options.principalFor(request.headers.authorization);
+      const principal = await options.authenticate(request);
       if (principal === undefined)
         return reply.code(401).send({ status: "unauthorized" });
 
@@ -280,7 +293,7 @@ export function registerRunRoutes(
   app.get<{ Params: { runId: string } }>(
     "/v1/runs/:runId/events",
     async (request, reply) => {
-      const principal = options.principalFor(request.headers.authorization);
+      const principal = await options.authenticate(request);
       if (principal === undefined)
         return reply.code(401).send({ status: "unauthorized" });
 
@@ -307,7 +320,7 @@ export function registerRunRoutes(
   app.post<{ Params: { runId: string; approvalId: string } }>(
     "/v1/runs/:runId/approvals/:approvalId/decision",
     async (request, reply) => {
-      const principal = options.principalFor(request.headers.authorization);
+      const principal = await options.authenticate(request);
       if (principal === undefined)
         return reply.code(401).send({ status: "unauthorized" });
 
@@ -323,11 +336,27 @@ export function registerRunRoutes(
         });
       }
 
+      /**
+       * Authority, checked here because the runtime cannot: it is handed a
+       * principal and has no directory to ask whether that principal is one of
+       * the gate's approvers (006 §6.4 step 6). Without this the inbox was
+       * merely a filtered view — anyone authenticated could decide any gate by
+       * naming its id, which is not a boundary.
+       */
+      const approval = await stack.approvals.get(request.params.approvalId);
+      if (approval !== undefined && !mayDecide(principal, approval.approvers)) {
+        return reply.code(403).send({
+          status: "forbidden",
+          code: "DECISION_FORBIDDEN",
+          message: `This gate is decided by ${approval.approvers.join(", ")}.`,
+        });
+      }
+
       try {
         const run = await stack.runtime.decide(
           request.params.approvalId,
           decision,
-          principal,
+          principal.subject,
         );
         return reply.send(run);
       } catch (error) {
