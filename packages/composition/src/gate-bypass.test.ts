@@ -350,6 +350,103 @@ describe("attack: influence the decision through content", () => {
   });
 });
 
+describe("attack: reach an effect through a judge verdict arm", () => {
+  /**
+   * A judge that routes its own review outcomes (007 §10). The default panel
+   * is empty, so the verdict is always `review` — the arm under attack.
+   */
+  const routedJudge = {
+    id: "attack.judge-arm",
+    version: "1.0.0",
+    sideEffects: ["prod.write"],
+    nodes: [
+      { id: "intake", kind: "input", schemaRef: "s@1" },
+      {
+        id: "panel",
+        kind: "judge",
+        judgeRef: "review@1",
+        verdicts: ["pass", "review"],
+      },
+      { id: "rework", kind: "transform", transformRef: "rework@1" },
+      { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["act"] },
+      { id: "act", kind: "tool", skillRef: "t@1", effect: "prod.write" },
+      { id: "done", kind: "output", schemaRef: "s@1" },
+    ],
+    edges: [
+      { from: "intake", to: "panel" },
+      { from: "panel", to: "gate", conditionId: "pass" },
+      { from: "panel", to: "rework", conditionId: "review" },
+      { from: "rework", to: "gate" },
+      { from: "gate", to: "act" },
+      { from: "act", to: "done" },
+    ],
+  } as const;
+
+  test("an arm that routes straight at the effect is refused at compile", () => {
+    const result = compileWorkflow({
+      ...routedJudge,
+      nodes: routedJudge.nodes.filter((node) => node.id !== "rework"),
+      edges: [
+        { from: "intake", to: "panel" },
+        { from: "panel", to: "gate", conditionId: "pass" },
+        { from: "panel", to: "act", conditionId: "review" },
+        { from: "gate", to: "act" },
+        { from: "act", to: "done" },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.diagnostics[0]?.code).toBe("WF_MISSING_APPROVAL");
+    expect(result.diagnostics[0]?.path).toEqual(["nodes", "act"]);
+  });
+
+  test("the arm the run does take still stops at the gate", async () => {
+    const forge = stack();
+    const artifact = compileToArtifact(routedJudge);
+    if (!artifact.ok) throw new Error("must compile");
+
+    const run = await forge.runtime.start({ artifact: artifact.artifact });
+
+    // The review arm carried the run onward; it did not carry it past a human.
+    expect(run.status).toBe("AWAITING_APPROVAL");
+    expect(forge.dispatched).toEqual([]);
+
+    const after = await forge.runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "operator",
+    );
+    expect(after.status).toBe("SUCCEEDED");
+    expect(forge.dispatched).toEqual(["prod.write"]);
+  });
+
+  test("a verdict the judge declared no arm for stops the run", async () => {
+    const forge = stack();
+    const artifact = compileToArtifact({
+      ...routedJudge,
+      nodes: routedJudge.nodes
+        .filter((node) => node.id !== "rework")
+        .map((node) =>
+          node.id === "panel" ? { ...node, verdicts: ["pass"] } : node,
+        ),
+      edges: [
+        { from: "intake", to: "panel" },
+        { from: "panel", to: "gate", conditionId: "pass" },
+        { from: "gate", to: "act" },
+        { from: "act", to: "done" },
+      ],
+    });
+    if (!artifact.ok) throw new Error("must compile");
+
+    const run = await forge.runtime.start({ artifact: artifact.artifact });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("judge verdict review has no arm");
+    expect(forge.dispatched).toEqual([]);
+  });
+});
+
 describe("attack: exploit a failure to fail open", () => {
   test("a policy evaluator error denies rather than allowing", async () => {
     const forge = createLocalStack({
@@ -546,5 +643,96 @@ describe("attack: make one gate cover more than it should", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.diagnostics[0]?.code).toBe("WF_MISSING_APPROVAL");
     expect(result.diagnostics[0]?.path).toEqual(["nodes", "actB"]);
+  });
+});
+
+describe("attack: invalidate a human decision after it is made", () => {
+  // A judge is a model call, not a pure function, and a resumed run re-walks
+  // the nodes before the interrupt. That combination is an attack on decision
+  // integrity even without an attacker: the route can change underneath a
+  // decision a human already made.
+  const REVIEWER = {
+    version: "1.0.0",
+    capabilities: { requires: [], forbids: [] },
+    review: { weight: 1, blocking: true },
+  };
+
+  // pass → a harmless path; fail → the gate → prod.write
+  const routed = {
+    id: "attack.verdict-flip",
+    version: "1.0.0",
+    sideEffects: ["prod.write"],
+    grantedCapabilities: [],
+    roles: { rev: REVIEWER },
+    nodes: [
+      { id: "intake", kind: "input", schemaRef: "s@1" },
+      { id: "j", kind: "judge", judgeRef: "j@1", verdicts: ["pass", "fail"] },
+      { id: "ok", kind: "transform", transformRef: "t@1" },
+      { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["act"] },
+      { id: "act", kind: "tool", skillRef: "t@1", effect: "prod.write" },
+      { id: "done", kind: "output", schemaRef: "s@1" },
+    ],
+    edges: [
+      { from: "intake", to: "j" },
+      { from: "j", to: "ok", conditionId: "pass" },
+      { from: "j", to: "gate", conditionId: "fail" },
+      { from: "gate", to: "act" },
+      { from: "ok", to: "done" },
+      { from: "act", to: "done" },
+    ],
+  } as const;
+
+  /** Answers `fail` first and `pass` afterwards, as a flaky judge would. */
+  function flippingStack() {
+    let asked = 0;
+    const forge = stack({
+      rules: REQUIRE_APPROVAL,
+      panel: { standing: ["rev"], summonable: [], quorum: 0.5 },
+      votesFor: () => {
+        asked += 1;
+        return { rev: asked === 1 ? ("fail" as const) : ("pass" as const) };
+      },
+    });
+    return { forge, asked: () => asked };
+  }
+
+  test("a verdict is decided once per run, not re-asked on resume", async () => {
+    const { forge, asked } = flippingStack();
+    const artifact = compileToArtifact(routed);
+    if (!artifact.ok) throw new Error("must compile");
+
+    const started = await forge.runtime.start({ artifact: artifact.artifact });
+    expect(started.status).toBe("AWAITING_APPROVAL");
+    expect(asked()).toBe(1);
+
+    await forge.runtime.decide(
+      started.pendingApprovalId as string,
+      { kind: "approve" },
+      "operator",
+    );
+
+    // Asked once. A second call would have answered `pass` and killed the arm
+    // carrying the very effect the operator had just authorised.
+    expect(asked()).toBe(1);
+  });
+
+  test("the effect a human approved is the effect that happens", async () => {
+    const { forge } = flippingStack();
+    const artifact = compileToArtifact(routed);
+    if (!artifact.ok) throw new Error("must compile");
+
+    const started = await forge.runtime.start({ artifact: artifact.artifact });
+    const decided = await forge.runtime.decide(
+      started.pendingApprovalId as string,
+      { kind: "approve" },
+      "operator",
+    );
+
+    // Before the verdict ledger this reported SUCCEEDED with nothing
+    // dispatched: the operator approved `prod.write`, the judge changed its
+    // mind on the resumed walk, and the run quietly did nothing. A decision
+    // silently not carried out is worse than a refusal, because nobody is told.
+    expect(decided.status).toBe("SUCCEEDED");
+    expect(forge.dispatched).toEqual(["prod.write"]);
   });
 });

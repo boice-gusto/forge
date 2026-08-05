@@ -132,6 +132,19 @@ interface RunState {
 export function createRuntime(options: RuntimeOptions): Runtime {
   const runs = new Map<string, RunState>();
   const ledgers = new Map<string, string[]>();
+  /**
+   * Verdicts already reached in a run, per judge node.
+   *
+   * A resumed attempt re-walks the nodes before the interrupt, so without this
+   * a judge is asked again — and a judge is a model call, not a pure function.
+   * A verdict that changed on resume would silently reroute the run after a
+   * human had already decided on the first route: the operator approves
+   * `prod.write`, the judge answers differently the second time, the arm
+   * carrying that effect dies, and the run reports SUCCEEDED having done
+   * nothing. The decision a human acted on has to still be the decision in
+   * force. Same reasoning as the effect ledger, applied to control flow.
+   */
+  const verdictLedgers = new Map<string, Map<string, JudgeVerdict>>();
 
   const update = (state: RunState, patch: Partial<RunRecord>): RunRecord => {
     state.record = { ...state.record, ...patch };
@@ -145,6 +158,10 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
   async function advance(state: RunState): Promise<RunRecord> {
     const ledger = ledgers.get(state.record.runId) as string[];
+    const verdicts = verdictLedgers.get(state.record.runId) as Map<
+      string,
+      JudgeVerdict
+    >;
 
     const result = await options.engine.execute(
       state.plan as never,
@@ -183,11 +200,21 @@ export function createRuntime(options: RuntimeOptions): Runtime {
             nodeId,
             judgeRef,
           });
+
+          // Decided once per run. Re-asking on a resumed walk would let the
+          // route change under a decision a human has already made.
+          const settled = verdicts.get(nodeId);
+          if (settled !== undefined) {
+            span.end({ verdict: settled, replayed: true });
+            return settled;
+          }
+
           const panel = composePanel(state.roles, options.panel, {
             paths: state.changedPaths,
           });
           const votes = options.votesFor?.(nodeId, judgeRef) ?? {};
           const outcome = resolveVerdict(panel, votes);
+          verdicts.set(nodeId, outcome.verdict);
           span.end({
             verdict: outcome.verdict,
             members: panel.members.length,
@@ -354,6 +381,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       };
       runs.set(runId, state);
       ledgers.set(runId, []);
+      verdictLedgers.set(runId, new Map());
       update(state, { status: "RUNNING" });
       const record = await advance(state);
       span.end({ status: record.status });

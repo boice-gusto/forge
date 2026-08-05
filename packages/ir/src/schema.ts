@@ -11,6 +11,9 @@ const RetryPolicySchema = z
   })
   .strict();
 
+/** What a judge can conclude (007 §10). Mirrors `JudgeVerdict` in ports. */
+const JudgeVerdictSchema = z.enum(["pass", "fail", "review"]);
+
 export const IrNodeSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -40,6 +43,12 @@ export const IrNodeSchema = z.discriminatedUnion("kind", [
       id: NodeIdSchema,
       kind: z.literal("judge"),
       judgeRef: z.string().min(1),
+      // Verdict arms (007 §10). Each declared verdict must be carried by an
+      // outgoing edge labelled with it, and every outgoing edge must carry one
+      // of them. Omitting the field keeps the fail-closed default: only `pass`
+      // continues. A verdict with no arm stops the run either way — it never
+      // falls through onto the pass path.
+      verdicts: z.array(JudgeVerdictSchema).min(1).optional(),
     })
     .strict(),
   z

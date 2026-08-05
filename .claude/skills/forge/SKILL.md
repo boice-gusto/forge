@@ -97,7 +97,7 @@ meaning:
 |---|---|
 | `WF_MISSING_APPROVAL` | An effect can be reached without passing the approval that names it. Either a path bypasses the gate, or no gate lists this node in `gates`. |
 | `WF_CAPABILITY_UNBOUND` | A role wants a capability outside `grantedCapabilities`, or one it forbids itself. |
-| `WF_UNTYPED_EDGE` | A branch arm is unlabelled, uses an undeclared `conditionId`, or a declared condition has no arm. |
+| `WF_UNTYPED_EDGE` | A branch or judge arm is unlabelled, uses an undeclared `conditionId`/verdict, or a declared condition/verdict has no arm. |
 | `WF_UNDECLARED_EFFECT` | A node causes an effect missing from `sideEffects[]`. |
 | `WF_UNKNOWN_ROLE` | A node names a role that is not declared. |
 | `WF_UNREACHABLE_NODE` | A node has no path from the input node. A dead node cannot be gated, so it is refused rather than reasoned about. |
@@ -125,12 +125,34 @@ change pass, that is the signal to stop.
 - **Execution follows edges.** A node with no path from the input node is not
   executed. Both the compiler and the engine enforce this independently —
   either layer alone once let an orphaned effect run.
+- **A verdict is decided once per run.** A judge is a model call, not a pure
+  function, and a resumed attempt re-walks the nodes before the interrupt. The
+  verdict ledger pins it, so the route cannot change underneath a decision a human
+  already made. Without it a run could report SUCCEEDED having dispatched nothing,
+  after an operator explicitly approved the effect.
 - **Everything fails closed.** Policy evaluator errors deny. A judge that errors,
-  returns anything but `pass`, or has no votes stops the run. An empty panel is never
-  a pass. An unavailable sandbox stops the walk — there is no host fallback. An
-  unmatched policy action denies by default.
+  returns a verdict it declared no arm for, or has no votes stops the run. An empty
+  panel is never a pass. An unavailable sandbox stops the walk — there is no host
+  fallback. An unmatched policy action denies by default.
 - **Retry is an attempt, not a state.** A retryable node failure increments the
   attempt up to the highest `maxAttempts` declared on any node; the run stays RUNNING.
+
+## Judge routing
+
+A judge may declare `verdicts: ["pass","fail","review"]`; each declared verdict is
+carried by an outgoing edge labelled `conditionId: <verdict>`, exactly like a
+branch. The node says *which* verdicts route, the edge says *where* — one source of
+truth rather than a `Record<verdict, target>` that can disagree with the edge list.
+
+Omit `verdicts` and the older, narrower rule applies: only `pass` continues.
+
+Either way a verdict with no arm **stops the run** — it never falls through onto the
+pass path. A judge that throws is not converted into a `review` verdict, because an
+infrastructure failure must not be indistinguishable from a considered escalation.
+
+Gate analysis is condition-agnostic, so an arm cannot launder a bypass: an effect
+reachable through a verdict arm still needs an approval that names it, and
+`WF_MISSING_APPROVAL` fires if it does not have one.
 
 ## Company packages
 

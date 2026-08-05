@@ -1,10 +1,11 @@
-import type { ForgeIr, IrNode } from "@forge/ir";
+import type { ForgeIr, IrEdge, IrNode } from "@forge/ir";
 import type {
   AuthorisedEffects,
   EngineExecutionResult,
   EnginePlan,
   EngineRunContext,
   GraphEnginePort,
+  JudgeVerdict,
 } from "@forge/ports";
 
 /**
@@ -22,18 +23,30 @@ import type {
 
 interface MaterializedPlan {
   readonly ir: ForgeIr;
+  readonly entryId: string;
   readonly order: readonly IrNode[];
   readonly gatesFor: ReadonlyMap<string, readonly string[]>;
 }
 
 const plans = new WeakMap<object, MaterializedPlan>();
 
-/** Nodes reachable from the entry node, following edges. */
-function reachableFrom(ir: ForgeIr, entryId: string): ReadonlySet<string> {
+/** Two arms can share a target, so identity is the whole edge. */
+const edgeKey = (edge: IrEdge): string =>
+  JSON.stringify([edge.from, edge.to, edge.conditionId ?? null]);
+
+/** Nodes reachable from the entry node, following edges no verdict pruned. */
+function reachableFrom(
+  ir: ForgeIr,
+  entryId: string,
+  pruned: ReadonlySet<string> = new Set(),
+): ReadonlySet<string> {
   const outgoing = new Map<string, string[]>(
     ir.nodes.map((node) => [node.id, [] as string[]]),
   );
-  for (const edge of ir.edges) outgoing.get(edge.from)?.push(edge.to);
+  for (const edge of ir.edges) {
+    if (pruned.has(edgeKey(edge))) continue;
+    outgoing.get(edge.from)?.push(edge.to);
+  }
 
   const seen = new Set([entryId]);
   const queue = [entryId];
@@ -98,6 +111,12 @@ function gateIndex(ir: ForgeIr): ReadonlyMap<string, readonly string[]> {
 
 type StepOutcome =
   | "continue"
+  /** A judge took a declared arm; the arms it did not take are now dead. */
+  | {
+      readonly kind: "routed";
+      readonly nodeId: string;
+      readonly verdict: JudgeVerdict;
+    }
   | Extract<EngineExecutionResult, { kind: "failed" }>
   | Omit<Extract<EngineExecutionResult, { kind: "interrupted" }>, "visited">;
 
@@ -109,6 +128,33 @@ const failed = (
 
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+/**
+ * Verdict routing (007 §10). A workflow may handle its own review outcomes by
+ * declaring an arm per verdict. What it may not do is continue on a verdict it
+ * declared no arm for: with no arm the run stops, so a `review` never arrives
+ * on the `pass` path. A judge that declares no arms keeps the older, narrower
+ * rule — only `pass` continues.
+ */
+async function judgeStep(
+  node: Extract<IrNode, { kind: "judge" }>,
+  context: EngineRunContext,
+): Promise<StepOutcome> {
+  try {
+    const verdict = await context.judge(node.id, node.judgeRef);
+    if (node.verdicts === undefined) {
+      return verdict === "pass"
+        ? "continue"
+        : failed(node.id, `judge verdict ${verdict}`, false);
+    }
+    return node.verdicts.includes(verdict)
+      ? { kind: "routed", nodeId: node.id, verdict }
+      : failed(node.id, `judge verdict ${verdict} has no arm`, false);
+  } catch (error) {
+    // A judge that errors escalates; it never passes.
+    return failed(node.id, `judge errored: ${messageOf(error)}`, false);
+  }
+}
 
 /**
  * One node, one outcome. Each kind owns its failure semantics: an agent may be
@@ -131,15 +177,7 @@ async function step(
       }
 
     case "judge":
-      try {
-        const verdict = await context.judge(node.id, node.judgeRef);
-        return verdict === "pass"
-          ? "continue"
-          : failed(node.id, `judge verdict ${verdict}`, false);
-      } catch (error) {
-        // A judge that errors escalates; it never passes.
-        return failed(node.id, `judge errored: ${messageOf(error)}`, false);
-      }
+      return judgeStep(node, context);
 
     case "sandbox":
       try {
@@ -181,6 +219,23 @@ async function step(
   }
 }
 
+/**
+ * Kill every arm out of `nodeId` the verdict did not take. An unlabelled arm
+ * out of a routing judge is one of them — the compiler refuses that shape, and
+ * the engine must not walk it if a hand-built IR carries it anyway.
+ */
+function pruneArms(
+  ir: ForgeIr,
+  nodeId: string,
+  verdict: JudgeVerdict,
+  pruned: Set<string>,
+): void {
+  for (const edge of ir.edges) {
+    if (edge.from !== nodeId || edge.conditionId === verdict) continue;
+    pruned.add(edgeKey(edge));
+  }
+}
+
 export function createMemoryGraphEngine(): GraphEnginePort {
   return {
     async materialize(ir: unknown): Promise<EnginePlan> {
@@ -199,6 +254,7 @@ export function createMemoryGraphEngine(): GraphEnginePort {
       const token = {} as EnginePlan;
       plans.set(token as unknown as object, {
         ir: typed,
+        entryId: entry?.id ?? "",
         order: topologicalOrder(typed).filter((node) => reachable.has(node.id)),
         gatesFor: gateIndex(typed),
       });
@@ -221,10 +277,21 @@ export function createMemoryGraphEngine(): GraphEnginePort {
       }
 
       const visited: string[] = [];
+      const pruned = new Set<string>();
+      let live = reachableFrom(materialized.ir, materialized.entryId);
+
       for (const node of materialized.order) {
+        // An arm a judge did not take is not "skipped": it is no longer part
+        // of this run, exactly like a node the graph never reaches.
+        if (!live.has(node.id)) continue;
         visited.push(node.id);
         const outcome = await step(node, context, authorised, materialized);
         if (outcome === "continue") continue;
+        if (outcome.kind === "routed") {
+          pruneArms(materialized.ir, outcome.nodeId, outcome.verdict, pruned);
+          live = reachableFrom(materialized.ir, materialized.entryId, pruned);
+          continue;
+        }
         // `failed` carries no visited list in the port contract; `interrupted` does.
         return outcome.kind === "failed" ? outcome : { ...outcome, visited };
       }

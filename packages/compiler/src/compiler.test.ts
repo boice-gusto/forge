@@ -307,6 +307,129 @@ describe("branch exhaustiveness", () => {
   });
 });
 
+const judged = {
+  id: "acme.judged",
+  version: "1.0.0",
+  nodes: [
+    { id: "intake", kind: "input", schemaRef: "acme.judged.input@1" },
+    {
+      id: "panel",
+      kind: "judge",
+      judgeRef: "acme.judged.review@1",
+      verdicts: ["pass", "review"],
+    },
+    { id: "escalate", kind: "agent", promptRef: "acme.judged.escalate@1" },
+    { id: "result", kind: "output", schemaRef: "acme.judged.output@1" },
+  ],
+  edges: [
+    { from: "intake", to: "panel" },
+    { from: "panel", to: "result", conditionId: "pass" },
+    { from: "panel", to: "escalate", conditionId: "review" },
+    { from: "escalate", to: "result" },
+  ],
+} as const;
+
+describe("judge verdict routing", () => {
+  test("a judge with every declared verdict routed compiles and seals its arms", () => {
+    const result = compileWorkflow(judged);
+
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) throw new Error("Expected valid compilation.");
+    const node = result.value.ir.nodes.find((entry) => entry.id === "panel");
+    expect(node).toMatchObject({ verdicts: ["pass", "review"] });
+  });
+
+  test("WF_UNTYPED_EDGE when an arm out of a routing judge is unlabelled", () => {
+    const result = compileWorkflow({
+      ...judged,
+      edges: judged.edges.map((edge) =>
+        edge.to === "escalate" ? { from: "panel", to: "escalate" } : edge,
+      ),
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_UNTYPED_EDGE");
+    expect(result.diagnostics[0]?.message).toContain("without a verdict label");
+  });
+
+  test("WF_UNTYPED_EDGE when an arm claims a verdict the judge never declared", () => {
+    const result = compileWorkflow({
+      ...judged,
+      edges: judged.edges.map((edge) =>
+        edge.to === "escalate"
+          ? { from: "panel", to: "escalate", conditionId: "fail" }
+          : edge,
+      ),
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_UNTYPED_EDGE");
+    expect(result.diagnostics[0]?.message).toContain("does not declare");
+  });
+
+  test("WF_UNTYPED_EDGE when a declared verdict has no arm at all", () => {
+    const result = compileWorkflow({
+      ...judged,
+      nodes: judged.nodes.map((node) =>
+        node.id === "panel"
+          ? { ...node, verdicts: ["pass", "review", "fail"] }
+          : node,
+      ),
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_UNTYPED_EDGE");
+    expect(result.diagnostics[0]?.message).toContain("fail");
+    expect(result.diagnostics[0]?.path).toEqual(["nodes", "panel"]);
+  });
+
+  test("a label on a judge that declares no arms routes nowhere, and is refused", () => {
+    // The engine would ignore the label and fail closed on anything but pass,
+    // so the graph would be claiming a route that does not exist.
+    const result = compileWorkflow({
+      ...judged,
+      nodes: judged.nodes.map((node) =>
+        node.id === "panel"
+          ? { id: "panel", kind: "judge", judgeRef: "acme.judged.review@1" }
+          : node,
+      ),
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_UNTYPED_EDGE");
+  });
+
+  test("a judge that declares no arms and labels none is the fail-closed default", () => {
+    const result = compileWorkflow({
+      ...judged,
+      nodes: judged.nodes.map((node) =>
+        node.id === "panel"
+          ? { id: "panel", kind: "judge", judgeRef: "acme.judged.review@1" }
+          : node,
+      ),
+      edges: [
+        { from: "intake", to: "panel" },
+        { from: "panel", to: "escalate" },
+        { from: "escalate", to: "result" },
+      ],
+    });
+
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  test("a verdict outside pass, fail and review is not a verdict", () => {
+    const result = compileWorkflow({
+      ...judged,
+      nodes: judged.nodes.map((node) =>
+        node.id === "panel" ? { ...node, verdicts: ["maybe"] } : node,
+      ),
+    });
+
+    if (result.ok) throw new Error("Expected a diagnostic.");
+    expect(result.diagnostics[0]?.code).toBe("WF_INVALID");
+  });
+});
+
 const withRoles = {
   id: "acme.review",
   version: "1.0.0",

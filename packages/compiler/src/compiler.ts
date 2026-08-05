@@ -73,6 +73,7 @@ function reachableAvoiding(
 type ApprovalNode = Extract<IrNode, { kind: "approval" }>;
 type ToolNode = Extract<IrNode, { kind: "tool" }>;
 type BranchNode = Extract<IrNode, { kind: "branch" }>;
+type JudgeNode = Extract<IrNode, { kind: "judge" }>;
 
 /**
  * Capability closure (007 §12, ADR-009). A role may not require a capability
@@ -171,6 +172,67 @@ function checkBranches(
         code: "WF_UNTYPED_EDGE",
         message: `Branch "${branch.id}" is not exhaustive; no edge handles ${unhandled.join(", ")}.`,
         path: ["nodes", branch.id],
+      });
+    }
+  }
+
+  return diagnostics;
+}
+
+/**
+ * Judge verdict routing (007 §10). A judge that declares arms owns its own
+ * control flow, so the same rule as a branch applies: every arm labelled, every
+ * declared verdict routed. An unlabelled arm out of a routing judge would be
+ * pruned at runtime and an undeclared label would be ignored, and either way
+ * the graph would claim a route the engine does not take. WF_UNTYPED_EDGE
+ * (007 §11).
+ *
+ * A judge that declares no arms is the fail-closed default — only `pass`
+ * continues — so a label on one of its edges is an arm that routes nowhere.
+ */
+function checkJudges(
+  nodes: readonly IrNode[],
+  edges: readonly IrEdge[],
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const judges = nodes.filter(
+    (node): node is JudgeNode => node.kind === "judge",
+  );
+
+  for (const judge of judges) {
+    const declared = new Set<string>(judge.verdicts ?? []);
+    const covered = new Set<string>();
+
+    for (const edge of edges.filter((entry) => entry.from === judge.id)) {
+      if (edge.conditionId === undefined) {
+        if (declared.size === 0) continue;
+        diagnostics.push({
+          code: "WF_UNTYPED_EDGE",
+          message: `Edge ${judge.id} -> ${edge.to} leaves a routing judge without a verdict label.`,
+          path: ["edges", judge.id, edge.to],
+          suggestion: "Label the arm with one of the judge's verdicts.",
+        });
+        continue;
+      }
+      if (!declared.has(edge.conditionId)) {
+        diagnostics.push({
+          code: "WF_UNTYPED_EDGE",
+          message: `Edge ${judge.id} -> ${edge.to} is labelled "${edge.conditionId}", which judge "${judge.id}" does not declare in verdicts.`,
+          path: ["edges", judge.id, edge.to],
+        });
+        continue;
+      }
+      covered.add(edge.conditionId);
+    }
+
+    const unrouted = [...declared].filter((verdict) => !covered.has(verdict));
+    if (unrouted.length > 0) {
+      diagnostics.push({
+        code: "WF_UNTYPED_EDGE",
+        message: `Judge "${judge.id}" declares verdict ${unrouted.join(", ")} with no arm.`,
+        path: ["nodes", judge.id],
+        suggestion:
+          "Add an edge labelled with that verdict, or stop declaring it.",
       });
     }
   }
@@ -326,9 +388,12 @@ export function compileWorkflow(source: unknown): WorkflowCompilation {
   if (roleDiagnostics.length > 0)
     return { ok: false, diagnostics: roleDiagnostics };
 
-  const branchDiagnostics = checkBranches(parsed.data.nodes, parsed.data.edges);
-  if (branchDiagnostics.length > 0)
-    return { ok: false, diagnostics: branchDiagnostics };
+  const armDiagnostics = [
+    ...checkBranches(parsed.data.nodes, parsed.data.edges),
+    ...checkJudges(parsed.data.nodes, parsed.data.edges),
+  ];
+  if (armDiagnostics.length > 0)
+    return { ok: false, diagnostics: armDiagnostics };
 
   const effectDiagnostics = checkSideEffects(
     parsed.data.nodes,

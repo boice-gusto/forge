@@ -39,6 +39,142 @@ const irWithOrphan: ForgeIr = {
   edges: [{ from: "intake", to: "result" }],
 };
 
+/** A judge that routes: one arm per verdict it is allowed to reach. */
+const routed = {
+  id: "probe.routed",
+  version: "1.0.0",
+  nodes: [
+    { id: "intake", kind: "input", schemaRef: "s@1" },
+    {
+      id: "panel",
+      kind: "judge",
+      judgeRef: "j@1",
+      verdicts: ["pass", "review"],
+    },
+    { id: "ship", kind: "transform", transformRef: "ship@1" },
+    { id: "revise", kind: "transform", transformRef: "revise@1" },
+    { id: "result", kind: "output", schemaRef: "s@1" },
+  ],
+  edges: [
+    { from: "intake", to: "panel" },
+    { from: "panel", to: "ship", conditionId: "pass" },
+    { from: "panel", to: "revise", conditionId: "review" },
+    { from: "ship", to: "result" },
+    { from: "revise", to: "result" },
+  ],
+} as const;
+
+async function walk(
+  source: unknown,
+  judge: () => Promise<"pass" | "fail" | "review">,
+) {
+  const compiled = compileWorkflow(source);
+  if (!compiled.ok) throw new Error("Fixture must compile.");
+  const engine = createMemoryGraphEngine();
+  const plan = await engine.materialize(compiled.value.ir);
+  const performed: string[] = [];
+  const result = await engine.execute(
+    plan,
+    { ...context(performed), judge },
+    new Set(),
+  );
+  return { result, performed };
+}
+
+describe("judge verdict routing", () => {
+  test("a review verdict takes its own arm and leaves the pass arm unwalked", async () => {
+    const { result } = await walk(routed, async () => "review");
+
+    expect(result.kind).toBe("succeeded");
+    if (result.kind !== "succeeded") throw new Error("unreachable");
+    expect(result.visited).toEqual(["intake", "panel", "revise", "result"]);
+  });
+
+  test("a pass verdict takes the pass arm and leaves the review arm unwalked", async () => {
+    const { result } = await walk(routed, async () => "pass");
+
+    expect(result.kind).toBe("succeeded");
+    if (result.kind !== "succeeded") throw new Error("unreachable");
+    expect(result.visited).toEqual(["intake", "panel", "ship", "result"]);
+  });
+
+  test("a verdict with no declared arm stops the run instead of falling through", async () => {
+    const { result } = await walk(routed, async () => "fail");
+
+    expect(result.kind).toBe("failed");
+    if (result.kind !== "failed") throw new Error("unreachable");
+    expect(result.reason).toContain("judge verdict fail has no arm");
+    expect(result.retryable).toBe(false);
+  });
+
+  test("a judge that throws routes nowhere at all", async () => {
+    const { result } = await walk(routed, async () => {
+      throw new Error("judge provider is down");
+    });
+
+    expect(result.kind).toBe("failed");
+    if (result.kind !== "failed") throw new Error("unreachable");
+    expect(result.reason).toContain("judge errored");
+    expect(result.retryable).toBe(false);
+  });
+
+  test("an unlabelled arm out of a routing judge is dead, whatever the verdict", async () => {
+    // Hand-built: the compiler refuses this shape, so the only way to prove
+    // the engine is independently safe is to hand it one anyway.
+    const engine = createMemoryGraphEngine();
+    const plan = await engine.materialize({
+      ...routed,
+      workflowId: routed.id,
+      workflowVersion: routed.version,
+      sideEffects: [],
+      roles: {},
+      grantedCapabilities: [],
+      edges: [
+        { from: "intake", to: "panel" },
+        { from: "panel", to: "ship" },
+        { from: "panel", to: "revise", conditionId: "review" },
+        { from: "ship", to: "result" },
+        { from: "revise", to: "result" },
+      ],
+    } as unknown as ForgeIr);
+    const performed: string[] = [];
+
+    const result = await engine.execute(
+      plan,
+      { ...context(performed), judge: async () => "review" as const },
+      new Set(),
+    );
+
+    if (result.kind !== "succeeded") throw new Error("unreachable");
+    expect(result.visited).not.toContain("ship");
+  });
+
+  test("a node the pruned arm shared with a live path still runs", async () => {
+    const { result } = await walk(
+      {
+        ...routed,
+        edges: [
+          { from: "intake", to: "panel" },
+          { from: "panel", to: "ship", conditionId: "pass" },
+          { from: "panel", to: "revise", conditionId: "review" },
+          { from: "revise", to: "ship" },
+          { from: "ship", to: "result" },
+        ],
+      },
+      async () => "review",
+    );
+
+    if (result.kind !== "succeeded") throw new Error("unreachable");
+    expect(result.visited).toEqual([
+      "intake",
+      "panel",
+      "revise",
+      "ship",
+      "result",
+    ]);
+  });
+});
+
 describe("engine reachability", () => {
   test("an unreachable effect node is never visited, even when authorised", async () => {
     const engine = createMemoryGraphEngine();
