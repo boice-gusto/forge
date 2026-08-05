@@ -7,6 +7,11 @@
 
 ---
 
+> **This is the plan, not the state.** For what is actually built and what is
+> not, see [STATUS.md](./STATUS.md), which is checked against the repository.
+> Several exit criteria here are met by work that arrived in a different order
+> than the phases describe.
+
 ## 1. Purpose
 
 Forge is built **research-first** (Phase 0), then in incremental phases through production. Every phase after Phase 0 ends with four mandatory sections:

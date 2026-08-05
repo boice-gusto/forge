@@ -347,5 +347,6 @@ against the package that caused it rather than diluted into a global average.
 | Layer model and package map | `docs/004-architecture.md` |
 | Roles and panels | `docs/adrs/009-agent-roles.md` |
 | Misfire capture | `docs/adrs/010-incident-capture.md` |
-| What phase gates what | `docs/015-phases.md` |
+| **What is built and what is not** | **`docs/STATUS.md`** — read this first |
+| What phase gates what | `docs/015-phases.md` (the plan, not the state) |
 | Plugin SDK, company model, capability closure | `docs/009-plugin-sdk.md` |
