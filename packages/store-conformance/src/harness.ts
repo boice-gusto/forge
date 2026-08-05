@@ -8,10 +8,8 @@ import type {
 } from "@forge/ports";
 
 /**
- * A store plus a second way in to the same state.
- *
- * `peer()` is the whole reason durability is testable: it is the second API
- * process, or the same process after a restart. An in-memory adapter's state
+ * `peer()` is the whole reason durability is testable: it stands for the second
+ * API process, or the same process after a restart. A memory adapter's state
  * *is* the object it returned, so it hands back the same store; a Postgres
  * adapter opens a second pool onto the same database. Without it the suite
  * cannot tell a durable record from one that only ever lived in a Map.

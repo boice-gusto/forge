@@ -3,14 +3,12 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 
 /**
- * A recorded session, as a stream of frames rather than of Forge events. The
- * recording says what the provider did; it does not say what Forge should
- * conclude from it. Keeping the two apart is what makes the classification
- * below the adapter's decision and therefore testable.
+ * A recorded session, as frames rather than as Forge events: the recording says
+ * what the provider did, not what Forge should conclude from it, which is what
+ * makes the classification below the adapter's own decision and testable.
  *
- * Parsed with Zod at the boundary (008 §13.10). A transcript is untrusted input
- * — it is a file on disk, possibly written by a tool that has since changed —
- * so it is validated rather than cast.
+ * Validated rather than cast (008 §13.10) — a transcript is a file on disk,
+ * possibly written by a tool that has since changed.
  */
 
 const DelayMs = z.number().min(0).default(0);
@@ -47,10 +45,10 @@ const TranscriptFrameSchema = z.discriminatedUnion("kind", [
 ]);
 
 /**
- * Frames are strict — an unrecognised frame kind is a recording Forge cannot
- * faithfully replay, so it is refused rather than skipped. The envelope is not:
- * `recordedAt` and whatever provenance a recorder adds later describe where the
- * transcript came from, not what it makes the provider do.
+ * Frames are strict — an unrecognised kind is a recording Forge cannot
+ * faithfully replay, so it is refused rather than skipped. The envelope is
+ * loose: provenance describes where the transcript came from, not what it makes
+ * the provider do.
  */
 const TranscriptSchema = z.looseObject({
   frames: z.array(TranscriptFrameSchema),
@@ -64,9 +62,9 @@ export type ParsedTranscript =
   | { readonly ok: false; readonly reason: string };
 
 /**
- * Failures a later attempt could plausibly get past. Everything else is
- * permanent: a run that spins on a failure which will never clear burns its
- * budget and fails anyway, so an unrecognised code stops rather than retries.
+ * Failures a later attempt could plausibly get past. An unrecognised code stops
+ * rather than retries: spinning on a failure that will never clear burns the
+ * budget and fails anyway.
  */
 const TRANSIENT_FAILURE_CODES: readonly string[] = [
   "RATE_LIMITED",
@@ -83,10 +81,8 @@ export function parseTranscript(raw: unknown): ParsedTranscript {
   const result = TranscriptSchema.safeParse(raw);
   if (result.success) return { ok: true, frames: result.data.frames };
 
-  // A malformed recording is reported, never thrown: the adapter turns it into
-  // a non-retryable error event so the runtime stops for a stated reason.
-  // Every issue, located. A recording can be long, and "something is wrong
-  // with it" is not enough to find the frame that is wrong.
+  // Every issue, located: a recording can be long, and "something is wrong with
+  // it" is not enough to find the frame that is wrong.
   const detail = result.error.issues
     .map((issue) =>
       issue.path.length > 0

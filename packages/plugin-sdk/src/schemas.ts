@@ -6,14 +6,12 @@ import {
 import { z } from "zod";
 
 /**
- * Plugin host schemas (009 §5, §9).
+ * Plugin host schemas (009 §5, §9) — the plugin's own paperwork: the manifest
+ * it presents to the host, and the adapter bindings it asks the host to wire.
  *
- * The artifact schemas a plugin *contributes* — skills, prompts, policy packs —
- * belong to the authoring surface and live in `@forge/manifest` (004). They are
- * re-exported here so a company package can keep importing the SDK alone.
- *
- * What this file owns is the plugin's own paperwork: the manifest it presents
- * to the host, and the adapter bindings it asks the host to wire.
+ * What it *contributes* (skills, prompts, policy packs) is the authoring
+ * surface and lives in `@forge/manifest` (004), re-exported below so a company
+ * package can keep importing the SDK alone.
  */
 
 export {
@@ -29,10 +27,9 @@ export {
 } from "@forge/manifest";
 
 /**
- * A workflow contribution is carried as an opaque source object. The plugin SDK
- * checks that it is identifiable and versioned; the compiler owns its shape.
- * Duplicating the IR taxonomy here would put two definitions of a workflow in
- * the repository, and they would drift.
+ * Opaque on purpose: the SDK checks only that a contribution is identifiable
+ * and versioned, because duplicating the IR taxonomy here would put two
+ * definitions of a workflow in the repository and they would drift.
  */
 export const WorkflowContributionSchema = z
   .looseObject({
@@ -67,12 +64,7 @@ export type WorkflowContribution = z.infer<typeof WorkflowContributionSchema>;
 export type AdapterBinding = z.infer<typeof AdapterBindingSchema>;
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
 
-/**
- * The authoring view. A `.default()` makes a field required on the output type,
- * so a plugin annotated with `PluginManifest` has to write
- * `providedCapabilities: []` to provide nothing. Write the input type; parsing
- * still applies the defaults.
- */
+/** The authoring view — see the same note in `@forge/manifest`'s `authoring`. */
 export type WorkflowContributionInput = z.input<
   typeof WorkflowContributionSchema
 >;

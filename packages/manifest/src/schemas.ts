@@ -1,13 +1,11 @@
 import { z } from "zod";
 
 /**
- * Company manifest (009 §9).
+ * Company manifest (009 §9) — the root of a company package.
  *
- * The root of a company package: which domains it owns, which plugins to load,
- * and which adapters bind to which ports. Config is referenced, never inlined —
- * an org's Slack channel id or Jira project belongs in its config, and a secret
- * belongs in a secret manager. Neither belongs here, and nothing here may name
- * one.
+ * Config is referenced, never inlined: an org's Slack channel id belongs in its
+ * config and a secret belongs in a secret manager, so nothing here may name
+ * either.
  */
 
 const Reference = z.string().trim().min(1);

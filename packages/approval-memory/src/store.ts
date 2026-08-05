@@ -9,7 +9,7 @@ import type {
 } from "@forge/ports";
 import { ANY_ROLE } from "@forge/ports";
 
-const TERMINAL: Record<string, ApprovalStatus> = {
+const TERMINAL: Record<ApprovalDecision["kind"], ApprovalStatus> = {
   approve: "APPROVED",
   reject: "REJECTED",
   edit: "EDITED",
@@ -47,7 +47,7 @@ export function createMemoryApprovalStore(
 
       const decided: ApprovalRecord = {
         ...existing,
-        status: TERMINAL[decision.kind] ?? "PENDING",
+        status: TERMINAL[decision.kind],
         decidedBy: principal,
         decidedAt: clock.now().toISOString(),
         reason: decision.kind === "reject" ? decision.reason : undefined,

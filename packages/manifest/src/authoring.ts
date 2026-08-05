@@ -3,13 +3,10 @@ import { z } from "zod";
 /**
  * Authoring schemas for company contributions (009 §5, §8).
  *
- * Everything a plugin contributes is parsed before it is registered. A plugin
- * is third-party code from core's point of view — including our own company
- * package — so the boundary validates rather than trusts.
- *
- * These live in `@forge/manifest` because 004 names it the owner of the
- * authoring surface. `@forge/plugin-sdk` re-exports them, so a company package
- * that imports the SDK alone is unaffected.
+ * A plugin is third-party code from core's point of view — including our own
+ * company package — so the boundary validates rather than trusts. These live
+ * here because 004 names `@forge/manifest` the owner of the authoring surface;
+ * `@forge/plugin-sdk` re-exports them so importing the SDK alone still works.
  */
 
 export const SemverSchema = z
@@ -24,7 +21,6 @@ export const IdentifierSchema = z
     "Ids are lowercase, dot- or dash-separated, e.g. gusto.benefits.kb-retrieve.",
   );
 
-/** A capability is a dotted action name; `*` is never a valid capability. */
 export const CapabilitySchema = z
   .string()
   .trim()
@@ -62,9 +58,8 @@ export const PolicyPackSchema = z
     id: IdentifierSchema,
     version: SemverSchema,
     /**
-     * Capabilities this pack grants. Grants are the only way a capability is
-     * satisfied; a skill requesting one it is not granted fails closed at
-     * compile with WF_CAPABILITY_UNBOUND.
+     * Grants are the only way a capability is satisfied; a skill requesting one
+     * it is not granted fails closed at compile with WF_CAPABILITY_UNBOUND.
      */
     grants: z.array(CapabilitySchema).default([]),
     rules: z
@@ -89,13 +84,11 @@ export type PromptAsset = z.infer<typeof PromptAssetSchema>;
 export type PolicyPack = z.infer<typeof PolicyPackSchema>;
 
 /**
- * The authoring view of each artifact.
- *
- * A `.default()` makes a field *required* on the inferred output type, so
- * annotating a literal with `PolicyPack` forces `approvers: []` onto every rule
- * that has no approvers — writing out the default in order to say nothing.
- * `z.input` is the shape an author may write; the `z.infer` type above is what
- * comes back once parsing has applied the defaults.
+ * The authoring view of each artifact. A `.default()` makes a field *required*
+ * on the inferred output type, so annotating a literal with `PolicyPack` forces
+ * `approvers: []` onto every rule that has none — writing out the default in
+ * order to say nothing. `z.input` is what an author may write; the `z.infer`
+ * types above are what comes back once parsing has applied the defaults.
  */
 export type SkillDefinitionInput = z.input<typeof SkillDefinitionSchema>;
 export type PromptAssetInput = z.input<typeof PromptAssetSchema>;

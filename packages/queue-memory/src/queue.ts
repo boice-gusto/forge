@@ -12,9 +12,7 @@ export function createMemoryQueue(): QueuePort {
 
   async function pump(): Promise<void> {
     if (handler === undefined) return;
-    while (pending.length > 0) {
-      const job = pending.shift();
-      if (job === undefined) continue;
+    for (let job = pending.shift(); job !== undefined; job = pending.shift()) {
       const key = operationKey(job);
       if (handled.has(key)) continue;
       handled.add(key);

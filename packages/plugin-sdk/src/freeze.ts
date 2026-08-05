@@ -1,12 +1,8 @@
 /**
  * `readonly` is a compile-time annotation. A plugin is ordinary JavaScript at
  * runtime and can cast it away, so anything handed across the plugin boundary
- * is frozen for real.
- *
- * A red-team pass reached `prod.write` on a host that granted only `kb.read`
- * two ways: pushing onto `context.hostCapabilities`, and pushing onto the
- * `requiredCapabilities` of an already-validated entry returned by `all()`.
- * Both were a live reference escaping the check that had just approved it.
+ * is frozen for real. The two escapes this closed are noted at their call
+ * sites in `registry.ts` and `host.ts`.
  */
 
 type Freezable = Record<string, unknown> | readonly unknown[];

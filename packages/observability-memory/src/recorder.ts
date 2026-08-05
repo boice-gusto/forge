@@ -8,12 +8,10 @@ import type {
 } from "@forge/ports";
 
 /**
- * One reported span or event, placed in the order it happened.
- *
- * A span and an event are separate lists in the two accessors below, which
- * loses the interleaving. The run inspector needs the interleaving — a policy
- * decision that lands after the gate opened tells a different story from one
- * that lands before — so the ordered view is the one the control plane serves.
+ * Spans and events are separate lists below, which loses the interleaving. The
+ * run inspector needs it — a policy decision landing after the gate opened
+ * tells a different story from one landing before — so the ordered view is the
+ * one the control plane serves.
  */
 export interface ObservedEvent extends RecordedSpan {
   readonly seq: number;
@@ -29,14 +27,6 @@ export interface MemoryObservability extends ObservabilityPort {
   names(): readonly string[];
 }
 
-/**
- * Records spans and events in order so a test can assert what the runtime
- * reported, rather than trusting that it reported anything.
- *
- * Redaction happens here rather than at the call sites (011 §5.2): a call site
- * that forgets is a silent disclosure, whereas an adapter that scrubs
- * everything it is handed cannot be forgotten.
- */
 interface MutableEntry {
   readonly seq: number;
   readonly at: string;
@@ -46,6 +36,11 @@ interface MutableEntry {
   ended: boolean;
 }
 
+/**
+ * Redaction happens here rather than at the call sites (011 §5.2): a call site
+ * that forgets is a silent disclosure, whereas an adapter that scrubs
+ * everything it is handed cannot forget.
+ */
 export function createMemoryObservability(
   clock: ClockPort = { now: () => new Date() },
 ): MemoryObservability {

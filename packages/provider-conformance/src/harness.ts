@@ -7,11 +7,10 @@ import type {
 } from "@forge/ports";
 
 /**
- * The situations an adapter must be able to put itself into. Conformance
- * cannot assert that a transient failure is marked retryable unless it can ask
- * for one, so the scenarios are the whole vocabulary the suite needs — an
- * adapter proves itself by building six of these rather than by hand-writing
- * the tests that follow.
+ * The situations an adapter must be able to put itself into. Conformance cannot
+ * assert that a transient failure is marked retryable unless it can ask for
+ * one, so an adapter proves itself by building these six rather than by
+ * hand-writing the tests that follow.
  */
 export type ProviderScenario =
   | "text-stream"
@@ -25,9 +24,8 @@ export interface ProviderConformanceHarness {
   /** Names the suite, so a failure says which adapter broke. */
   readonly name: string;
   /**
-   * Everything the adapter can do. This is a claim under test: the suite
-   * checks it against the adapter's own `capabilities`, so stating it here is
-   * not a way to be graded on a curve.
+   * A claim under test, not a curve to be graded on: the suite checks this
+   * against the adapter's own `capabilities`.
    */
   readonly supports: readonly ProviderCapability[];
   /** The adapter at full strength, positioned in `scenario`. */
@@ -43,8 +41,8 @@ export interface ProviderConformanceHarness {
 }
 
 /**
- * Written as an exhaustive record so that adding a capability to the port is a
- * type error here rather than a silently unchecked one.
+ * An exhaustive record, so adding a capability to the port is a type error here
+ * rather than a silently unchecked one.
  */
 export const PROVIDER_CAPABILITIES = Object.keys({
   streaming: true,
@@ -57,8 +55,8 @@ export const CONFORMANCE_REQUEST: ProviderExecutionRequest = {
 };
 
 /**
- * A stream that never ends must fail the suite, not hang it — a provider that
- * ignores cancellation is exactly the defect being hunted.
+ * A stream that never ends must fail the suite, not hang it: a provider
+ * ignoring cancellation is the defect being hunted.
  */
 const STREAM_EVENT_LIMIT = 100;
 

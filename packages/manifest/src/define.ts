@@ -20,15 +20,10 @@ import {
 /**
  * The authoring surface (004 §"Package map", 007 §3, 009 §6).
  *
- * Each of these does three things a plain object literal does not:
- *
- * 1. It accepts the *input* shape and returns the *output* shape, so an author
- *    writes what they mean and gets back a value with the defaults applied.
- * 2. It parses at author time. A malformed definition throws where it is
- *    written, instead of surfacing later as a registration diagnostic that
- *    names the plugin rather than the line.
- * 3. `defineWorkflow` additionally resolves the workflow's internal references
- *    in the type system — see below.
+ * Each of these takes the *input* shape and returns the *output* shape, so an
+ * author writes what they mean and gets back a value with the defaults applied,
+ * and each parses at author time — a malformed definition throws where it is
+ * written rather than surfacing later as a diagnostic naming the plugin.
  */
 
 function parseOrThrow<Out>(
@@ -79,18 +74,14 @@ type DeclaredEffect<T> = T extends {
   : never;
 
 /**
- * Referential integrity, checked by the compiler *and* by the type system.
+ * Referential integrity in the editor, not instead of the compiler. The
+ * compiler still owns every one of these — `defineWorkflow` cannot reason about
+ * paths, and a workflow loaded from JSON never passes through it. This only
+ * buys the same answer sooner: a red squiggle on the offending line rather than
+ * a `WF_UNKNOWN_REF` after a compile.
  *
- * The compiler still owns every one of these — `defineWorkflow` cannot reason
- * about paths, and a workflow loaded from JSON never passes through it. What
- * this buys is the same answer in the editor: a mistyped edge target, a gate
- * that names a node which does not exist, an undeclared effect, or an unknown
- * role is a red squiggle on the line that caused it rather than a
- * `WF_UNKNOWN_REF` after a compile.
- *
- * Each property is optional so that omitting it stays legal — the schema's
- * defaults still apply. What is refused is naming something that was never
- * declared.
+ * Each property is optional so omitting it stays legal; what is refused is
+ * naming something that was never declared.
  */
 interface NodeReferences<T> {
   // Open, because this type is intersected with the node the author actually
