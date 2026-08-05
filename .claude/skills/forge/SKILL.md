@@ -146,13 +146,20 @@ in `packages/`, it belongs in a company repository instead.
 
 ```sh
 pnpm lint && pnpm typecheck && pnpm test && pnpm test:coverage
-pnpm test:architecture && pnpm security:secrets && pnpm security:licenses
+pnpm test:architecture && pnpm test:security
+pnpm security:secrets && pnpm security:licenses
 pnpm measure:phase1
 ```
 
-All eight must exit `0` — that is exactly what CI runs, in that order. Run the whole
+All nine must exit `0` — that is exactly what CI runs, in that order. Run the whole
 sequence before claiming a change is done; `pnpm test` alone has passed while
 `typecheck` was broken.
+
+`pnpm test:security` is the adversarial suite: it tries to reach an effect without a
+gate, reuse or forge an approval, escalate a capability, and steer a decision from
+workflow content. It is the standing regression for the red-team pass that once found
+an orphaned effect running ungated — treat a failure there as a real hole, not a
+flaky test.
 
 `pnpm lint` runs Biome's recommended rules plus `noExplicitAny`, not formatting
 alone. `pnpm test:coverage` enforces per-package floors, highest on `compiler` and

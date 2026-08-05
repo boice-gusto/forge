@@ -23,6 +23,7 @@ jobs:
       - run: pnpm test
       - run: pnpm test:coverage
       - run: pnpm test:architecture
+      - run: pnpm test:security
       - run: pnpm security:secrets
       - run: pnpm security:licenses
       - run: pnpm measure:phase1
