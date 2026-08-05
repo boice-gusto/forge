@@ -4,7 +4,11 @@ import { compileWorkflow } from "@forge/compiler";
 import { createMemoryGraphEngine } from "@forge/engine-memory";
 import { createMemoryObservability } from "@forge/observability-memory";
 import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
-import { createSequentialIds } from "@forge/ports";
+import {
+  createSequentialIds,
+  type ObservabilityPort,
+  type SpanAttributes,
+} from "@forge/ports";
 import { createMockProvider } from "@forge/provider-mock";
 import { describe, expect, test } from "vitest";
 
@@ -64,6 +68,8 @@ function harness(
   rules: readonly PolicyRule[] = REQUIRE_APPROVAL,
   grants: readonly string[] = ["slack.write"],
   failEvaluation = false,
+  /** Supplied only to prove a broken sink cannot decide a run's fate. */
+  sink?: ObservabilityPort,
 ) {
   const dispatched: string[] = [];
   let instant = new Date("2026-08-04T00:00:00.000Z");
@@ -85,7 +91,7 @@ function harness(
       events: [{ type: "completed" }],
     }),
     sandbox: { health: async () => ({ available: true }) },
-    observability,
+    observability: sink ?? observability,
     panel: { standing: [], summonable: [], quorum: 0.5 },
     effects: {
       async perform(_runId, _nodeId, effect) {
@@ -822,5 +828,293 @@ describe("agent, judge and sandbox nodes are live", () => {
       "forge.node.sandbox",
     );
     expect(observability.spans.every((span) => span.ended)).toBe(true);
+  });
+});
+
+/**
+ * 011 §4 makes the decisions telemetry, not a side note: a gate nobody can see
+ * open, close, or expire is a gate nobody can audit.
+ */
+describe("the decisions a run makes are reported, not only its nodes", () => {
+  function attributesOf(
+    observability: ReturnType<typeof createMemoryObservability>,
+    name: string,
+  ): SpanAttributes {
+    const entry = observability.timeline.find((item) => item.name === name);
+    if (entry === undefined) throw new Error(`No ${name} was reported.`);
+    return entry.attributes;
+  }
+
+  test("the policy decision names the rule that decided and what it decided", async () => {
+    const { runtime, observability } = harness();
+    await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+
+    expect(attributesOf(observability, "forge.policy.decide")).toMatchObject({
+      action: "slack.post",
+      nodeId: "publish",
+      decision: "require-approval",
+      policyId: "acme.publish.external",
+      allow: false,
+    });
+  });
+
+  test("a denial is reported with the rule that denied it", async () => {
+    const { runtime, observability } = harness([], []);
+    await runtime.start({ artifact: artifact() });
+
+    expect(attributesOf(observability, "forge.policy.decide")).toMatchObject({
+      decision: "deny",
+      policyId: "forge.policy.default-deny",
+      allow: false,
+    });
+  });
+
+  test("an allow carries no rule id rather than an invented one", async () => {
+    const { runtime, observability } = harness(
+      [
+        {
+          id: "acme.publish.open",
+          action: "slack.post",
+          environment: "production",
+          decision: "allow",
+          reason: "Internal channel.",
+        },
+      ],
+      ["slack.write"],
+    );
+    await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+
+    const attributes = attributesOf(observability, "forge.policy.decide");
+    expect(attributes).toMatchObject({ decision: "allow", allow: true });
+    expect(attributes).not.toHaveProperty("policyId");
+  });
+
+  test("the requested gate reports the binding, not just the artifact", async () => {
+    const { runtime, observability } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const approval = await runtime.getApproval(run.pendingApprovalId as string);
+
+    expect(
+      attributesOf(observability, "forge.approval.requested"),
+    ).toMatchObject({
+      approvalId: approval?.approvalId,
+      nodeId: "publish",
+      effect: "slack.post",
+      effectHash: approval?.effectHash,
+      approverCount: 1,
+    });
+  });
+
+  test("a decision is reported without naming the human who made it", async () => {
+    const { runtime, observability } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "ada@example.test",
+    );
+
+    const attributes = attributesOf(observability, "forge.approval.decided");
+    expect(attributes).toMatchObject({ decision: "approve" });
+    expect(JSON.stringify(attributes)).not.toContain("ada@example.test");
+    expect(attributes.principalHash).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  test("an expired gate reports the timeout and what was attempted on it", async () => {
+    const { runtime, advance, observability } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    advance(8 * 24 * 60 * 60 * 1000);
+    await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(attributesOf(observability, "forge.approval.expired")).toMatchObject(
+      { nodeId: "publish", attempted: "approve" },
+    );
+    expect(observability.timeline.map((entry) => entry.name)).not.toContain(
+      "forge.effect.dispatched",
+    );
+  });
+
+  test("an edit names the gate it reissued, so the successor is traceable", async () => {
+    const { runtime, observability } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const edited = await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "edit", patch: {} },
+      "marketing-lead",
+    );
+
+    expect(attributesOf(observability, "forge.approval.edited")).toMatchObject({
+      approvalId: run.pendingApprovalId,
+      reissuedAs: edited.pendingApprovalId,
+    });
+  });
+
+  test("every lifecycle transition is reported once, in order", async () => {
+    const { runtime, observability } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(
+      observability.timeline
+        .filter((entry) => entry.name === "forge.run.transition")
+        .map((entry) => `${entry.attributes.from}->${entry.attributes.to}`),
+    ).toEqual([
+      "PENDING->RUNNING",
+      "RUNNING->AWAITING_APPROVAL",
+      "AWAITING_APPROVAL->RUNNING",
+      "RUNNING->SUCCEEDED",
+    ]);
+  });
+
+  test("a dispatched effect is on the stream, and a replayed one is not", async () => {
+    const { runtime, observability } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(
+      observability.timeline.filter(
+        (entry) => entry.name === "forge.effect.dispatched",
+      ),
+    ).toHaveLength(1);
+    expect(
+      attributesOf(observability, "forge.effect.dispatched"),
+    ).toMatchObject({ nodeId: "publish", effect: "slack.post", sequence: 1 });
+  });
+
+  test("cancelling reports the transition to CANCELLED", async () => {
+    const { runtime, observability } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    await runtime.cancel(run.runId);
+
+    expect(
+      observability.timeline
+        .filter((entry) => entry.name === "forge.run.transition")
+        .map((entry) => entry.attributes.to),
+    ).toContain("CANCELLED");
+  });
+});
+
+/**
+ * A span is a report. Nothing a payroll system would call member data may ride
+ * on one, and no telemetry failure may decide the fate of a run.
+ */
+describe("telemetry can neither leak a payload nor break a run", () => {
+  test("no span attribute carries an email, an SSN or prompt content", async () => {
+    const { runtime, observability } = harness();
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "reject", reason: "ada@example.test says 123-45-6789 is wrong" },
+      "ada@example.test",
+    );
+
+    const serialised = JSON.stringify(
+      observability.timeline.map((entry) => entry.attributes),
+    );
+    expect(serialised).not.toContain("ada@example.test");
+    expect(serialised).not.toContain("123-45-6789");
+    // Attributes are scalars keyed by name: no free-text payload can arrive
+    // under a key the taxonomy never declared.
+    for (const entry of observability.timeline) {
+      for (const value of Object.values(entry.attributes)) {
+        expect(["string", "number", "boolean"]).toContain(typeof value);
+      }
+    }
+  });
+
+  test("a sink that throws does not fail a run that otherwise succeeds", async () => {
+    const broken: ObservabilityPort = {
+      startSpan() {
+        throw new Error("collector unreachable");
+      },
+      event() {
+        throw new Error("collector unreachable");
+      },
+    };
+    const { runtime, dispatched } = harness(
+      REQUIRE_APPROVAL,
+      ["slack.write"],
+      false,
+      broken,
+    );
+
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const decided = await runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(decided.status).toBe("SUCCEEDED");
+    expect(dispatched).toEqual(["slack.post"]);
+  });
+
+  test("a span that throws only on end is still harmless", async () => {
+    const brokenOnEnd: ObservabilityPort = {
+      startSpan: () => ({
+        end() {
+          throw new Error("collector went away mid-span");
+        },
+      }),
+      event: () => undefined,
+    };
+    const { runtime } = harness(
+      REQUIRE_APPROVAL,
+      ["slack.write"],
+      false,
+      brokenOnEnd,
+    );
+
+    const run = await runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+
+    expect(run.status).toBe("AWAITING_APPROVAL");
   });
 });

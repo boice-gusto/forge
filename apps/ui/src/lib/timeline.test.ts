@@ -1,135 +1,170 @@
-import type { ApprovalView, RunView } from "@forge/sdk";
+import type { RunEventView } from "@forge/sdk";
 import { describe, expect, test } from "vitest";
 
 import { buildTimeline } from "./timeline.js";
 
-const NOW = Date.parse("2026-01-01T12:00:00.000Z");
+let seq = 0;
 
-function run(overrides: Partial<RunView> = {}): RunView {
+/** Mirrors the classification the API applies before the stream leaves it. */
+const KINDS = new Set(["run", "node", "policy", "approval", "effect"]);
+
+function event(
+  name: string,
+  attributes: RunEventView["attributes"] = {},
+): RunEventView {
+  seq += 1;
+  const family = name.split(".")[1] ?? "";
   return {
-    runId: "run_1",
-    workflowId: "campaign-brief",
-    fingerprint: "sha256:abc",
-    status: "RUNNING",
-    attempt: 1,
-    performedEffects: [],
-    ...overrides,
+    seq,
+    at: "2026-01-01T12:00:00.000Z",
+    kind: (KINDS.has(family) ? family : "other") as RunEventView["kind"],
+    name,
+    attributes: { runId: "run_1", ...attributes },
   };
 }
 
-const gate: ApprovalView = {
-  approvalId: "apr_1",
-  runId: "run_1",
-  nodeId: "publish",
-  effect: "slack.post",
-  policyId: "pol_external_publish",
-  approvers: ["marketing-lead"],
-  expiresAt: "2026-01-01T12:30:00.000Z",
-  status: "PENDING",
-};
+function only(name: string, attributes: RunEventView["attributes"] = {}) {
+  const [entry] = buildTimeline([event(name, attributes)]);
+  if (entry === undefined) throw new Error("The timeline dropped an event.");
+  return entry;
+}
 
-describe("the timeline reports the ledger rather than an assumed sequence", () => {
-  test("a run with no dispatch shows no effect entries", () => {
-    const entries = buildTimeline(run(), [], NOW);
-
-    expect(entries.filter((entry) => entry.kind === "effect")).toEqual([]);
-  });
-
-  test("dispatched effects appear in ledger order", () => {
-    const entries = buildTimeline(
-      run({ performedEffects: ["draft", "publish"] }),
-      [],
-      NOW,
-    );
-
-    expect(
-      entries.filter((e) => e.kind === "effect").map((e) => e.label),
-    ).toEqual([
-      "Effect dispatched at node draft",
-      "Effect dispatched at node publish",
+describe("the timeline is the control plane's own event stream", () => {
+  test("events are rendered in the order they were reported", () => {
+    const timeline = buildTimeline([
+      event("forge.run.transition", { from: "PENDING", to: "RUNNING" }),
+      event("forge.effect.dispatched", {
+        nodeId: "publish",
+        effect: "slack.post",
+        sequence: 1,
+      }),
     ]);
+
+    expect(timeline.map((entry) => entry.kind)).toEqual(["run", "effect"]);
   });
 
-  test("an effect entry says why the ledger exists", () => {
-    const [, dispatched] = buildTimeline(
-      run({ performedEffects: ["publish"] }),
-      [],
-      NOW,
-    );
-
-    expect(dispatched?.detail).toContain("dispatching this twice");
-  });
-});
-
-describe("the timeline distinguishes a live gate from a lapsed one", () => {
-  test("a pending gate names its node, effect and policy", () => {
-    const entry = buildTimeline(run(), [gate], NOW).find(
-      (candidate) => candidate.kind === "gate",
-    );
-
-    expect(entry?.label).toBe("Gate on publish for slack.post");
-    expect(entry?.detail).toContain("Awaiting your decision");
-    expect(entry?.detail).toContain("pol_external_publish");
+  test("a run with no reported event yields an empty timeline, not a guess", () => {
+    expect(buildTimeline([])).toEqual([]);
   });
 
-  test("an expired gate is not reported as awaiting anyone", () => {
-    const entry = buildTimeline(
-      run(),
-      [{ ...gate, expiresAt: "2026-01-01T11:00:00.000Z" }],
-      NOW,
-    ).find((candidate) => candidate.kind === "gate");
+  test("every entry carries a mark so status is never colour alone", () => {
+    const timeline = buildTimeline([
+      event("forge.run.transition", { to: "SUCCEEDED" }),
+      event("forge.node.agent", { nodeId: "draft" }),
+      event("forge.policy.decide", { decision: "allow", action: "x" }),
+      event("forge.approval.requested", { nodeId: "publish" }),
+      event("forge.effect.dispatched", { nodeId: "publish" }),
+      event("forge.worker.job"),
+    ]);
 
-    expect(entry?.detail).toContain("Expired");
-    expect(entry?.detail).not.toContain("Awaiting");
+    expect(timeline.every((entry) => entry.mark !== "")).toBe(true);
+    expect(new Set(timeline.map((entry) => entry.id)).size).toBe(6);
   });
 });
 
-describe("the timeline surfaces the run outcome and its diagnostic", () => {
-  test("a retry is described as an attempt, not a state", () => {
-    const [start] = buildTimeline(run({ attempt: 3 }), [], NOW);
-
-    expect(start?.label).toContain("campaign-brief");
-    expect(start?.detail).toContain("Attempt 3");
-    expect(start?.detail).toContain("not a separate state");
-  });
-
-  test("awaiting approval is explained as a durable interrupt", () => {
-    const entry = buildTimeline(
-      run({ status: "AWAITING_APPROVAL" }),
-      [],
-      NOW,
-    ).find((candidate) => candidate.id === "run-status");
-
-    expect(entry?.label).toBe("Status AWAITING_APPROVAL");
-    expect(entry?.detail).toContain("No worker is held");
-  });
-
-  test("an unrecognised status is not narrated", () => {
-    const entry = buildTimeline(
-      run({ status: "TELEPORTED" as RunView["status"] }),
-      [],
-      NOW,
-    ).find((candidate) => candidate.id === "run-status");
-
-    expect(entry?.detail).toBe("Unrecognised status.");
-  });
-
-  test("a failure carries its diagnostic as the final entry", () => {
-    const entries = buildTimeline(
-      run({ status: "FAILED", error: "Sandbox unavailable." }),
-      [],
-      NOW,
-    );
-
-    expect(entries.at(-1)).toMatchObject({
-      kind: "diagnostic",
-      detail: "Sandbox unavailable.",
+describe("each event says what it means, not just what it is called", () => {
+  test("a lifecycle transition names both states and explains the destination", () => {
+    const entry = only("forge.run.transition", {
+      from: "RUNNING",
+      to: "AWAITING_APPROVAL",
+      attempt: 1,
     });
+
+    expect(entry.label).toBe("Run RUNNING → AWAITING_APPROVAL");
+    expect(entry.detail).toContain("No worker is held");
   });
 
-  test("a run without an error adds no diagnostic entry", () => {
-    expect(
-      buildTimeline(run(), [], NOW).some((e) => e.kind === "diagnostic"),
-    ).toBe(false);
+  test("an unrecognised status falls back to the attempt rather than a blank", () => {
+    const entry = only("forge.run.transition", {
+      from: "RUNNING",
+      to: "TELEPORTED",
+      attempt: 2,
+    });
+
+    expect(entry.detail).toContain("Attempt 2");
+  });
+
+  test("a policy decision names the rule that decided it", () => {
+    const entry = only("forge.policy.decide", {
+      decision: "require-approval",
+      action: "slack.post",
+      policyId: "pol_external_publish",
+    });
+
+    expect(entry.label).toBe("Policy require-approval on slack.post");
+    expect(entry.detail).toContain("pol_external_publish");
+  });
+
+  test("an allow with no rule id says so instead of inventing one", () => {
+    const entry = only("forge.policy.decide", {
+      decision: "allow",
+      action: "slack.post",
+    });
+
+    expect(entry.detail).toBe("No rule was named for this decision.");
+  });
+
+  test("an opened gate shows the binding, not the artifact", () => {
+    const entry = only("forge.approval.requested", {
+      nodeId: "publish",
+      effect: "slack.post",
+      effectHash: "abc123",
+      expiresAt: "2026-01-08T00:00:00.000Z",
+    });
+
+    expect(entry.label).toBe("Gate opened on publish for slack.post");
+    expect(entry.detail).toContain("abc123");
+  });
+
+  test("a decision says which gate and which action", () => {
+    const entry = only("forge.approval.decided", {
+      approvalId: "apr_1",
+      decision: "approve",
+      effect: "slack.post",
+      nodeId: "publish",
+    });
+
+    expect(entry.label).toBe("Gate apr_1 approve");
+    expect(entry.detail).toContain("single-use");
+  });
+
+  test("an expiry is described as a timeout, never as a late yes", () => {
+    const entry = only("forge.approval.expired", {
+      approvalId: "apr_1",
+      attempted: "approve",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(entry.label).toBe("Gate apr_1 expired");
+    expect(entry.detail).toContain("timeout, not a slow yes");
+  });
+
+  test("an edit names its successor and says it authorised nothing", () => {
+    const entry = only("forge.approval.edited", {
+      approvalId: "apr_1",
+      reissuedAs: "apr_2",
+    });
+
+    expect(entry.label).toBe("Gate apr_1 edited, reissued as apr_2");
+    expect(entry.detail).toContain("authorises nothing");
+  });
+
+  test("a dispatched effect is marked as what reached the outside world", () => {
+    const entry = only("forge.effect.dispatched", {
+      nodeId: "publish",
+      effect: "slack.post",
+      sequence: 1,
+    });
+
+    expect(entry.label).toBe("Effect slack.post dispatched at publish");
+    expect(entry.detail).toContain("reached the outside world");
+  });
+
+  test("an event this build has never seen is shown, not dropped", () => {
+    const entry = only("forge.worker.job", { jobId: "job_1" });
+
+    expect(entry.kind).toBe("other");
+    expect(entry.label).toBe("forge.worker.job");
+    expect(entry.detail).toBe("runId=run_1, jobId=job_1");
   });
 });

@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
+import { createLocalStack } from "@forge/composition";
+import Fastify from "fastify";
 import { describe, expect, test } from "vitest";
 
 import { createApiApp } from "./main.js";
+import { registerRunRoutes } from "./runs.js";
 
 const BEARER = "local-test";
 const AUTH = { authorization: `Bearer ${BEARER}` };
@@ -30,6 +33,33 @@ function app() {
 }
 
 const startBody = fixture;
+
+/** The same workflow, gated for somebody who is not the caller. */
+function gatedFor(approver: string) {
+  return {
+    ...fixture,
+    policy: {
+      ...fixture.policy,
+      rules: fixture.policy.rules.map((rule) => ({
+        ...(rule as Record<string, unknown>),
+        approvers: [approver],
+      })),
+    },
+  };
+}
+
+async function startRun(
+  server: ReturnType<typeof app> | ReturnType<typeof Fastify>,
+  payload: object = startBody,
+) {
+  const response = await server.inject({
+    method: "POST",
+    url: "/v1/runs",
+    headers: AUTH,
+    payload,
+  });
+  return response.json();
+}
 
 describe("control plane", () => {
   test("compiles a workflow and exposes only its public surface", async () => {
@@ -344,6 +374,25 @@ describe("control plane edges", () => {
     expect(response.json().code).toBe("WORKFLOW_COMPILE_FAILED");
   });
 
+  test("listing a run's gates requires a caller, now that it names deciders", async () => {
+    const server = app();
+    const started = (
+      await server.inject({
+        method: "POST",
+        url: "/v1/runs",
+        headers: AUTH,
+        payload: startBody,
+      })
+    ).json();
+
+    const response = await server.inject({
+      method: "GET",
+      url: `/v1/runs/${started.runId}/approvals`,
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
   test("a run started without policy uses the shared stack and is retrievable", async () => {
     const server = app();
     const started = (
@@ -363,5 +412,277 @@ describe("control plane edges", () => {
 
     expect(fetched.statusCode).toBe(200);
     expect(fetched.json().runId).toBe(started.runId);
+  });
+});
+
+/**
+ * An operator arrives without a run id — that is the whole point of an inbox.
+ * These routes are the ones that make the operator surfaces possible at all.
+ */
+describe("the operator can see the estate without knowing a run id first", () => {
+  test("every run is listed, most recent first, with distinct identifiers", async () => {
+    const server = app();
+    const first = await startRun(server);
+    const second = await startRun(server);
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/v1/runs",
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(200);
+    // Each run carries its own policy, so each gets its own stack. Distinct
+    // ids are what stop the second silently displacing the first.
+    expect(first.runId).not.toBe(second.runId);
+    expect(
+      response.json().runs.map((run: { runId: string }) => run.runId),
+    ).toEqual([second.runId, first.runId]);
+  });
+
+  test("the run list refuses an unauthenticated caller", async () => {
+    const response = await app().inject({ method: "GET", url: "/v1/runs" });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  test("the inbox gathers gates from every run at once", async () => {
+    const server = app();
+    const first = await startRun(server);
+    const second = await startRun(server);
+
+    const inbox = (
+      await server.inject({
+        method: "GET",
+        url: "/v1/approvals",
+        headers: AUTH,
+      })
+    ).json();
+
+    expect(
+      inbox.pending.map((gate: { runId: string }) => gate.runId).sort(),
+    ).toEqual([first.runId, second.runId].sort());
+    expect(inbox.pending[0].effectHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("a gate that names another approver is not in this operator's inbox", async () => {
+    const server = app();
+    const mine = await startRun(server);
+    await startRun(server, gatedFor("finance-lead"));
+
+    const inbox = (
+      await server.inject({
+        method: "GET",
+        url: "/v1/approvals",
+        headers: AUTH,
+      })
+    ).json();
+
+    expect(inbox.pending.map((gate: { runId: string }) => gate.runId)).toEqual([
+      mine.runId,
+    ]);
+  });
+
+  test("the inbox refuses an unauthenticated caller rather than showing everything", async () => {
+    const response = await app().inject({
+      method: "GET",
+      url: "/v1/approvals",
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+});
+
+describe("a decided gate stays visible to the run inspector", () => {
+  test("approving empties the pending list but not the history", async () => {
+    const server = app();
+    const started = await startRun(server);
+    await server.inject({
+      method: "POST",
+      url: `/v1/runs/${started.runId}/approvals/${started.pendingApprovalId}/decision`,
+      headers: AUTH,
+      payload: { decision: "reject", reason: "off brand" },
+    });
+
+    const body = (
+      await server.inject({
+        method: "GET",
+        url: `/v1/runs/${started.runId}/approvals`,
+        headers: AUTH,
+      })
+    ).json();
+
+    expect(body.pending).toEqual([]);
+    expect(body.approvals).toHaveLength(1);
+    expect(body.approvals[0]).toMatchObject({
+      status: "REJECTED",
+      reason: "off brand",
+      decidedBy: "marketing-lead",
+    });
+  });
+
+  test("an edit leaves both the superseded gate and its successor on the run", async () => {
+    const server = app();
+    const started = await startRun(server);
+    await server.inject({
+      method: "POST",
+      url: `/v1/runs/${started.runId}/approvals/${started.pendingApprovalId}/decision`,
+      headers: AUTH,
+      payload: { decision: "edit", patch: { copy: "reworded" } },
+    });
+
+    const body = (
+      await server.inject({
+        method: "GET",
+        url: `/v1/runs/${started.runId}/approvals`,
+        headers: AUTH,
+      })
+    ).json();
+
+    expect(
+      body.approvals.map((gate: { status: string }) => gate.status),
+    ).toEqual(["EDITED", "PENDING"]);
+  });
+});
+
+describe("the run event stream is the telemetry, not a second story", () => {
+  test("the run's own decisions appear in the order they happened", async () => {
+    const server = app();
+    const started = await startRun(server);
+
+    const events = (
+      await server.inject({
+        method: "GET",
+        url: `/v1/runs/${started.runId}/events`,
+        headers: AUTH,
+      })
+    ).json().events;
+
+    const names = events.map((event: { name: string }) => event.name);
+    expect(names).toContain("forge.policy.decide");
+    expect(names).toContain("forge.approval.requested");
+    expect(names).toContain("forge.run.transition");
+    expect(events.map((event: { seq: number }) => event.seq)).toEqual(
+      [...events.map((event: { seq: number }) => event.seq)].sort(
+        (a, b) => a - b,
+      ),
+    );
+  });
+
+  test("every event is classified so a timeline can group it", async () => {
+    const server = app();
+    const started = await startRun(server);
+
+    const events = (
+      await server.inject({
+        method: "GET",
+        url: `/v1/runs/${started.runId}/events`,
+        headers: AUTH,
+      })
+    ).json().events;
+
+    expect(
+      new Set(events.map((event: { kind: string }) => event.kind)),
+    ).toEqual(new Set(["run", "node", "policy", "approval"]));
+  });
+
+  test("one run's events never include another's", async () => {
+    const server = app();
+    const first = await startRun(server);
+    const second = await startRun(server);
+
+    const events = (
+      await server.inject({
+        method: "GET",
+        url: `/v1/runs/${second.runId}/events`,
+        headers: AUTH,
+      })
+    ).json().events;
+
+    expect(
+      events.every(
+        (event: { attributes: { runId?: string } }) =>
+          event.attributes.runId === second.runId,
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(events)).not.toContain(first.runId);
+  });
+
+  test("the stream carries no prompt content and names no human", async () => {
+    const server = app();
+    const started = await startRun(server);
+    await server.inject({
+      method: "POST",
+      url: `/v1/runs/${started.runId}/approvals/${started.pendingApprovalId}/decision`,
+      headers: AUTH,
+      payload: { decision: "approve" },
+    });
+
+    const events = (
+      await server.inject({
+        method: "GET",
+        url: `/v1/runs/${started.runId}/events`,
+        headers: AUTH,
+      })
+    ).json().events;
+
+    const serialised = JSON.stringify(events);
+    expect(serialised).not.toContain("marketing-lead");
+    expect(serialised).toContain("forge.approval.decided");
+    expect(serialised).toContain("forge.effect.dispatched");
+  });
+
+  test("events for an unknown run are a 404, not an empty stream", async () => {
+    const response = await app().inject({
+      method: "GET",
+      url: "/v1/runs/run_nope/events",
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  test("the event stream refuses an unauthenticated caller", async () => {
+    const response = await app().inject({
+      method: "GET",
+      url: "/v1/runs/run_1/events",
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+});
+
+describe("an event family this build does not know is served, not dropped", () => {
+  test("an unrecognised forge event is classified rather than discarded", async () => {
+    // Registered directly so the test can reach the stack the routes read
+    // from. A control plane that silently withheld telemetry it could not
+    // classify would leave an operator reading an incomplete run.
+    const stack = createLocalStack();
+    const server = Fastify({ logger: false });
+    registerRunRoutes(server, {
+      principalFor: (authorization) =>
+        authorization === `Bearer ${BEARER}` ? "marketing-lead" : undefined,
+      stack,
+    });
+
+    const started = await startRun(server, { workflow: fixture.workflow });
+    stack.observability.event("forge.worker.job", {
+      runId: started.runId,
+      jobId: "job_1",
+    });
+
+    const events = (
+      await server.inject({
+        method: "GET",
+        url: `/v1/runs/${started.runId}/events`,
+        headers: AUTH,
+      })
+    ).json().events;
+
+    expect(
+      events.find(
+        (event: { name: string }) => event.name === "forge.worker.job",
+      ),
+    ).toMatchObject({ kind: "other", attributes: { jobId: "job_1" } });
   });
 });

@@ -99,3 +99,72 @@ describe("memory approval store", () => {
     expect(await approvals.getPending("run_1")).toHaveLength(2);
   });
 });
+
+describe("a run's gate history survives the decision", () => {
+  test("a decided gate stays listed for the run it belongs to", async () => {
+    const approvals = store();
+    const approval = await approvals.request(request);
+    await approvals.decide(
+      approval.approvalId,
+      { kind: "reject", reason: "off brand" },
+      "marketing-lead",
+    );
+
+    const history = await approvals.listByRun("run_1");
+
+    expect(history).toHaveLength(1);
+    expect(history[0]?.status).toBe("REJECTED");
+    expect(history[0]?.reason).toBe("off brand");
+    expect(history[0]?.decidedBy).toBe("marketing-lead");
+  });
+
+  test("history is ordered oldest first and never crosses into another run", async () => {
+    const approvals = store();
+    const first = await approvals.request(request);
+    const second = await approvals.request(request);
+    await approvals.request({ ...request, runId: "run_2" });
+
+    expect(
+      (await approvals.listByRun("run_1")).map((record) => record.approvalId),
+    ).toEqual([first.approvalId, second.approvalId]);
+    expect(await approvals.listByRun("run_3")).toEqual([]);
+  });
+});
+
+describe("the global inbox shows an operator only their own gates", () => {
+  test("a gate naming another approver is not in this operator's inbox", async () => {
+    const approvals = store();
+    await approvals.request(request);
+    await approvals.request({
+      ...request,
+      runId: "run_2",
+      approvers: ["finance-lead"],
+    });
+
+    expect(
+      (await approvals.listPendingFor("marketing-lead")).map((r) => r.runId),
+    ).toEqual(["run_1"]);
+    expect(
+      (await approvals.listPendingFor("finance-lead")).map((r) => r.runId),
+    ).toEqual(["run_2"]);
+  });
+
+  test("a gate naming nobody is visible, so it cannot stall unseen", async () => {
+    const approvals = store();
+    await approvals.request({ ...request, approvers: [] });
+
+    expect(await approvals.listPendingFor("anyone")).toHaveLength(1);
+  });
+
+  test("a decided gate leaves the inbox", async () => {
+    const approvals = store();
+    const approval = await approvals.request(request);
+    await approvals.decide(
+      approval.approvalId,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(await approvals.listPendingFor("marketing-lead")).toEqual([]);
+  });
+});

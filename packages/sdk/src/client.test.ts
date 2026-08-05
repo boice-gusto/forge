@@ -203,3 +203,92 @@ describe("decision encoding", () => {
     expect(calls[0]?.init.headers).not.toHaveProperty("content-type");
   });
 });
+
+/**
+ * The routes that let an operator surface exist at all: an inbox that needs no
+ * run id, a run's whole gate history, and the run's own event stream.
+ */
+describe("cross-run and history queries", () => {
+  test("the inbox is a route of its own, not a per-run query", async () => {
+    const { forge, calls } = client(() => ({
+      status: 200,
+      body: { pending: [{ approvalId: "approval_1", runId: "run_9" }] },
+    }));
+    const result = await forge.inbox();
+
+    expect(calls[0]?.url).toBe("http://localhost:3100/v1/approvals");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value[0]?.runId).toBe("run_9");
+  });
+
+  test("the run list unwraps its envelope", async () => {
+    const { forge, calls } = client(() => ({
+      status: 200,
+      body: { runs: [{ runId: "run_2" }, { runId: "run_1" }] },
+    }));
+    const result = await forge.runs();
+
+    expect(calls[0]?.url).toBe("http://localhost:3100/v1/runs");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.map((run) => run.runId)).toEqual(["run_2", "run_1"]);
+  });
+
+  test("a run's gate history is the full set, not only what is pending", async () => {
+    const { forge } = client(() => ({
+      status: 200,
+      body: {
+        pending: [],
+        approvals: [{ approvalId: "approval_1", status: "REJECTED" }],
+      },
+    }));
+    const result = await forge.approvals("run_1");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value[0]?.status).toBe("REJECTED");
+  });
+
+  test("run events unwrap in order", async () => {
+    const { forge, calls } = client(() => ({
+      status: 200,
+      body: { events: [{ seq: 0, name: "forge.run.transition" }] },
+    }));
+    const result = await forge.runEvents("run_1");
+
+    expect(calls[0]?.url).toBe("http://localhost:3100/v1/runs/run_1/events");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value[0]?.name).toBe("forge.run.transition");
+  });
+
+  test("a failed collection query is reported, not turned into an empty list", async () => {
+    const { forge } = client(() => ({
+      status: 401,
+      body: { status: "unauthorized" },
+    }));
+
+    for (const result of await Promise.all([
+      forge.inbox(),
+      forge.runs(),
+      forge.approvals("run_1"),
+      forge.runEvents("run_1"),
+    ])) {
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.code).toBe("unauthorized");
+    }
+  });
+
+  test("the binding is part of the approval the SDK exposes", async () => {
+    const { forge } = client(() => ({
+      status: 200,
+      body: { pending: [{ approvalId: "approval_1", effectHash: "abc123" }] },
+    }));
+    const result = await forge.inbox();
+
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value[0]?.effectHash).toBe("abc123");
+  });
+});

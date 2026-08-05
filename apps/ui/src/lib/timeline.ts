@@ -1,27 +1,35 @@
-import type { ApprovalView, RunView } from "@forge/sdk";
-
-import { presentGate } from "./gate.js";
+import type { RunEventView } from "@forge/sdk";
 
 /**
- * The run timeline the SDK can honestly support today.
+ * The run timeline, read from the control plane's own event stream
+ * (012 §4.3, `GET /runs/:id/events`).
  *
- * 012 §4.3 describes a `ForgeEvent` stream from `GET /runs/:id/events`. That
- * route does not exist yet, so the timeline is derived from the two facts the
- * control plane does expose: the effect ledger — which is ordered, and is the
- * record of what actually reached the outside world — and the gates still
- * pending. Nothing here is inferred beyond that; an empty ledger is shown as
- * an empty ledger rather than as an assumed sequence of nodes.
+ * Nothing here infers what a run did. Every entry is one `forge.*` event the
+ * runtime reported, rendered — so the screen and the trace cannot tell
+ * different stories about the same run. An event this build has never heard of
+ * is shown with its attributes rather than dropped: a timeline that quietly
+ * omits what it does not recognise is worse than one that admits it.
  */
 
-export type TimelineKind = "run" | "effect" | "gate" | "diagnostic";
+export type TimelineKind = RunEventView["kind"];
 
 export interface TimelineEntry {
   readonly id: string;
   readonly kind: TimelineKind;
+  /** Paired with the label so nothing is carried by colour alone. */
   readonly mark: string;
   readonly label: string;
   readonly detail: string;
 }
+
+const MARK: Readonly<Record<TimelineKind, string>> = {
+  run: "■",
+  node: "▸",
+  policy: "§",
+  approval: "◆",
+  effect: "→",
+  other: "•",
+};
 
 const STATUS_DETAIL: Readonly<Record<string, string>> = {
   PENDING: "Accepted; the walk has not started.",
@@ -32,59 +40,70 @@ const STATUS_DETAIL: Readonly<Record<string, string>> = {
   CANCELLED: "Terminal. Cancelled or timed out by policy.",
 };
 
+type Described = { readonly label: string; readonly detail: string };
+
+function attributeList(event: RunEventView): string {
+  return Object.entries(event.attributes)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(", ");
+}
+
+function describe(event: RunEventView): Described {
+  const at = event.attributes;
+  switch (event.name) {
+    case "forge.run.transition":
+      return {
+        label: `Run ${at.from} → ${at.to}`,
+        detail:
+          STATUS_DETAIL[String(at.to)] ??
+          `Attempt ${at.attempt}. Retrying is not a state.`,
+      };
+    case "forge.policy.decide":
+      return {
+        label: `Policy ${at.decision} on ${at.action}`,
+        detail:
+          at.policyId === undefined
+            ? "No rule was named for this decision."
+            : `Decided by rule ${at.policyId}, before any human was asked.`,
+      };
+    case "forge.approval.requested":
+      return {
+        label: `Gate opened on ${at.nodeId} for ${at.effect}`,
+        detail: `Bound to ${at.effectHash}. Expires ${at.expiresAt}.`,
+      };
+    case "forge.approval.decided":
+      return {
+        label: `Gate ${at.approvalId} ${at.decision}`,
+        detail: `On ${at.effect} at ${at.nodeId}. Decisions are single-use.`,
+      };
+    case "forge.approval.expired":
+      return {
+        label: `Gate ${at.approvalId} expired`,
+        detail: `A "${at.attempted}" arrived after ${at.expiresAt}. An expired gate is a timeout, not a slow yes.`,
+      };
+    case "forge.approval.edited":
+      return {
+        label: `Gate ${at.approvalId} edited, reissued as ${at.reissuedAs}`,
+        detail:
+          "An edit authorises nothing; the amended action needs its own decision.",
+      };
+    case "forge.effect.dispatched":
+      return {
+        label: `Effect ${at.effect} dispatched at ${at.nodeId}`,
+        detail: `Ledger entry ${at.sequence}. This is what reached the outside world.`,
+      };
+    default:
+      return { label: event.name, detail: attributeList(event) };
+  }
+}
+
 export function buildTimeline(
-  run: RunView,
-  approvals: readonly ApprovalView[],
-  now: number,
+  events: readonly RunEventView[],
 ): readonly TimelineEntry[] {
-  const entries: TimelineEntry[] = [
-    {
-      id: "run-start",
-      kind: "run",
-      mark: "▸",
-      label: `Run accepted for ${run.workflowId}`,
-      detail: `Attempt ${run.attempt}. A retry increments the attempt; it is not a separate state.`,
-    },
-  ];
-
-  for (const [index, nodeId] of run.performedEffects.entries()) {
-    entries.push({
-      id: `effect-${nodeId}`,
-      kind: "effect",
-      mark: "→",
-      label: `Effect dispatched at node ${nodeId}`,
-      detail: `Ledger entry ${index + 1}. The ledger is what stops a resumed attempt dispatching this twice.`,
-    });
-  }
-
-  for (const approval of approvals) {
-    const presentation = presentGate(approval, now);
-    entries.push({
-      id: `gate-${approval.approvalId}`,
-      kind: "gate",
-      mark: presentation.mark,
-      label: `Gate on ${approval.nodeId} for ${approval.effect}`,
-      detail: `${presentation.label}. Policy ${approval.policyId}.`,
-    });
-  }
-
-  entries.push({
-    id: "run-status",
-    kind: "run",
-    mark: "■",
-    label: `Status ${run.status}`,
-    detail: STATUS_DETAIL[run.status] ?? "Unrecognised status.",
-  });
-
-  if (run.error !== undefined) {
-    entries.push({
-      id: "run-error",
-      kind: "diagnostic",
-      mark: "✕",
-      label: "Diagnostic",
-      detail: run.error,
-    });
-  }
-
-  return entries;
+  return events.map((event) => ({
+    id: `event-${event.seq}`,
+    kind: event.kind,
+    mark: MARK[event.kind],
+    ...describe(event),
+  }));
 }

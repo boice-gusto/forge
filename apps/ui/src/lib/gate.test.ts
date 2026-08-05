@@ -17,10 +17,12 @@ function gate(overrides: Partial<ApprovalView> = {}): ApprovalView {
     runId: "run_1",
     nodeId: "publish",
     effect: "slack.post",
+    effectHash: "9f2c4b1ad0e7315c8a6b2fd41e0c93875ab6d2e10f4c7b93a",
     policyId: "pol_external_publish",
     approvers: ["marketing-lead"],
     expiresAt: "2026-01-01T12:30:00.000Z",
     status: "PENDING",
+    createdAt: "2026-01-01T11:30:00.000Z",
     ...overrides,
   };
 }

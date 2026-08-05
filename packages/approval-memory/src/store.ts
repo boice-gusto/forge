@@ -64,5 +64,19 @@ export function createMemoryApprovalStore(
         (record) => record.runId === runId && record.status === "PENDING",
       );
     },
+
+    async listByRun(runId: string) {
+      // Insertion order is creation order, so the run reads chronologically.
+      return [...records.values()].filter((record) => record.runId === runId);
+    },
+
+    async listPendingFor(principal: string) {
+      return [...records.values()].filter(
+        (record) =>
+          record.status === "PENDING" &&
+          (record.approvers.length === 0 ||
+            record.approvers.includes(principal)),
+      );
+    },
   };
 }

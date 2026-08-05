@@ -10,7 +10,11 @@ import {
 import { ApprovalCard } from "./approval-card.js";
 
 /**
- * The queue of gates waiting on a human.
+ * The queue of gates waiting on this operator, across every run.
+ *
+ * The queue spans runs, so nothing about it may be a property of one run —
+ * each card states its own binding. Being handed a per-run fingerprint was
+ * what previously made this list impossible to fill without a run id.
  *
  * All the decision state lives here rather than in the card, so a decision is
  * assembled in one place and every submission goes through `buildDecision`.
@@ -26,10 +30,9 @@ export type DecisionOutcome =
 
 export interface ApprovalInboxProps {
   readonly approvals: readonly ApprovalView[];
-  /** The sealed artifact fingerprint every gate on this run is bound to. */
-  readonly fingerprint: string;
   readonly now: number;
   readonly onDecide: (
+    runId: string,
     approvalId: string,
     decision: Decision,
   ) => Promise<DecisionOutcome>;
@@ -46,7 +49,6 @@ function isTextEntry(target: EventTarget | null): boolean {
 
 export function ApprovalInbox({
   approvals,
-  fingerprint,
   now,
   onDecide,
 }: ApprovalInboxProps) {
@@ -76,7 +78,7 @@ export function ApprovalInbox({
     }
 
     setBusyId(id);
-    const result = await onDecide(id, outcome.decision);
+    const result = await onDecide(approval.runId, id, outcome.decision);
     setBusyId(undefined);
 
     if (result.ok) {
@@ -122,10 +124,11 @@ export function ApprovalInbox({
     <section aria-label="Approval inbox" className="rounded-lg border p-4">
       <h2 className="text-lg font-semibold">Approval inbox</h2>
       <p className="mt-1 text-sm opacity-70">
-        {approvals.length} gate{approvals.length === 1 ? "" : "s"} bound to
-        artifact <code className="break-all">{fingerprint}</code>. Keys:{" "}
-        <kbd>j</kbd> and <kbd>k</kbd> move, <kbd>a</kbd> starts an approval,{" "}
-        <kbd>r</kbd> starts a rejection. Both still need confirming.
+        {approvals.length} gate{approvals.length === 1 ? "" : "s"} waiting on
+        you, across {new Set(approvals.map((gate) => gate.runId)).size} run
+        {new Set(approvals.map((gate) => gate.runId)).size === 1 ? "" : "s"}.
+        Keys: <kbd>j</kbd> and <kbd>k</kbd> move, <kbd>a</kbd> starts an
+        approval, <kbd>r</kbd> starts a rejection. Both still need confirming.
       </p>
       <ul className="mt-3 space-y-4">
         {approvals.map((approval, index) => (
@@ -141,7 +144,6 @@ export function ApprovalInbox({
           >
             <ApprovalCard
               approval={approval}
-              fingerprint={fingerprint}
               now={now}
               draft={drafts[approval.approvalId] ?? emptyDraft}
               busy={busyId === approval.approvalId}

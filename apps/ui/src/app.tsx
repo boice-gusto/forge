@@ -1,5 +1,10 @@
-import type { ApprovalView, ForgeClient, RunView } from "@forge/sdk";
-import { type FormEvent, useEffect, useState } from "react";
+import type {
+  ApprovalView,
+  ForgeClient,
+  RunEventView,
+  RunView,
+} from "@forge/sdk";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 import {
   ApprovalInbox,
@@ -16,6 +21,9 @@ import { RunInspector } from "./components/run-inspector.js";
  * through `@forge/sdk` and nothing else: the runtime's rules cannot be
  * enforced in a browser, so restating any of them here would only produce a
  * second, weaker copy.
+ *
+ * The inbox loads on its own, without a run id. An operator arrives knowing
+ * that something needs deciding, not knowing which run needs it.
  */
 
 export interface ForgeAppProps {
@@ -25,7 +33,12 @@ export interface ForgeAppProps {
   readonly now?: number;
 }
 
-type LoadState =
+type InboxState =
+  | { readonly kind: "loading" }
+  | { readonly kind: "error"; readonly message: string }
+  | { readonly kind: "loaded"; readonly approvals: readonly ApprovalView[] };
+
+type RunState =
   | { readonly kind: "idle" }
   | { readonly kind: "loading" }
   | { readonly kind: "error"; readonly message: string }
@@ -33,6 +46,7 @@ type LoadState =
       readonly kind: "loaded";
       readonly run: RunView;
       readonly approvals: readonly ApprovalView[];
+      readonly events: readonly RunEventView[];
     };
 
 /** Expiry is time-sensitive, so the countdown has to move on its own. */
@@ -49,7 +63,21 @@ export function ForgeApp({ dependencies, client, now }: ForgeAppProps) {
   const tick = useTick();
   const clock = now ?? tick;
   const [runIdInput, setRunIdInput] = useState("");
-  const [state, setState] = useState<LoadState>({ kind: "idle" });
+  const [inbox, setInbox] = useState<InboxState>({ kind: "loading" });
+  const [state, setState] = useState<RunState>({ kind: "idle" });
+
+  const loadInbox = useCallback(async (): Promise<void> => {
+    const result = await client.inbox();
+    setInbox(
+      result.ok
+        ? { kind: "loaded", approvals: result.value }
+        : { kind: "error", message: `${result.code}: ${result.message}` },
+    );
+  }, [client]);
+
+  useEffect(() => {
+    void loadInbox();
+  }, [loadInbox]);
 
   const load = async (runId: string): Promise<void> => {
     setState({ kind: "loading" });
@@ -60,7 +88,7 @@ export function ForgeApp({ dependencies, client, now }: ForgeAppProps) {
       return;
     }
 
-    const approvals = await client.pendingApprovals(runId);
+    const approvals = await client.approvals(runId);
     if (!approvals.ok) {
       setState({
         kind: "error",
@@ -69,7 +97,21 @@ export function ForgeApp({ dependencies, client, now }: ForgeAppProps) {
       return;
     }
 
-    setState({ kind: "loaded", run: run.value, approvals: approvals.value });
+    const events = await client.runEvents(runId);
+    if (!events.ok) {
+      setState({
+        kind: "error",
+        message: `${events.code}: ${events.message}`,
+      });
+      return;
+    }
+
+    setState({
+      kind: "loaded",
+      run: run.value,
+      approvals: approvals.value,
+      events: events.value,
+    });
   };
 
   const decide = async (
@@ -80,10 +122,12 @@ export function ForgeApp({ dependencies, client, now }: ForgeAppProps) {
     const result = await client.decide(runId, approvalId, decision);
     if (!result.ok)
       return { ok: false, message: `${result.code}: ${result.message}` };
-    // Both the gate list and the effect ledger have moved; re-read rather than
-    // patch local state, so the screen reflects the control plane and not a
-    // guess about what the decision did.
-    await load(runId);
+
+    // The queue, the gate list and the effect ledger have all moved. Re-read
+    // rather than patch local state, so the screen reflects the control plane
+    // and not a guess about what the decision did.
+    await loadInbox();
+    if (state.kind === "loaded" && state.run.runId === runId) await load(runId);
     return { ok: true };
   };
 
@@ -95,6 +139,20 @@ export function ForgeApp({ dependencies, client, now }: ForgeAppProps) {
   return (
     <main className="mx-auto max-w-5xl space-y-6 p-6">
       <h1 className="text-2xl font-bold">Forge control plane</h1>
+
+      {inbox.kind === "loading" ? <p>Loading the approval inbox…</p> : null}
+      {inbox.kind === "error" ? (
+        <p role="alert" className="font-medium">
+          {inbox.message}
+        </p>
+      ) : null}
+      {inbox.kind === "loaded" ? (
+        <ApprovalInbox
+          approvals={inbox.approvals}
+          now={clock}
+          onDecide={decide}
+        />
+      ) : null}
 
       <form onSubmit={onSubmit} className="flex flex-wrap items-end gap-2">
         <div>
@@ -124,21 +182,12 @@ export function ForgeApp({ dependencies, client, now }: ForgeAppProps) {
       ) : null}
 
       {state.kind === "loaded" ? (
-        <>
-          <ApprovalInbox
-            approvals={state.approvals}
-            fingerprint={state.run.fingerprint}
-            now={clock}
-            onDecide={(approvalId, decision) =>
-              decide(state.run.runId, approvalId, decision)
-            }
-          />
-          <RunInspector
-            run={state.run}
-            approvals={state.approvals}
-            now={clock}
-          />
-        </>
+        <RunInspector
+          run={state.run}
+          approvals={state.approvals}
+          events={state.events}
+          now={clock}
+        />
       ) : null}
 
       <LocalStatus dependencies={dependencies} />

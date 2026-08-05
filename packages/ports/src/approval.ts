@@ -53,4 +53,18 @@ export interface ApprovalPort {
   ): Promise<ApprovalRecord | undefined>;
   get(approvalId: string): Promise<ApprovalRecord | undefined>;
   getPending(runId: string): Promise<readonly ApprovalRecord[]>;
+  /**
+   * Every gate this run opened, decided ones included, oldest first. A run
+   * inspector that could only see `PENDING` could not show that a gate was
+   * refused — and a refusal is the outcome most worth being able to audit.
+   */
+  listByRun(runId: string): Promise<readonly ApprovalRecord[]>;
+  /**
+   * Pending gates across every run: the operator inbox. Scoped to a principal
+   * because a gate names its approvers, and an inbox that ignored them would
+   * hand one operator another's queue. A gate that names nobody is open to any
+   * authenticated operator — otherwise it would be visible to no one and the
+   * run would stall behind a decision nobody could see they had to make.
+   */
+  listPendingFor(principal: string): Promise<readonly ApprovalRecord[]>;
 }

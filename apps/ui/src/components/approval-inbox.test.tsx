@@ -11,7 +11,6 @@ import { ApprovalInbox, type DecisionOutcome } from "./approval-inbox.js";
 afterEach(cleanup);
 
 const NOW = Date.parse("2026-01-01T12:00:00.000Z");
-const FINGERPRINT = "sha256:9f2c4b1ad0e7315c8a6b2fd41e0c93875ab6d2e10f4c7b93a";
 
 function gate(overrides: Partial<ApprovalView> = {}): ApprovalView {
   return {
@@ -19,10 +18,12 @@ function gate(overrides: Partial<ApprovalView> = {}): ApprovalView {
     runId: "run_1",
     nodeId: "publish",
     effect: "slack.post",
+    effectHash: "9f2c4b1ad0e7315c8a6b2fd41e0c93875ab6d2e10f4c7b93a",
     policyId: "pol_external_publish",
     approvers: ["marketing-lead"],
     expiresAt: "2026-01-01T12:30:00.000Z",
     status: "PENDING",
+    createdAt: "2026-01-01T11:30:00.000Z",
     ...overrides,
   };
 }
@@ -32,16 +33,15 @@ function draw(
   outcome: DecisionOutcome = { ok: true },
 ) {
   const onDecide =
-    vi.fn<(id: string, decision: Decision) => Promise<DecisionOutcome>>();
+    vi.fn<
+      (
+        runId: string,
+        approvalId: string,
+        decision: Decision,
+      ) => Promise<DecisionOutcome>
+    >();
   onDecide.mockResolvedValue(outcome);
-  render(
-    <ApprovalInbox
-      approvals={approvals}
-      fingerprint={FINGERPRINT}
-      now={NOW}
-      onDecide={onDecide}
-    />,
-  );
+  render(<ApprovalInbox approvals={approvals} now={NOW} onDecide={onDecide} />);
   return { onDecide };
 }
 
@@ -76,7 +76,7 @@ describe("a decision is sent for exactly the gate it was made on", () => {
       }),
     );
 
-    expect(onDecide).toHaveBeenCalledExactlyOnceWith("apr_2", {
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith("run_1", "apr_2", {
       kind: "approve",
     });
   });
@@ -93,7 +93,7 @@ describe("a decision is sent for exactly the gate it was made on", () => {
       screen.getByRole("button", { name: "Confirm rejection" }),
     );
 
-    expect(onDecide).toHaveBeenCalledExactlyOnceWith("apr_1", {
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith("run_1", "apr_1", {
       kind: "reject",
       reason: "Off brand.",
     });
@@ -113,7 +113,7 @@ describe("a decision is sent for exactly the gate it was made on", () => {
       }),
     );
 
-    expect(onDecide).toHaveBeenCalledExactlyOnceWith("apr_1", {
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith("run_1", "apr_1", {
       kind: "edit",
       patch: { channel: "#internal" },
     });
@@ -131,7 +131,7 @@ describe("a decision is sent for exactly the gate it was made on", () => {
       screen.getByRole("button", { name: "Record timeout" }),
     );
 
-    expect(onDecide).toHaveBeenCalledExactlyOnceWith("apr_1", {
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith("run_1", "apr_1", {
       kind: "timeout",
     });
   });
@@ -291,17 +291,38 @@ describe("keyboard shortcuts move the operator, they do not decide for them", ()
   });
 });
 
-describe("the queue names the artifact every gate is bound to", () => {
-  test("the header states the count and the fingerprint", () => {
-    draw([gate({ approvalId: "apr_1" }), gate({ approvalId: "apr_2" })]);
+describe("the queue spans runs, so it says how many and whose", () => {
+  test("gates from different runs sit in one queue and the header counts both", () => {
+    draw([
+      gate({ approvalId: "apr_1", runId: "run_1" }),
+      gate({ approvalId: "apr_2", runId: "run_2", effect: "payments.send" }),
+    ]);
 
-    const header = screen.getByText(/2 gates bound to artifact/);
-    expect(header).toHaveTextContent(FINGERPRINT);
+    expect(
+      screen.getByText(/2 gates waiting on you, across 2 runs/),
+    ).toBeInTheDocument();
   });
 
-  test("a single gate is not pluralised", () => {
+  test("a single gate on a single run is not pluralised either way", () => {
     draw([gate()]);
 
-    expect(screen.getByText(/1 gate bound to artifact/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 gate waiting on you, across 1 run\./),
+    ).toBeInTheDocument();
+  });
+
+  test("a decision is routed to the run the gate belongs to, not to a global one", async () => {
+    const { onDecide } = draw([
+      gate({ approvalId: "apr_9", runId: "run_77", effect: "payments.send" }),
+    ]);
+
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Yes, authorise payments.send" }),
+    );
+
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith("run_77", "apr_9", {
+      kind: "approve",
+    });
   });
 });

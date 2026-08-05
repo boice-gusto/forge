@@ -51,6 +51,12 @@ export interface LocalStackOptions {
   ) => Readonly<Record<string, Vote>>;
   /** Set false to prove a required sandbox failing closed. */
   readonly sandboxAvailable?: boolean;
+  /**
+   * Shared so that a host building one stack per run does not mint `run_1`
+   * twice. Two runs with the same id are one run as far as any index is
+   * concerned, and the second silently displaces the first.
+   */
+  readonly ids?: IdPort;
 }
 
 export interface LocalStack {
@@ -71,7 +77,7 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
   const clock: ClockPort = { now: () => new Date(instant) };
 
   const counters = new Map<string, number>();
-  const ids: IdPort = {
+  const ids: IdPort = options.ids ?? {
     next(prefix) {
       const value = (counters.get(prefix) ?? 0) + 1;
       counters.set(prefix, value);

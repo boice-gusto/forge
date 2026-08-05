@@ -1,5 +1,6 @@
-import type { ApprovalView, RunView } from "@forge/sdk";
+import type { ApprovalView, RunEventView, RunView } from "@forge/sdk";
 
+import { presentGate } from "../lib/gate.js";
 import { buildTimeline } from "../lib/timeline.js";
 
 /**
@@ -9,11 +10,17 @@ import { buildTimeline } from "../lib/timeline.js";
  * effect was really dispatched. Status says what the runtime believes; the
  * ledger says what reached the outside world, and only the second one is
  * evidence.
+ *
+ * Gates are listed whatever their outcome. A refusal is the outcome most worth
+ * being able to audit, and a screen that showed only what is still pending
+ * would make a rejected gate indistinguishable from one that never existed.
  */
 
 export interface RunInspectorProps {
   readonly run: RunView;
+  /** Every gate this run opened, decided ones included. */
   readonly approvals: readonly ApprovalView[];
+  readonly events: readonly RunEventView[];
   readonly now: number;
 }
 
@@ -41,8 +48,62 @@ function Fact({
   );
 }
 
-export function RunInspector({ run, approvals, now }: RunInspectorProps) {
-  const timeline = buildTimeline(run, approvals, now);
+/** Who decided, when, and why — or that nobody has yet. */
+function GateAudit({ approval }: { readonly approval: ApprovalView }) {
+  if (approval.decidedBy === undefined)
+    return <p className="opacity-70">No decision has been recorded.</p>;
+
+  return (
+    <p className="opacity-70">
+      Decided by {approval.decidedBy} at {approval.decidedAt}
+      {approval.reason === undefined ? "." : `: ${approval.reason}`}
+    </p>
+  );
+}
+
+function Gates({
+  approvals,
+  now,
+}: {
+  readonly approvals: readonly ApprovalView[];
+  readonly now: number;
+}) {
+  if (approvals.length === 0)
+    return <p className="mt-2 text-sm">This run has opened no gate.</p>;
+
+  return (
+    <ul aria-label="Gates" className="mt-2 space-y-2 text-sm">
+      {approvals.map((approval) => {
+        const presentation = presentGate(approval, now);
+        return (
+          <li
+            key={approval.approvalId}
+            data-gate-state={presentation.state}
+            className="rounded border p-2"
+          >
+            <p className="font-medium">
+              <span aria-hidden="true">{presentation.mark} </span>
+              {approval.effect} at {approval.nodeId} — {presentation.label}
+            </p>
+            <p className="break-all opacity-70">
+              Binding <code>{approval.effectHash}</code>. Policy{" "}
+              {approval.policyId}.
+            </p>
+            <GateAudit approval={approval} />
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+export function RunInspector({
+  run,
+  approvals,
+  events,
+  now,
+}: RunInspectorProps) {
+  const timeline = buildTimeline(events);
 
   return (
     <section aria-label="Run inspector" className="rounded-lg border p-4">
@@ -80,18 +141,27 @@ export function RunInspector({ run, approvals, now }: RunInspectorProps) {
         </ol>
       )}
 
+      <h3 className="mt-4 text-base font-semibold">Gates</h3>
+      <Gates approvals={approvals} now={now} />
+
       <h3 className="mt-4 text-base font-semibold">Timeline</h3>
-      <ol aria-label="Run timeline" className="mt-2 space-y-2 text-sm">
-        {timeline.map((entry) => (
-          <li key={entry.id} data-timeline-kind={entry.kind}>
-            <p className="font-medium">
-              <span aria-hidden="true">{entry.mark} </span>
-              {entry.label}
-            </p>
-            <p className="opacity-70">{entry.detail}</p>
-          </li>
-        ))}
-      </ol>
+      {timeline.length === 0 ? (
+        <p className="mt-2 text-sm">
+          The control plane has reported no event for this run.
+        </p>
+      ) : (
+        <ol aria-label="Run timeline" className="mt-2 space-y-2 text-sm">
+          {timeline.map((entry) => (
+            <li key={entry.id} data-timeline-kind={entry.kind}>
+              <p className="font-medium">
+                <span aria-hidden="true">{entry.mark} </span>
+                {entry.label}
+              </p>
+              <p className="break-all opacity-70">{entry.detail}</p>
+            </li>
+          ))}
+        </ol>
+      )}
 
       {run.error === undefined ? null : (
         <>

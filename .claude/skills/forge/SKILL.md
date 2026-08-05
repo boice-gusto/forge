@@ -79,10 +79,16 @@ every node kind.
 ```
 POST /v1/workflows/compile                                  → public surface or diagnostics
 POST /v1/runs                                               → 201 run record
+GET  /v1/runs                                               → every run, newest first
 GET  /v1/runs/:runId                                        → run record
-GET  /v1/runs/:runId/approvals                              → pending gates
+GET  /v1/runs/:runId/approvals                              → { pending, approvals } incl. history
+GET  /v1/runs/:runId/events                                 → the run's forge.* stream
+GET  /v1/approvals                                          → the global inbox, scoped to the caller
 POST /v1/runs/:runId/approvals/:approvalId/decision         → approve | reject | edit | timeout
 ```
+
+A gate is in your inbox if it names you as an approver **or names nobody**. A
+gate no one could see would stall behind a decision nobody knew was owed.
 
 Authorisation is `Bearer <admin token>`. **The principal comes from the authenticated
 caller, never from the body.** Do not add a `principal` field to a request payload —
@@ -136,6 +142,23 @@ change pass, that is the signal to stop.
   fallback. An unmatched policy action denies by default.
 - **Retry is an attempt, not a state.** A retryable node failure increments the
   attempt up to the highest `maxAttempts` declared on any node; the run stays RUNNING.
+
+## Telemetry
+
+Spans follow 011: `forge.run.start` / `.succeeded` / `.transition`,
+`forge.policy.decide`, `forge.approval.requested` / `.decided` / `.expired` /
+`.edited`, `forge.effect.dispatched`, and `forge.node.*`. The transition event
+is emitted from the runtime's single `update()` choke point, so no status change
+can be missed.
+
+**A principal never reaches a span.** `forge.approval.decided` carries
+`principalHash`, which links to the durable `ApprovalRecord.decidedBy` without
+putting a person in a trace. Redaction lives in the adapter and runs on every
+attribute — `email`, `ssn`, `wage`, `prompt` content and the rest become
+`[REDACTED]`, while `promptRef` stays, because an identifier is not content.
+
+Telemetry fails **open**, alone among the ports: a throwing sink must never take
+down a run. Everything else fails closed.
 
 ## Judge routing
 
@@ -208,6 +231,11 @@ apps/*  →  company, runtime, compiler  →  ports, ir  →  types
   is treated as `@forge/runtime`. Until this existed, `test:architecture` only
   checked hand-written strings and would have passed with the repo in full
   violation.
+- `FORGE_SCAN_ROOTS=/abs/path/forge.gusto:/abs/path/forge.buzz` extends the scan
+  to checked-out company repositories, which is the only way the company rules
+  reach the code that has to obey them.
+- A company's `acceptance/` and `demos/` are its **composition root** and may
+  construct the host. Shipped company code may not. The vendor list binds both.
 - Core must never import a company extension (`forge.gusto`, `forge.acme`).
 - Adapters are bound only in composition roots: `apps/api`, `apps/worker`, and
   `packages/composition` for the local stack.
@@ -219,6 +247,9 @@ in `packages/`, it belongs in a company repository instead.
 ## Verifying
 
 ```sh
+# The Postgres store suites need Docker. Without it they skip, coverage for
+# those packages drops to zero, and test:coverage fails — a silent skip must
+# not read as green. On a Colima host, export DOCKER_HOST first.
 pnpm lint && pnpm typecheck && pnpm test && pnpm test:coverage
 pnpm test:architecture && pnpm test:security
 pnpm security:secrets && pnpm security:licenses

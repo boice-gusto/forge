@@ -21,8 +21,8 @@ function fact(term: string): HTMLElement {
 }
 
 const NOW = Date.parse("2026-01-01T12:00:00.000Z");
-const FINGERPRINT =
-  "sha256:9f2c4b1ad0e7315c8a6b2fd41e0c93875ab6d2e10f4c7b93a5d81c2e6f0b4a37";
+const BINDING =
+  "9f2c4b1ad0e7315c8a6b2fd41e0c93875ab6d2e10f4c7b93a5d81c2e6f0b4a37";
 
 function gate(overrides: Partial<ApprovalView> = {}): ApprovalView {
   return {
@@ -30,10 +30,12 @@ function gate(overrides: Partial<ApprovalView> = {}): ApprovalView {
     runId: "run_1",
     nodeId: "publish",
     effect: "slack.post",
+    effectHash: BINDING,
     policyId: "pol_external_publish",
     approvers: ["marketing-lead", "compliance"],
     expiresAt: "2026-01-01T12:30:00.000Z",
     status: "PENDING",
+    createdAt: "2026-01-01T11:30:00.000Z",
     ...overrides,
   };
 }
@@ -50,7 +52,6 @@ function draw(
   render(
     <ApprovalCard
       approval={overrides.approval ?? gate()}
-      fingerprint={FINGERPRINT}
       now={NOW}
       draft={overrides.draft ?? emptyDraft}
       {...(overrides.error === undefined ? {} : { error: overrides.error })}
@@ -72,10 +73,12 @@ describe("an approval shows the exact action it authorises", () => {
     expect(fact("Expires")).toHaveTextContent("30m left");
   });
 
-  test("the artifact fingerprint is shown in full, not truncated away", () => {
+  test("the binding is shown in full, not the weaker artifact fingerprint", () => {
     draw();
 
-    expect(fact("Artifact fingerprint")).toHaveTextContent(FINGERPRINT);
+    // runId + nodeId + effect + fingerprint, hashed. The fingerprint alone
+    // would identify the workflow, not the action being authorised.
+    expect(fact("Binding (effect hash)")).toHaveTextContent(BINDING);
   });
 
   test("the binding is stated as covering this action and no other", () => {
@@ -85,7 +88,7 @@ describe("an approval shows the exact action it authorises", () => {
     expect(binding).toHaveTextContent("slack.post");
     expect(binding).toHaveTextContent("publish");
     expect(binding).toHaveTextContent("run_1");
-    expect(binding).toHaveTextContent(FINGERPRINT);
+    expect(binding).toHaveTextContent(BINDING);
     expect(binding).toHaveTextContent("authorises nothing else");
   });
 

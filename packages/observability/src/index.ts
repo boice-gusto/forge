@@ -3,4 +3,4 @@ export {
   type ForgeLogContext,
   type LogSink,
 } from "./logger.js";
-export { redact } from "./redaction.js";
+export { redact, redactAttributes } from "./redaction.js";

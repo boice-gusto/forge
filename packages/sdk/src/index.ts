@@ -13,6 +13,7 @@ export {
   type ForgeClient,
   type ForgeClientOptions,
   type ForgeResult,
+  type RunEventView,
   type RunStatus,
   type RunView,
   type StartRunInput,

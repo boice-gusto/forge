@@ -30,10 +30,34 @@ export interface ApprovalView {
   readonly runId: string;
   readonly nodeId: string;
   readonly effect: string;
+  /**
+   * The binding: run + node + effect + artifact fingerprint, hashed. This —
+   * not the run's fingerprint — is what the decision authorises, so it is what
+   * an operator has to be shown. A screen that displays the fingerprint alone
+   * is showing which artifact, not which action.
+   */
+  readonly effectHash: string;
   readonly policyId: string;
   readonly approvers: readonly string[];
   readonly expiresAt: string;
   readonly status: string;
+  readonly createdAt: string;
+  readonly decidedBy?: string;
+  readonly decidedAt?: string;
+  readonly reason?: string;
+}
+
+/**
+ * One entry of a run's ordered event stream (012 §4.3). `name` is the Forge
+ * event name rather than a rendered sentence: a server-written label would be
+ * a second, drifting copy of what the taxonomy already says (011 §4).
+ */
+export interface RunEventView {
+  readonly seq: number;
+  readonly at: string;
+  readonly kind: "run" | "node" | "policy" | "approval" | "effect" | "other";
+  readonly name: string;
+  readonly attributes: Readonly<Record<string, string | number | boolean>>;
 }
 
 export interface CompiledView {
@@ -90,9 +114,19 @@ export interface ForgeClient {
   compile(workflow: unknown): Promise<ForgeResult<CompiledView>>;
   start(input: StartRunInput): Promise<ForgeResult<RunView>>;
   getRun(runId: string): Promise<ForgeResult<RunView>>;
+  /** Every run the control plane knows about, most recent first. */
+  runs(): Promise<ForgeResult<readonly RunView[]>>;
+  /**
+   * Gates waiting on the authenticated caller, across every run. An inbox that
+   * needed a run id first would not be an inbox.
+   */
+  inbox(): Promise<ForgeResult<readonly ApprovalView[]>>;
   pendingApprovals(
     runId: string,
   ): Promise<ForgeResult<readonly ApprovalView[]>>;
+  /** Every gate this run opened, decided ones included. */
+  approvals(runId: string): Promise<ForgeResult<readonly ApprovalView[]>>;
+  runEvents(runId: string): Promise<ForgeResult<readonly RunEventView[]>>;
   decide(
     runId: string,
     approvalId: string,
@@ -152,18 +186,35 @@ export function createForgeClient(options: ForgeClientOptions): ForgeClient {
     return { ok: true, value: payload as Value };
   }
 
+  /** Unwraps the one-key envelope every collection route replies with. */
+  async function collection<Item, Key extends string>(
+    path: string,
+    key: Key,
+  ): Promise<ForgeResult<readonly Item[]>> {
+    const result = await call<Record<Key, readonly Item[]>>("GET", path);
+    return result.ok ? { ok: true, value: result.value[key] } : result;
+  }
+
   return {
     compile: (workflow) =>
       call<CompiledView>("POST", "/v1/workflows/compile", { workflow }),
     start: (input) => call<RunView>("POST", "/v1/runs", input),
     getRun: (runId) => call<RunView>("GET", `/v1/runs/${runId}`),
-    async pendingApprovals(runId) {
-      const result = await call<{ pending: readonly ApprovalView[] }>(
-        "GET",
+    runs: () => collection<RunView, "runs">("/v1/runs", "runs"),
+    inbox: () =>
+      collection<ApprovalView, "pending">("/v1/approvals", "pending"),
+    pendingApprovals: (runId) =>
+      collection<ApprovalView, "pending">(
         `/v1/runs/${runId}/approvals`,
-      );
-      return result.ok ? { ok: true, value: result.value.pending } : result;
-    },
+        "pending",
+      ),
+    approvals: (runId) =>
+      collection<ApprovalView, "approvals">(
+        `/v1/runs/${runId}/approvals`,
+        "approvals",
+      ),
+    runEvents: (runId) =>
+      collection<RunEventView, "events">(`/v1/runs/${runId}/events`, "events"),
     decide: (runId, approvalId, decision) =>
       call<RunView>(
         "POST",

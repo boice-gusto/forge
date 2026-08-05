@@ -61,12 +61,53 @@ export interface RunRoutesOptions {
   readonly stack?: LocalStack;
 }
 
+/**
+ * An event's family, from its name. The UI groups a timeline by this, and a
+ * name it has never seen is shown rather than dropped — a control plane that
+ * silently discards its own telemetry is worse than one that shows it raw.
+ */
+function eventKind(name: string): RunEventView["kind"] {
+  const family = name.split(".")[1];
+  switch (family) {
+    case "run":
+      return "run";
+    case "node":
+      return "node";
+    case "policy":
+      return "policy";
+    case "approval":
+      return "approval";
+    case "effect":
+      return "effect";
+    default:
+      return "other";
+  }
+}
+
+interface RunEventView {
+  readonly seq: number;
+  readonly at: string;
+  readonly kind: "run" | "node" | "policy" | "approval" | "effect" | "other";
+  readonly name: string;
+  readonly attributes: Readonly<Record<string, string | number | boolean>>;
+}
+
 export function registerRunRoutes(
   app: FastifyInstance,
   options: RunRoutesOptions,
 ): LocalStack {
+  /**
+   * Every run, in the order it was accepted, and the stack that owns it. A run
+   * started with its own policy gets its own stack, so there is no single
+   * runtime to ask — the index is what makes a cross-run query possible at all.
+   */
   const stacks = new Map<string, LocalStack>();
   const shared = options.stack ?? createLocalStack();
+
+  /** Each approval store exactly once, however many runs share it. */
+  const stores = (): readonly LocalStack[] => [
+    ...new Set<LocalStack>([shared, ...stacks.values()]),
+  ];
 
   app.post("/v1/workflows/compile", async (request, reply) => {
     const body = (request.body ?? {}) as StartBody;
@@ -117,6 +158,10 @@ export function registerRunRoutes(
             rules: body.policy.rules ?? [],
             grants: body.policy.grants ?? [],
             environment: "production",
+            // One id source across every stack. Without it each per-policy
+            // stack mints `run_1`, and the second run displaces the first in
+            // the index above.
+            ids: shared.ids,
             ...(body.panel === undefined ? {} : { panel: body.panel }),
             ...(body.review?.votes === undefined
               ? {}
@@ -136,6 +181,41 @@ export function registerRunRoutes(
     return reply.code(201).send(run);
   });
 
+  app.get("/v1/runs", async (request, reply) => {
+    const principal = options.principalFor(request.headers.authorization);
+    if (principal === undefined)
+      return reply.code(401).send({ status: "unauthorized" });
+
+    // Most recent first: an operator arriving at a run list is looking for
+    // what just happened, not for the first run the process ever accepted.
+    const runs = [...stacks]
+      .reverse()
+      .map(([runId, stack]) => stack.runtime.getRun(runId))
+      .filter((run) => run !== undefined);
+    return reply.send({ runs });
+  });
+
+  /**
+   * The operator inbox. Scoped by the port to gates this principal may decide,
+   * so widening the query cannot widen who sees what — and the principal comes
+   * from the authenticated caller, never from a query parameter.
+   */
+  app.get("/v1/approvals", async (request, reply) => {
+    const principal = options.principalFor(request.headers.authorization);
+    if (principal === undefined)
+      return reply.code(401).send({ status: "unauthorized" });
+
+    const perStore = await Promise.all(
+      stores().map((stack) => stack.approvals.listPendingFor(principal)),
+    );
+    // Closest to expiry first. An expired gate is a timeout, not a slow yes,
+    // so the one about to run out is the one that needs an operator now.
+    const pending = perStore
+      .flat()
+      .sort((left, right) => left.expiresAt.localeCompare(right.expiresAt));
+    return reply.send({ pending });
+  });
+
   app.get<{ Params: { runId: string } }>(
     "/v1/runs/:runId",
     async (request, reply) => {
@@ -150,12 +230,47 @@ export function registerRunRoutes(
   app.get<{ Params: { runId: string } }>(
     "/v1/runs/:runId/approvals",
     async (request, reply) => {
+      // Authenticated because the reply now names who decided each gate.
+      // Pending gates alone said only that a decision was owed.
+      const principal = options.principalFor(request.headers.authorization);
+      if (principal === undefined)
+        return reply.code(401).send({ status: "unauthorized" });
+
       const stack = stacks.get(request.params.runId) ?? shared;
       if (stack.runtime.getRun(request.params.runId) === undefined)
         return reply.code(404).send({ status: "not_found" });
       return reply.send({
         pending: await stack.approvals.getPending(request.params.runId),
+        approvals: await stack.approvals.listByRun(request.params.runId),
       });
+    },
+  );
+
+  app.get<{ Params: { runId: string } }>(
+    "/v1/runs/:runId/events",
+    async (request, reply) => {
+      const principal = options.principalFor(request.headers.authorization);
+      if (principal === undefined)
+        return reply.code(401).send({ status: "unauthorized" });
+
+      const stack = stacks.get(request.params.runId) ?? shared;
+      if (stack.runtime.getRun(request.params.runId) === undefined)
+        return reply.code(404).send({ status: "not_found" });
+
+      // Straight from the telemetry the runtime already emits, filtered to one
+      // run. Deriving a second timeline beside it would let the screen and the
+      // trace disagree about what happened. Attributes were redacted when the
+      // span was recorded, which is what makes them safe to serve.
+      const events: RunEventView[] = stack.observability.timeline
+        .filter((entry) => entry.attributes.runId === request.params.runId)
+        .map((entry) => ({
+          seq: entry.seq,
+          at: entry.at,
+          kind: eventKind(entry.name),
+          name: entry.name,
+          attributes: entry.attributes,
+        }));
+      return reply.send({ events });
     },
   );
 

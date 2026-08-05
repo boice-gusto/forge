@@ -19,8 +19,6 @@ import {
 
 export interface ApprovalCardProps {
   readonly approval: ApprovalView;
-  /** The sealed artifact this gate's binding covers. */
-  readonly fingerprint: string;
   readonly now: number;
   readonly draft: DecisionDraft;
   readonly busy?: boolean;
@@ -54,11 +52,9 @@ function Fact({
  */
 function Binding({
   approval,
-  fingerprint,
   now,
 }: {
   readonly approval: ApprovalView;
-  readonly fingerprint: string;
   readonly now: number;
 }) {
   return (
@@ -67,9 +63,9 @@ function Binding({
         This authorises <strong>one</strong> action: effect{" "}
         <strong>{approval.effect}</strong> at node{" "}
         <strong>{approval.nodeId}</strong> of run{" "}
-        <strong>{approval.runId}</strong>, bound to artifact fingerprint{" "}
-        <code className="break-all">{fingerprint}</code>. It authorises nothing
-        else, on no other node, in no other run.
+        <strong>{approval.runId}</strong>, under binding{" "}
+        <code className="break-all">{approval.effectHash}</code>. It authorises
+        nothing else, on no other node, in no other run.
       </p>
       <dl className="mt-3 text-sm">
         <Fact term="Node">{approval.nodeId}</Fact>
@@ -84,8 +80,14 @@ function Binding({
           {approval.expiresAt} ({remainingLabel(approval.expiresAt, now)})
         </Fact>
         <Fact term="Run">{approval.runId}</Fact>
-        <Fact term="Artifact fingerprint">
-          <code>{fingerprint}</code>
+        {/*
+          The binding, not the artifact fingerprint. The fingerprint says which
+          compiled workflow; the binding says which action inside it — run,
+          node, effect and fingerprint together. Showing the weaker one would
+          let two different actions look identical to the operator.
+        */}
+        <Fact term="Binding (effect hash)">
+          <code>{approval.effectHash}</code>
         </Fact>
       </dl>
     </>
@@ -324,7 +326,7 @@ function Actions(
 }
 
 export function ApprovalCard(props: ApprovalCardProps) {
-  const { approval, fingerprint, now, error } = props;
+  const { approval, now, error } = props;
   const presentation = presentGate(approval, now);
   const headingId = `${approval.approvalId}-heading`;
 
@@ -344,7 +346,7 @@ export function ApprovalCard(props: ApprovalCardProps) {
         </p>
       </header>
 
-      <Binding approval={approval} fingerprint={fingerprint} now={now} />
+      <Binding approval={approval} now={now} />
 
       {error === undefined ? null : (
         <p role="alert" className="mt-3 text-sm font-medium">
