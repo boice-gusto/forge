@@ -21,7 +21,15 @@ const candidateFiles = execFileSync(
   .split("\0")
   .filter(Boolean);
 
+/**
+ * Binaries are read as UTF-8 by `readFileSync`, so random bytes can spell a
+ * match. A compiled policy module is not somewhere a secret is written by
+ * hand, and a false positive here would train people to ignore this check.
+ */
+const BINARY = /\.(wasm|png|jpe?g|gif|ico|pdf|zip|tgz|woff2?|ttf|node)$/i;
+
 const findings = candidateFiles.flatMap((file) => {
+  if (BINARY.test(file)) return [];
   // `git ls-files` lists tracked paths, which includes files deleted in the
   // working tree but not yet staged. Reading one throws, and a scan that
   // crashes is a scan that did not run — skip what cannot be read.

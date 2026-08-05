@@ -136,12 +136,6 @@ export default defineConfig({
           branches: 93,
           statements: 95,
         },
-        "packages/policy-memory/src/**": {
-          lines: 100,
-          functions: 100,
-          branches: 93,
-          statements: 100,
-        },
         "packages/approval-memory/src/**": {
           lines: 100,
           functions: 100,
@@ -247,6 +241,32 @@ export default defineConfig({
           functions: 96,
           branches: 25,
           statements: 98,
+        },
+        "packages/policy-memory/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 100,
+          statements: 100,
+        },
+        "packages/policy-opa/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 100,
+          statements: 100,
+        },
+        // Branches sit low on purpose: the uncovered arm is a narrowing guard
+        // that only runs once an expectation has already failed.
+        "packages/policy-conformance/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 50,
+          statements: 99,
+        },
+        "packages/provider-anthropic/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 100,
+          statements: 100,
         },
         "packages/sandbox/src/**": {
           lines: 100,

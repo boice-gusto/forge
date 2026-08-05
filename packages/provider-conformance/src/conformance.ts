@@ -176,6 +176,8 @@ function describeStreamTermination(harness: ProviderConformanceHarness): void {
 }
 
 function describeToolPairing(harness: ProviderConformanceHarness): void {
+  const answersItsOwnCalls = harness.emitsToolResults ?? true;
+
   describe("a tool result names a call that actually happened", () => {
     test("no result arrives before its call, and no call is answered twice", async () => {
       const provider = await harness.create("tool-round-trip");
@@ -191,8 +193,35 @@ function describeToolPairing(harness: ProviderConformanceHarness): void {
         answered.add(event.toolId);
       }
 
-      expect(answered.size).toBeGreaterThan(0);
-      expect([...answered]).toEqual([...called]);
+      // The scenario is only a tool round trip if a tool was actually asked
+      // for; without this an adapter that emits neither would pass by
+      // producing nothing at all.
+      expect(called.size).toBeGreaterThan(0);
+
+      if (answersItsOwnCalls) {
+        expect(answered.size).toBeGreaterThan(0);
+        expect([...answered]).toEqual([...called]);
+      } else {
+        // Held to the claim in both directions: an adapter that says the
+        // runtime executes its tools may not quietly execute them itself.
+        expect(answered.size).toBe(0);
+      }
+    });
+
+    test("a tool call names the tool and carries its arguments", async () => {
+      const provider = await harness.create("tool-round-trip");
+      const outcome = await runToEnd(provider, await openSession(provider));
+      const calls = outcome.events.filter(
+        (event) => event.type === "tool-call",
+      );
+
+      // An undispatchable call is worse than none: the runtime would have to
+      // guess what to run, and with what.
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call.toolId.length).toBeGreaterThan(0);
+        expect(call.args).toBeDefined();
+      }
     });
   });
 }

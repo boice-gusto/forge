@@ -1,0 +1,19 @@
+{
+  "name": "@forge/provider-anthropic",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@forge/ports": "workspace:*"
+  },
+  "devDependencies": {
+    "@forge/provider-conformance": "workspace:*"
+  }
+}

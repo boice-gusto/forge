@@ -28,6 +28,19 @@ export interface ProviderConformanceHarness {
    * against the adapter's own `capabilities`.
    */
   readonly supports: readonly ProviderCapability[];
+  /**
+   * Whether the adapter runs tools itself and reports what they returned.
+   *
+   * A model API only *proposes* tool calls: the runtime checks them against
+   * policy and executes them in a sandbox (008 §9), so such an adapter emits
+   * `tool-call` and never `tool-result`. A CLI-backed agent that runs the tool
+   * inside its own session emits both.
+   *
+   * Defaults to true, so an adapter that does emit results says nothing and one
+   * that does not has to say so — and is then held to it, because the suite
+   * fails a "no" that turns out to produce results anyway.
+   */
+  readonly emitsToolResults?: boolean;
   /** The adapter at full strength, positioned in `scenario`. */
   create(scenario: ProviderScenario): ProviderPort | Promise<ProviderPort>;
   /**
