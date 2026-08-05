@@ -1,0 +1,29 @@
+{
+  "apiVersion": "forge.dev/v1",
+  "kind": "Company",
+  "metadata": {
+    "id": "acme",
+    "name": "Acme",
+    "version": "0.1.0"
+  },
+  "spec": {
+    "domains": ["domains/marketing"],
+    "plugins": [
+      {
+        "package": "./plugins/marketing.ts",
+        "version": "^0.1.0"
+      }
+    ],
+    "policyPacks": ["domains/marketing/policies/publish"],
+    "adapters": {
+      "notification": {
+        "binding": "@forge/provider-mock",
+        "configRef": "config/notification"
+      }
+    },
+    "capabilities": ["repo.read", "docs.write", "slack.write"],
+    "defaults": {
+      "approvalRequiredFor": ["slack.post"]
+    }
+  }
+}
