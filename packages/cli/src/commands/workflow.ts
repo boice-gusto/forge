@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 
-import { compileToArtifact, createLocalStack } from "@forge/composition";
+import {
+  compileToArtifact,
+  createLocalStack,
+  type JsonValue,
+} from "@forge/composition";
 import type { PanelDefinition, Vote } from "@forge/panel";
 import type { PolicyRule } from "@forge/policy-memory";
 
@@ -31,6 +35,8 @@ interface WorkflowFile {
   /** Which arm each branch takes, keyed by node id. */
   readonly branch?: Readonly<Record<string, string>>;
   readonly changedPaths?: readonly string[];
+  /** The run's input, which the workflow's input nodes produce. */
+  readonly payload?: JsonValue;
 }
 
 async function readWorkflowFile(
@@ -198,6 +204,8 @@ export async function runWorkflowFile(
     artifact: outcome.artifact,
     capabilities: file.capabilities ?? [],
     changedPaths: file.changedPaths ?? [],
+    // Absent stays absent: an omitted payload must not become an empty one.
+    ...(file.payload === undefined ? {} : { payload: file.payload }),
   });
 
   const pending =

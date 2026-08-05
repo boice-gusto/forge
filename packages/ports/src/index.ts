@@ -17,6 +17,7 @@ export {
   createSequentialIds,
   type IdPort,
 } from "./clock.js";
+export type { JsonValue, RunValues } from "./data.js";
 export type {
   AuthorisedEffects,
   EngineExecutionResult,
