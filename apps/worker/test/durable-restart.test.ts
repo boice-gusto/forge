@@ -7,7 +7,7 @@ import {
   createDurableStack,
   type DurableStack,
   type DurableStackOptions,
-  type ResumeOutcome,
+  type RunRecord,
 } from "@forge/composition/durable";
 import { createMemoryObservability } from "@forge/observability-memory";
 import type { JsonValue } from "@forge/ports";
@@ -20,6 +20,8 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { createWorkerConsumer, type RunHost } from "../src/consumer.js";
 import {
+  AGENT_WORKFLOW,
+  countingProvider,
   RESTART_PAYLOAD,
   RESTART_PUBLISHED,
   RESTART_STACK_OPTIONS,
@@ -31,15 +33,16 @@ import {
  * The proof that durability is real.
  *
  * A run is started in a `node` process that then exits. Its runtime, its value
- * ledger, its effect ledger and its connection pool go with it. A second
- * process decides the gate, a `workflow.resume` job travels over Redis, and a
- * worker in that second process drives the run to completion.
+ * ledger, its route ledger, its effect ledger and its connection pool go with
+ * it. A second process decides the gate, a `workflow.resume` job travels over
+ * Redis, and a worker in that second process drives the run to completion.
  *
  * The assertions are about *what* was dispatched, not that something was: the
  * effect ledger records the input the action was performed on, and it has to
- * equal the value the first process pinned before it parked. A resume that
- * recomputed would show a different one, and there is a test below that turns
- * that on deliberately to prove the guard fires.
+ * equal the value the first process pinned before it parked. A second process
+ * that computes something different — a different transform, a different
+ * model answer, a different branch arm — must still dispatch the first one's
+ * value, and there are tests below that turn each of those on deliberately.
  */
 
 const POSTGRES_IMAGE = "postgres:16-alpine";
@@ -49,6 +52,8 @@ const TEST_TIMEOUT_MS = 60_000;
 
 const PREPARED = { ...RESTART_PAYLOAD, plan: "stable" };
 const PUBLISHED = RESTART_PUBLISHED;
+const DRAFT_ONE = "drafted by process one";
+const DRAFT_TWO = "drafted by process two";
 
 const dockerAvailable = await containerRuntimeAvailable(
   "worker-durable-restart",
@@ -77,13 +82,21 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
   let namespaces = 0;
   const stacks: DurableStack[] = [];
 
-  const compiled = compileToArtifact(RESTART_WORKFLOW);
-  if (!compiled.ok) {
-    throw new Error(
-      `the restart fixture must compile: ${JSON.stringify(compiled.diagnostics)}`,
-    );
-  }
-  const artifact = compiled.artifact;
+  const compile = (source: unknown) => {
+    const compiled = compileToArtifact(source);
+    if (!compiled.ok) {
+      throw new Error(
+        `a restart fixture must compile: ${JSON.stringify(compiled.diagnostics)}`,
+      );
+    }
+    return compiled.artifact;
+  };
+  // The child processes compile these themselves; compiling them here fails
+  // the suite loudly if a fixture stops being a legal workflow, rather than
+  // letting every test time out on a child that exited with diagnostics.
+  const fingerprints = [RESTART_WORKFLOW, AGENT_WORKFLOW].map(
+    (source) => compile(source).fingerprint,
+  );
 
   beforeAll(async () => {
     [postgres, redis] = await Promise.all([
@@ -102,8 +115,18 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
   interface ChildReport {
     readonly runId: string;
     readonly status: string;
-    readonly kind?: string;
-    readonly dispatched?: readonly JsonValue[];
+    readonly error?: string;
+    readonly dispatched: readonly JsonValue[];
+    /** How many times *that* process asked a model. */
+    readonly providerCalls: number;
+  }
+
+  interface ChildOptions {
+    readonly runId?: string;
+    readonly ttlMs?: number;
+    readonly workflow?: "restart" | "agent";
+    readonly text?: string;
+    readonly arm?: string;
   }
 
   /**
@@ -113,8 +136,7 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
    */
   async function inAnotherProcess(
     mode: "park" | "resume",
-    runId?: string,
-    ttlMs?: number,
+    options: ChildOptions = {},
   ): Promise<ChildReport> {
     namespaces += 1;
     const script = fileURLToPath(
@@ -130,8 +152,19 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
           FORGE_REDIS_URL: redisUrl,
           FORGE_QUEUE_NAME: `forge-child-${namespaces}`,
           FORGE_TEST_MODE: mode,
-          ...(runId === undefined ? {} : { FORGE_TEST_RUN_ID: runId }),
-          ...(ttlMs === undefined ? {} : { FORGE_TEST_TTL_MS: String(ttlMs) }),
+          ...(options.workflow === undefined
+            ? {}
+            : { FORGE_TEST_WORKFLOW: options.workflow }),
+          ...(options.runId === undefined
+            ? {}
+            : { FORGE_TEST_RUN_ID: options.runId }),
+          ...(options.ttlMs === undefined
+            ? {}
+            : { FORGE_TEST_TTL_MS: String(options.ttlMs) }),
+          ...(options.text === undefined
+            ? {}
+            : { FORGE_TEST_TEXT: options.text }),
+          ...(options.arm === undefined ? {} : { FORGE_TEST_ARM: options.arm }),
         },
       },
     );
@@ -139,13 +172,15 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
   }
 
   const parkInAnotherProcess = (ttlMs?: number) =>
-    inAnotherProcess("park", undefined, ttlMs);
+    inAnotherProcess("park", ttlMs === undefined ? {} : { ttlMs });
 
   interface SecondProcess {
     readonly stack: DurableStack;
     /** What the sink was actually asked to do, in order. */
     readonly acted: JsonValue[];
-    readonly outcomes: ResumeOutcome[];
+    readonly resumed: (RunRecord | undefined)[];
+    /** How many times this process asked a model. */
+    readonly providerCalls: () => number;
     readonly host: RunHost;
   }
 
@@ -155,13 +190,18 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
   ): Promise<SecondProcess> {
     namespaces += 1;
     const acted: JsonValue[] = [];
-    const outcomes: ResumeOutcome[] = [];
+    const resumed: (RunRecord | undefined)[] = [];
+    // A model that would answer differently, and an arm that would route
+    // elsewhere. Neither may be reached for a node that already answered.
+    const agent = countingProvider(DRAFT_TWO);
     const stack = await createDurableStack({
       databaseUrl,
       redisUrl,
       queueName: `forge-worker-${namespaces}`,
       ...RESTART_STACK_OPTIONS,
       transforms: restartTransforms(),
+      provider: agent.provider,
+      branchFor: () => "hold",
       effects: {
         async perform(_runId, _nodeId, _effect, input) {
           acted.push(input ?? null);
@@ -175,15 +215,16 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
     return {
       stack,
       acted,
-      outcomes,
+      resumed,
+      providerCalls: agent.calls,
       host: {
         async execute() {
           throw new Error("this proof never starts a run from the queue");
         },
         async resume(runId) {
-          const outcome = await stack.resume({ runId, artifact });
-          outcomes.push(outcome);
-          return outcome.kind === "resumed" ? outcome.run.status : outcome.kind;
+          const run = await stack.resume(runId);
+          resumed.push(run);
+          return run?.status ?? "unknown";
         },
         async cancel() {},
       },
@@ -196,6 +237,21 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
       host: second.host,
       observability: createMemoryObservability(),
     }).start();
+  }
+
+  /** Approves the run's one open gate, from the process doing the approving. */
+  async function approve(
+    second: SecondProcess,
+    runId: string,
+  ): Promise<string> {
+    const pending = (await second.stack.approvals.getPending(runId))[0];
+    if (pending === undefined) throw new Error("the gate should be pending");
+    await second.stack.approvals.decide(
+      pending.approvalId,
+      { kind: "approve" },
+      "operator",
+    );
+    return pending.approvalId;
   }
 
   test(
@@ -217,33 +273,24 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
       expect(await second.stack.dispatched(parked.runId)).toEqual([]);
 
       // The human decides, here, in the second process.
-      const pending = (
-        await second.stack.approvals.getPending(parked.runId)
-      )[0];
-      if (pending === undefined) throw new Error("the gate should be pending");
-      expect(pending.effect).toBe("prod.write");
-      await second.stack.approvals.decide(
-        pending.approvalId,
-        { kind: "approve" },
-        "operator",
-      );
+      const approvalId = await approve(second, parked.runId);
 
       // The resume travels over Redis to a worker, as it would in production.
       await consume(second);
       await second.stack.queue.enqueue({
         type: "workflow.resume",
         runId: parked.runId,
-        approvalId: pending.approvalId,
+        approvalId,
         attempt: 2,
       });
 
       await waitFor("the run to finish", async () => {
-        return second.outcomes.length === 1;
+        return second.resumed.length === 1;
       });
 
-      expect(second.outcomes[0]).toMatchObject({
-        kind: "resumed",
-        run: { status: "SUCCEEDED", result: PUBLISHED },
+      expect(second.resumed[0]).toMatchObject({
+        status: "SUCCEEDED",
+        result: PUBLISHED,
       });
 
       // Exactly the effect that was approved, exactly once, on exactly the
@@ -262,28 +309,175 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
   );
 
   test(
-    "the effect ledger outlives the process that dispatched, so a later resume does not act again",
+    "an agent before the gate resumes across a restart without asking the model again",
     async () => {
-      // The one that matters, and the one an in-process Set passes by
-      // accident: the process that dispatched is *gone* before the second
-      // resume runs. Nothing but the row in Postgres can stop it.
+      /**
+       * The case the previous design had to refuse outright.
+       *
+       * Process one runs the agent, takes the `publish-it` arm and parks.
+       * Process two would answer `drafted by process two` and would route to
+       * `hold` — so if either the value ledger or the route ledger failed to
+       * survive, this test would either dispatch the wrong text or dispatch
+       * nothing at all. The provider count is asserted on both sides, and the
+       * total across the two processes must be one.
+       */
+      const parked = await inAnotherProcess("park", {
+        workflow: "agent",
+        text: DRAFT_ONE,
+        arm: "publish-it",
+      });
+      expect(parked.status).toBe("AWAITING_APPROVAL");
+      expect(parked.providerCalls).toBe(1);
+
+      const second = await secondProcess();
+      const approvalId = await approve(second, parked.runId);
+
+      await consume(second);
+      await second.stack.queue.enqueue({
+        type: "workflow.resume",
+        runId: parked.runId,
+        approvalId,
+        attempt: 2,
+      });
+      await waitFor("the run to finish", async () => {
+        return second.resumed.length === 1;
+      });
+
+      expect(second.resumed[0]).toMatchObject({
+        status: "SUCCEEDED",
+        result: PUBLISHED,
+      });
+      // The value the approver saw, not one computed on resume.
+      expect(second.acted).toEqual([DRAFT_ONE]);
+      expect(await second.stack.dispatched(parked.runId)).toMatchObject([
+        { nodeId: "publish", effect: "prod.write", input: DRAFT_ONE },
+      ]);
+
+      // One model call, in total, across both processes.
+      expect(second.providerCalls()).toBe(0);
+      expect(parked.providerCalls + second.providerCalls()).toBe(1);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "neither process that touches an agent run is the one that ran the model twice",
+    async () => {
+      // The same claim with the deciding half in a real process too: this test
+      // process only writes the decision, and the run is driven by a second
+      // `node` that has its own module graph and its own everything.
+      const parked = await inAnotherProcess("park", {
+        workflow: "agent",
+        text: DRAFT_ONE,
+        arm: "publish-it",
+      });
+      const second = await secondProcess();
+      await approve(second, parked.runId);
+
+      const driver = await inAnotherProcess("resume", {
+        runId: parked.runId,
+        workflow: "agent",
+        text: DRAFT_TWO,
+        arm: "hold",
+      });
+
+      expect(driver).toMatchObject({ status: "SUCCEEDED", providerCalls: 0 });
+      expect(driver.dispatched).toEqual([DRAFT_ONE]);
+      expect(parked.providerCalls + driver.providerCalls).toBe(1);
+      expect(await second.stack.dispatched(parked.runId)).toHaveLength(1);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a second process that computes different data still dispatches what was pinned",
+    async () => {
+      // The failure this whole design exists to prevent, approached from the
+      // other side: the resuming process is *made* to disagree, and the action
+      // still has to be the one the approver saw. The old design refused this
+      // run; nothing is recomputed now, so it completes.
+      const parked = await parkInAnotherProcess();
+      const second = await secondProcess({
+        transforms: restartTransforms("drifted"),
+      });
+      const approvalId = await approve(second, parked.runId);
+
+      await consume(second);
+      await second.stack.queue.enqueue({
+        type: "workflow.resume",
+        runId: parked.runId,
+        approvalId,
+        attempt: 2,
+      });
+      await waitFor("the run to finish", async () => {
+        return second.resumed.length === 1;
+      });
+
+      expect(second.resumed[0]).toMatchObject({ status: "SUCCEEDED" });
+      expect(second.acted).toEqual([PREPARED]);
+      expect((await second.stack.dispatched(parked.runId))[0]?.input).toEqual(
+        PREPARED,
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a dispatch whose process died before the record caught up is not repeated",
+    async () => {
+      /**
+       * The sharpest form of exactly-once across processes, and the one the
+       * test below cannot make on its own: there, the run is already
+       * SUCCEEDED, so a redelivered resume returns early and never reaches the
+       * tool at all. Passing that proves the status short-circuit works, not
+       * that the ledger does.
+       *
+       * Here the ledger is the only thing standing in the way. A worker
+       * claimed the dispatch, performed it, pinned what it produced — and then
+       * died before the run record moved off `AWAITING_APPROVAL`. A second
+       * process therefore walks all the way to the tool node with a run that
+       * still looks undispatched. It must find the row and act on nothing.
+       */
       const parked = await parkInAnotherProcess();
       const second = await secondProcess();
-      const pending = (
-        await second.stack.approvals.getPending(parked.runId)
-      )[0];
-      if (pending === undefined) throw new Error("the gate should be pending");
-      await second.stack.approvals.decide(
-        pending.approvalId,
-        { kind: "approve" },
-        "operator",
-      );
-
-      const dispatcher = await inAnotherProcess("resume", parked.runId);
-      expect(dispatcher).toMatchObject({
-        kind: "resumed",
-        status: "SUCCEEDED",
+      await second.stack.runs.claimEffect({
+        runId: parked.runId,
+        nodeId: "publish",
+        effect: "prod.write",
+        input: PREPARED,
+        at: "2026-08-04T00:00:00.000Z",
       });
+      await second.stack.runs.pinValue(parked.runId, "publish", PUBLISHED);
+      await approve(second, parked.runId);
+
+      const driver = await inAnotherProcess("resume", {
+        runId: parked.runId,
+      });
+
+      expect(driver).toMatchObject({ status: "SUCCEEDED" });
+      // A whole other process, walking a run that had not been marked done,
+      // and it performed nothing.
+      expect(driver.dispatched).toEqual([]);
+      expect(await second.stack.dispatched(parked.runId)).toHaveLength(1);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "the effect ledger outlives the process that dispatched, so a later resume does not act again",
+    async () => {
+      // The process that dispatched is *gone* before the second resume runs.
+      // Its run is terminal by then, so what this proves is that re-entering a
+      // finished run reports it rather than walking it; the test above is the
+      // one that pins the ledger itself.
+      const parked = await parkInAnotherProcess();
+      const second = await secondProcess();
+      const approvalId = await approve(second, parked.runId);
+
+      const dispatcher = await inAnotherProcess("resume", {
+        runId: parked.runId,
+      });
+      expect(dispatcher).toMatchObject({ status: "SUCCEEDED" });
       expect(dispatcher.dispatched).toEqual([PREPARED]);
       expect(await second.stack.dispatched(parked.runId)).toHaveLength(1);
 
@@ -292,21 +486,16 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
       await second.stack.queue.enqueue({
         type: "workflow.resume",
         runId: parked.runId,
-        approvalId: pending.approvalId,
+        approvalId,
         attempt: 3,
       });
       await waitFor("the redelivered resume", async () => {
-        return second.outcomes.length === 1;
+        return second.resumed.length === 1;
       });
 
-      // Suppressed, not crashed: the ledger hands back what the first
-      // dispatch produced, so the run still completes on the same data. A
-      // resume that threw on the duplicate would also leave one row, and
-      // would be a very different thing.
-      expect(second.outcomes[0]).toMatchObject({
-        kind: "resumed",
-        run: { status: "SUCCEEDED", result: PUBLISHED },
-      });
+      // Suppressed, not crashed: the run is already terminal and re-entering
+      // it reports that, rather than walking it again.
+      expect(second.resumed[0]).toMatchObject({ status: "SUCCEEDED" });
       expect(second.acted).toEqual([]);
       expect(await second.stack.dispatched(parked.runId)).toHaveLength(1);
     },
@@ -318,21 +507,13 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
     async () => {
       const parked = await parkInAnotherProcess();
       const second = await secondProcess();
-      const pending = (
-        await second.stack.approvals.getPending(parked.runId)
-      )[0];
-      if (pending === undefined) throw new Error("the gate should be pending");
-      await second.stack.approvals.decide(
-        pending.approvalId,
-        { kind: "approve" },
-        "operator",
-      );
+      const approvalId = await approve(second, parked.runId);
 
       await consume(second);
       const job = {
         type: "workflow.resume",
         runId: parked.runId,
-        approvalId: pending.approvalId,
+        approvalId,
         attempt: 2,
       } as const;
       // `operationKey()` is the same for both, so the transport must not hand
@@ -341,49 +522,13 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
       await second.stack.queue.enqueue({ ...job, attempt: 9 });
 
       await waitFor("the resume", async () => {
-        return second.outcomes.length === 1;
+        return second.resumed.length === 1;
       });
       await new Promise((resolve) => setTimeout(resolve, 300));
 
-      expect(second.outcomes).toHaveLength(1);
+      expect(second.resumed).toHaveLength(1);
       expect(second.acted).toEqual([PREPARED]);
       expect(await second.stack.dispatched(parked.runId)).toHaveLength(1);
-    },
-    TEST_TIMEOUT_MS,
-  );
-
-  test(
-    "a resume that does not reproduce the pinned values dispatches nothing",
-    async () => {
-      // The failure this whole design exists to prevent: the second process
-      // recomputes instead of restoring, and would otherwise perform an action
-      // on data the approver never saw.
-      const parked = await parkInAnotherProcess();
-      const second = await secondProcess({
-        transforms: restartTransforms("drifted"),
-      });
-      const pending = (
-        await second.stack.approvals.getPending(parked.runId)
-      )[0];
-      if (pending === undefined) throw new Error("the gate should be pending");
-      await second.stack.approvals.decide(
-        pending.approvalId,
-        { kind: "approve" },
-        "operator",
-      );
-
-      const outcome = await second.stack.resume({
-        runId: parked.runId,
-        artifact,
-      });
-
-      expect(outcome).toEqual({
-        kind: "refused",
-        reason:
-          "the resumed walk did not reproduce the state the gate was decided on",
-      });
-      expect(second.acted).toEqual([]);
-      expect(await second.stack.dispatched(parked.runId)).toEqual([]);
     },
     TEST_TIMEOUT_MS,
   );
@@ -403,14 +548,11 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
         "operator",
       );
 
-      const outcome = await second.stack.resume({
-        runId: parked.runId,
-        artifact,
-      });
+      const run = await second.stack.resume(parked.runId);
 
-      expect(outcome).toEqual({
-        kind: "refused",
-        reason: "the gate was REJECTED, which authorises nothing",
+      expect(run).toMatchObject({
+        status: "FAILED",
+        error: `Approval ${pending.approvalId} was REJECTED, which authorises nothing.`,
       });
       expect(second.acted).toEqual([]);
       expect(await second.stack.dispatched(parked.runId)).toEqual([]);
@@ -437,14 +579,11 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
       );
       expect((decided?.decidedAt ?? "") > pending.expiresAt).toBe(true);
 
-      const outcome = await second.stack.resume({
-        runId: parked.runId,
-        artifact,
-      });
+      const run = await second.stack.resume(parked.runId);
 
-      expect(outcome).toEqual({
-        kind: "refused",
-        reason: `approval ${pending.approvalId} was decided after it expired`,
+      expect(run).toMatchObject({
+        status: "FAILED",
+        error: `Approval ${pending.approvalId} was not decided within its deadline.`,
       });
       expect(await second.stack.dispatched(parked.runId)).toEqual([]);
     },
@@ -457,15 +596,9 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
       const parked = await parkInAnotherProcess();
       const second = await secondProcess();
 
-      const outcome = await second.stack.resume({
-        runId: parked.runId,
-        artifact,
-      });
+      const run = await second.stack.resume(parked.runId);
 
-      expect(outcome).toEqual({
-        kind: "waiting",
-        reason: "the gate for this action has not been decided",
-      });
+      expect(run).toMatchObject({ status: "AWAITING_APPROVAL" });
       expect(await second.stack.dispatched(parked.runId)).toEqual([]);
     },
     TEST_TIMEOUT_MS,
@@ -476,13 +609,86 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
     async () => {
       const second = await secondProcess();
 
-      expect(
-        await second.stack.resume({ runId: "run_never_started", artifact }),
-      ).toEqual({
-        kind: "waiting",
-        reason: "the run has written no checkpoint, so it never reached a gate",
+      expect(await second.stack.resume("run_never_started")).toBeUndefined();
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a run started elsewhere is readable and cancellable here",
+    async () => {
+      // The two calls `apps/api` could not make after a restart: the record
+      // 404'd, and cancelling threw "Unknown run".
+      const parked = await parkInAnotherProcess();
+      const second = await secondProcess();
+
+      expect(await second.stack.runtime.loadRun(parked.runId)).toMatchObject({
+        runId: parked.runId,
+        status: "AWAITING_APPROVAL",
+        workflowId: "durable.restart",
+      });
+      expect(await second.stack.runtime.cancel(parked.runId)).toMatchObject({
+        status: "CANCELLED",
+      });
+
+      // Cancelled is durable too: a third process sees it.
+      const third = await secondProcess();
+      expect(await third.stack.runtime.loadRun(parked.runId)).toMatchObject({
+        status: "CANCELLED",
       });
     },
     TEST_TIMEOUT_MS,
   );
+
+  test(
+    "a run started and decided in one process is still recorded durably",
+    async () => {
+      // The default wiring: no effect sink supplied, so the stack's own one is
+      // used. It performs nothing, which is exactly why the ledger row is the
+      // only evidence that the gated action was reached and authorised.
+      namespaces += 1;
+      const only = await createDurableStack({
+        databaseUrl,
+        redisUrl,
+        queueName: `forge-default-${namespaces}`,
+        ...RESTART_STACK_OPTIONS,
+        transforms: restartTransforms(),
+      });
+      stacks.push(only);
+
+      expect(await only.dispatched("run_never_started")).toEqual([]);
+
+      const run = await only.runtime.start({
+        artifact: compile(RESTART_WORKFLOW),
+        payload: RESTART_PAYLOAD,
+      });
+      const pending = (await only.approvals.getPending(run.runId))[0];
+      if (pending === undefined) throw new Error("the gate should be pending");
+      const finished = await only.runtime.decide(
+        pending.approvalId,
+        { kind: "approve" },
+        "operator",
+      );
+
+      // The action was authorised, dispatched and recorded — and then the
+      // output node had nothing to read, because this sink produces nothing.
+      // Fail closed: the run stops rather than reporting a result nobody made.
+      expect(finished).toMatchObject({
+        status: "FAILED",
+        error: "done: Node 'publish' produced no value to read.",
+      });
+      expect(await only.dispatched(run.runId)).toMatchObject([
+        { nodeId: "publish", effect: "prod.write", input: PREPARED },
+      ]);
+      // Absent, not an invented empty one.
+      expect((await only.dispatched(run.runId))[0]?.output).toBeUndefined();
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test("the two fixtures are distinct sealed artifacts", () => {
+    // A shared fingerprint would mean the agent proof was silently running the
+    // transform workflow, and passing for the wrong reason.
+    expect(new Set(fingerprints).size).toBe(2);
+  });
 });

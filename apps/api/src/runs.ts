@@ -225,10 +225,15 @@ export function registerRunRoutes(
       return reply.code(401).send({ status: "unauthorized" });
 
     // Most recent first: an operator is looking for what just happened.
-    const runs = [...stacks]
-      .reverse()
-      .map(([runId, stack]) => stack.runtime.getRun(runId))
-      .filter((run) => run !== undefined);
+    // Loaded rather than read from memory, so a run this process did not start
+    // is still a run — the durable store is the record, not the Map.
+    const runs = (
+      await Promise.all(
+        [...stacks]
+          .reverse()
+          .map(([runId, stack]) => stack.runtime.loadRun(runId)),
+      )
+    ).filter((run) => run !== undefined);
     return reply.send({ runs });
   });
 
@@ -265,7 +270,7 @@ export function registerRunRoutes(
       }
 
       const stack = stacks.get(request.params.runId) ?? shared;
-      const run = stack.runtime.getRun(request.params.runId);
+      const run = await stack.runtime.loadRun(request.params.runId);
       if (run === undefined)
         return reply.code(404).send({ status: "not_found" });
       return reply.send(run);
@@ -281,7 +286,7 @@ export function registerRunRoutes(
         return reply.code(401).send({ status: "unauthorized" });
 
       const stack = stacks.get(request.params.runId) ?? shared;
-      if (stack.runtime.getRun(request.params.runId) === undefined)
+      if ((await stack.runtime.loadRun(request.params.runId)) === undefined)
         return reply.code(404).send({ status: "not_found" });
       return reply.send({
         pending: await stack.approvals.getPending(request.params.runId),
@@ -298,7 +303,7 @@ export function registerRunRoutes(
         return reply.code(401).send({ status: "unauthorized" });
 
       const stack = stacks.get(request.params.runId) ?? shared;
-      if (stack.runtime.getRun(request.params.runId) === undefined)
+      if ((await stack.runtime.loadRun(request.params.runId)) === undefined)
         return reply.code(404).send({ status: "not_found" });
 
       // The runtime's own telemetry, filtered to one run: a second, derived

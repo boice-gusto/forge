@@ -3,6 +3,8 @@ import { createDurableStack } from "@forge/composition/durable";
 import type { JsonValue } from "@forge/ports";
 
 import {
+  AGENT_WORKFLOW,
+  countingProvider,
   RESTART_PAYLOAD,
   RESTART_PUBLISHED,
   RESTART_STACK_OPTIONS,
@@ -21,11 +23,16 @@ import {
  *
  * `park` starts a run and lets it stop at the gate; `resume` drives one whose
  * gate has been decided. Either way the process exits, and everything it held
- * goes with it.
+ * goes with it. What it reports on the way out includes how many times *it*
+ * asked a model, so the parent can sum the two halves and require one.
  */
 const mode = process.env.FORGE_TEST_MODE;
+const source =
+  process.env.FORGE_TEST_WORKFLOW === "agent"
+    ? AGENT_WORKFLOW
+    : RESTART_WORKFLOW;
 
-const compiled = compileToArtifact(RESTART_WORKFLOW);
+const compiled = compileToArtifact(source);
 if (!compiled.ok) {
   process.stderr.write(JSON.stringify(compiled.diagnostics));
   process.exit(2);
@@ -33,10 +40,17 @@ if (!compiled.ok) {
 
 const dispatched: JsonValue[] = [];
 const ttl = process.env.FORGE_TEST_TTL_MS;
+const arm = process.env.FORGE_TEST_ARM ?? "publish-it";
+const agent = countingProvider(
+  process.env.FORGE_TEST_TEXT ?? "drafted by process one",
+);
+
 const stack = await createDurableStack({
   ...RESTART_STACK_OPTIONS,
   ...(ttl === undefined ? {} : { approvalTtlMs: Number(ttl) }),
   transforms: restartTransforms(),
+  provider: agent.provider,
+  branchFor: () => arm,
   effects: {
     async perform(_runId, _nodeId, _effect, input) {
       if (mode === "park") {
@@ -49,25 +63,22 @@ const stack = await createDurableStack({
   },
 });
 
+const report = (fields: Record<string, unknown>): void => {
+  process.stdout.write(
+    JSON.stringify({ ...fields, dispatched, providerCalls: agent.calls() }),
+  );
+};
+
 if (mode === "park") {
   const run = await stack.runtime.start({
     artifact: compiled.artifact,
     payload: RESTART_PAYLOAD,
   });
-  process.stdout.write(
-    JSON.stringify({ runId: run.runId, status: run.status }),
-  );
+  report({ runId: run.runId, status: run.status });
 } else {
   const runId = process.env.FORGE_TEST_RUN_ID as string;
-  const outcome = await stack.resume({ runId, artifact: compiled.artifact });
-  process.stdout.write(
-    JSON.stringify({
-      runId,
-      kind: outcome.kind,
-      status: outcome.kind === "resumed" ? outcome.run.status : outcome.reason,
-      dispatched,
-    }),
-  );
+  const run = await stack.resume(runId);
+  report({ runId, status: run?.status ?? "unknown", error: run?.error });
 }
 
 await stack.close();
