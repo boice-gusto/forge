@@ -28,6 +28,12 @@ pnpm --filter @forge/cli exec tsx src/main.ts workflow compile --input <file> [-
 # compile and execute until it finishes or reaches a gate
 pnpm --filter @forge/cli exec tsx src/main.ts workflow run --input <file> [--json]
 
+# load a company package and list what it contributes
+... company inspect --company <dir>
+
+# compile and run a workflow a company registered, gated by its own policy
+... workflow run --company <dir> --workflow <id>
+
 # other commands
 ... validate --input <manifest>     # company manifest
 ... providers doctor                # provider availability
@@ -126,18 +132,60 @@ change pass, that is the signal to stop.
 - **Retry is an attempt, not a state.** A retryable node failure increments the
   attempt up to the highest `maxAttempts` declared on any node; the run stays RUNNING.
 
+## Company packages
+
+A company package is a directory with `forge.company.json` naming its domains,
+plugins, policy packs, and adapter bindings. `examples/acme` is a working one —
+read it before writing another.
+
+```
+loadCompany(root, hostCapabilities)   →  registerPlugins  →  compile  →  run
+```
+
+- A plugin gets a `PluginContext` with five registries and nothing else. No
+  engine, queue, provider, or IR handle — `009 §12` lists what must never appear
+  in company code, and the architecture scan enforces it against real files.
+- **`spec.capabilities` is a request.** It is intersected with the host ceiling,
+  never added to it. A package that could widen its own grant by editing its own
+  manifest would not have a ceiling.
+- A policy pack's `grants` are checked against that ceiling like any other
+  claim. This is the load-bearing one: without it a company could grant itself
+  anything.
+- Everything crossing the boundary is deep-frozen. `readonly` is erased at
+  runtime, and a red-team pass reached `prod.write` on a `kb.read` host twice by
+  mutating a live reference — once on `hostCapabilities`, once on an entry
+  returned by `all()`.
+- Registration fails closed and reports every fault, not just the first. There
+  is no partial registration: a half-loaded company is one whose policy packs
+  may not have loaded.
+
+New diagnostic codes: `PLUGIN_INVALID`, `PLUGIN_DUPLICATE_ID`,
+`PLUGIN_CAPABILITY_ESCALATION`, `PLUGIN_VERSION_INCOMPATIBLE`,
+`PLUGIN_REGISTER_FAILED`, `COMPANY_MANIFEST_UNREADABLE`,
+`COMPANY_PLUGIN_UNRESOLVED`, `COMPANY_PLUGIN_INVALID`.
+
 ## Layering
 
 Dependencies point inward, and `tooling/assert-architecture.ts` enforces it.
 
 ```
-apps/*  →  runtime, compiler  →  ports, ir  →  types
-                ↑
+company packages  →  plugin-sdk, manifest, types, sdk      (public only)
+                            ↑
+apps/*  →  company, runtime, compiler  →  ports, ir  →  types
+                            ↑
         adapters (engine-memory, policy-memory, approval-memory, checkpoint-memory)
 ```
 
-- Public packages — `sdk`, `manifest`, `types`, `plugin-sdk` — must not import
-  `runtime`, `compiler`, `ir`, or any adapter.
+- Public packages — `sdk`, `manifest`, `types`, `plugin-sdk` — may import
+  public packages **only**, stated as a closed set so a new internal package is
+  forbidden by default.
+- Company packages are bound by the same rule, plus the vendor list in 009 §12.
+- The scan reads every `from`, `import`, `import()` and `require` in
+  `packages/`, `apps/`, `examples/`, `tooling/` and `scripts/`, and normalises a
+  relative specifier to the package it lands in — `../../runtime/src/index.js`
+  is treated as `@forge/runtime`. Until this existed, `test:architecture` only
+  checked hand-written strings and would have passed with the repo in full
+  violation.
 - Core must never import a company extension (`forge.gusto`, `forge.acme`).
 - Adapters are bound only in composition roots: `apps/api`, `apps/worker`, and
   `packages/composition` for the local stack.
@@ -181,3 +229,4 @@ against the package that caused it rather than diluted into a global average.
 | Roles and panels | `docs/adrs/009-agent-roles.md` |
 | Misfire capture | `docs/adrs/010-incident-capture.md` |
 | What phase gates what | `docs/015-phases.md` |
+| Plugin SDK, company model, capability closure | `docs/009-plugin-sdk.md` |
