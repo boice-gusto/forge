@@ -18,6 +18,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The Postgres store suites skip when Docker is absent. A skip is
+      # invisible in the CI summary, so an absent daemon must fail loudly
+      # rather than let those adapters go unverified.
+      - name: Require Docker for the Testcontainers suites
+        run: docker info > /dev/null || (echo "Docker unavailable; the Postgres store suites would silently skip" && exit 1)
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test

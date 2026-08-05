@@ -119,6 +119,27 @@ export default defineConfig({
           branches: 93,
           statements: 97,
         },
+        // The durable stores. Floors here have a second job: if Docker goes
+        // missing in CI these suites skip, coverage drops to zero, and
+        // test:coverage fails hard — so a silent skip cannot pass as green.
+        "packages/approval-postgres/src/**": {
+          lines: 96,
+          functions: 100,
+          branches: 92,
+          statements: 96,
+        },
+        "packages/checkpoint-postgres/src/**": {
+          lines: 93,
+          functions: 100,
+          branches: 75,
+          statements: 93,
+        },
+        "packages/store-conformance/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 83,
+          statements: 100,
+        },
         // The loader decides what a company package is allowed to become.
         "packages/company/src/**": {
           lines: 100,

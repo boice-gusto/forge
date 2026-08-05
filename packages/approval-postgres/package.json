@@ -1,0 +1,23 @@
+{
+  "name": "@forge/approval-postgres",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@forge/ports": "workspace:*",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@forge/store-conformance": "workspace:*",
+    "@testcontainers/postgresql": "^12.1.0",
+    "@types/pg": "^8.20.4",
+    "testcontainers": "^12.1.0"
+  }
+}
