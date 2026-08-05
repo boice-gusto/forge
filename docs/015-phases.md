@@ -11,6 +11,31 @@
 > not, see [STATUS.md](./STATUS.md), which is checked against the repository.
 > Several exit criteria here are met by work that arrived in a different order
 > than the phases describe.
+>
+> ### Where each phase stands, 2026-08-05
+>
+> | Phase | Exit criteria | Outstanding |
+> |---|---|---|
+> | −1 Vision validation | met | — |
+> | 0 Research & specification | met | Several documents drifted from the code and have been corrected (007 §3–4, 009 §10, 010 §3/§10, 011 §3.2, ADR-005, ADR-007) |
+> | 1 Monorepo skeleton | met | — |
+> | 2 Providers, sandboxes & compiler | met | ADR-002's LangGraph engine is not built — see below. ADR-003 and ADR-005 are implemented, ADR-005 by amendment |
+> | 3 Policies & human gates | met | ADR-007 implemented as OPA Wasm. The gate-bypass suite is green and the approval binding is proven across processes |
+> | 4 Acme demo & operator UI | met | Playwright is not set up; the UI is covered by Vitest instead, and is inside the coverage floors rather than excluded from them |
+> | 5 Gusto company package | met | G1–G5 pass; four scenarios are `todo` and held open by a test that goes red when the API stops ignoring `environment` |
+> | 6 UI hardening, observability & G3–G5 | met | The north-star claim is demonstrated as **two deployments of one binary**, not one process serving two companies — see G5 and 009 §16 |
+> | 7 Production readiness | **not started** | Load, chaos and DR are untouched. Durability, identity, isolation and telemetry are in place, which is the precondition |
+> | 8 Connector extensions | **not started** | — |
+>
+> **ADR-002 is deliberately unmet.** The engine was to be LangGraph behind
+> `GraphEnginePort`. `@forge/engine-memory` is the implementation instead, and
+> the port remains so a vendor engine stays possible. The reason is that the
+> engine now carries Forge's own semantics — sandbox scoping, verdict routing,
+> arm pruning, and the data plane's short-circuit on pinned values — and those
+> are the safety properties, not graph mechanics. Reimplementing them inside a
+> vendor's execution model would move the invariants somewhere they cannot be
+> enforced by this repository's tests. Revisit if a workflow needs something the
+> in-repo engine genuinely cannot express.
 
 ## 1. Purpose
 
