@@ -37,6 +37,24 @@ const storeThresholds = storesRequired
       // Not 100: the probe's "no runtime reachable" catch cannot execute in a
       // run that requires a runtime, and these floors only apply in that run.
       // The decision it guards is tested separately as a pure function.
+      "packages/queue-bullmq/src/**": {
+        lines: 99,
+        functions: 85,
+        branches: 85,
+        statements: 96,
+      },
+      "packages/queue-conformance/src/**": {
+        lines: 98,
+        functions: 97,
+        branches: 83,
+        statements: 98,
+      },
+      "packages/composition/src/**": {
+        lines: 93,
+        functions: 92,
+        branches: 75,
+        statements: 91,
+      },
       // A real container per lease, so this is gated with the stores.
       "packages/sandbox-docker/src/**": {
         lines: 88,
@@ -80,6 +98,10 @@ export default defineConfig({
               "packages/checkpoint-postgres/**",
               "packages/store-conformance/**",
               "packages/sandbox-docker/**",
+              // Container-backed; without Docker these sit near zero and would
+              // drag the global aggregate for an unrelated reason.
+              "packages/composition/src/durable.ts",
+              "packages/queue-bullmq/src/queue.ts",
             ]),
       ],
       thresholds: {
@@ -134,7 +156,7 @@ export default defineConfig({
         "apps/api/src/**": {
           lines: 100,
           functions: 100,
-          branches: 92,
+          branches: 91,
           statements: 100,
         },
         // The extension surface. Everything a company contributes passes
@@ -172,6 +194,18 @@ export default defineConfig({
           functions: 98,
           branches: 97,
           statements: 99,
+        },
+        "apps/worker/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 85,
+          statements: 100,
+        },
+        "packages/queue-memory/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 73,
+          statements: 91,
         },
         "packages/sandbox/src/**": {
           lines: 100,

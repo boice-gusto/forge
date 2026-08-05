@@ -39,5 +39,9 @@ export function createMemoryQueue(): QueuePort {
     async health() {
       return { available: true };
     },
+    async close() {
+      // Nothing to release: the queue is the object, and it goes when it goes.
+      handler = undefined;
+    },
   };
 }

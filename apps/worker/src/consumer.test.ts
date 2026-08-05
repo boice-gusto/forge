@@ -1,17 +1,35 @@
-import { createLocalStack } from "@forge/composition";
 import { createMemoryObservability } from "@forge/observability-memory";
 import type { ForgeJob } from "@forge/ports";
 import { createMemoryQueue } from "@forge/queue-memory";
 import { describe, expect, test } from "vitest";
 
-import { createWorkerConsumer } from "./consumer.js";
+import { createWorkerConsumer, type RunHost } from "./consumer.js";
 
-function harness() {
+interface Call {
+  readonly method: string;
+  readonly runId: string;
+}
+
+function harness(overrides: Partial<RunHost> = {}) {
   const queue = createMemoryQueue();
-  const stack = createLocalStack();
   const observability = createMemoryObservability();
-  const consumer = createWorkerConsumer({ queue, stack, observability });
-  return { queue, stack, observability, consumer };
+  const calls: Call[] = [];
+  const host: RunHost = {
+    async execute(runId) {
+      calls.push({ method: "execute", runId });
+      return "AWAITING_APPROVAL";
+    },
+    async resume(runId) {
+      calls.push({ method: "resume", runId });
+      return "SUCCEEDED";
+    },
+    async cancel(runId) {
+      calls.push({ method: "cancel", runId });
+    },
+    ...overrides,
+  };
+  const consumer = createWorkerConsumer({ queue, host, observability });
+  return { queue, observability, consumer, calls };
 }
 
 const execute: ForgeJob = {
@@ -21,25 +39,35 @@ const execute: ForgeJob = {
   attempt: 1,
 };
 
+const resume: ForgeJob = {
+  type: "workflow.resume",
+  runId: "run_1",
+  approvalId: "approval_1",
+  attempt: 2,
+};
+
+const names = (observability: ReturnType<typeof createMemoryObservability>) =>
+  observability.events.map((event) => event.name);
+
 describe("worker consumer", () => {
-  test("handles an execute job and records it", async () => {
-    const { queue, consumer, observability } = harness();
+  test("an execute job reaches the host and is recorded", async () => {
+    const { queue, consumer, observability, calls } = harness();
     await consumer.start();
     await queue.enqueue(execute);
 
     expect(consumer.handled).toHaveLength(1);
-    expect(observability.events.map((event) => event.name)).toContain(
-      "forge.worker.job",
-    );
+    expect(calls).toEqual([{ method: "execute", runId: "run_1" }]);
+    expect(names(observability)).toContain("forge.worker.executed");
   });
 
   test("a redelivered job is handled once", async () => {
-    const { queue, consumer } = harness();
+    const { queue, consumer, calls } = harness();
     await consumer.start();
     await queue.enqueue(execute);
     await queue.enqueue(execute);
 
     expect(consumer.handled).toHaveLength(1);
+    expect(calls).toHaveLength(1);
   });
 
   test("the queue drains, so no slot is held after handling", async () => {
@@ -50,36 +78,56 @@ describe("worker consumer", () => {
     expect(await queue.depth()).toBe(0);
   });
 
-  test("a job for an unknown run is recorded as failed, not fatal", async () => {
-    const { queue, consumer, observability } = harness();
+  test("a resume job asks the host to resume, naming the decided gate", async () => {
+    const { queue, consumer, observability, calls } = harness();
+    await consumer.start();
+    await queue.enqueue(resume);
+
+    expect(calls).toEqual([{ method: "resume", runId: "run_1" }]);
+    expect(names(observability)).toContain("forge.worker.resumed");
+  });
+
+  test("a cancel job cancels the run", async () => {
+    const { queue, consumer, observability, calls } = harness();
+    await consumer.start();
+    await queue.enqueue({ type: "workflow.cancel", runId: "run_1" });
+
+    expect(calls).toEqual([{ method: "cancel", runId: "run_1" }]);
+    expect(names(observability)).toContain("forge.worker.cancelled");
+  });
+
+  test("a job the host cannot service is recorded as failed, not fatal", async () => {
+    const { queue, consumer, observability } = harness({
+      async cancel() {
+        throw new Error("Unknown run.");
+      },
+    });
     await consumer.start();
     await queue.enqueue({ type: "workflow.cancel", runId: "run_missing" });
 
     expect(consumer.handled).toHaveLength(1);
-    expect(observability.events.map((event) => event.name)).toContain(
-      "forge.worker.job_failed",
-    );
+    expect(names(observability)).toContain("forge.worker.job_failed");
   });
 
   test("the consumer keeps working after a failed job", async () => {
-    const { queue, consumer } = harness();
+    const { queue, consumer, calls } = harness({
+      async cancel() {
+        throw new Error("Unknown run.");
+      },
+    });
     await consumer.start();
     await queue.enqueue({ type: "workflow.cancel", runId: "run_missing" });
     await queue.enqueue(execute);
 
     expect(consumer.handled).toHaveLength(2);
+    expect(calls).toEqual([{ method: "execute", runId: "run_1" }]);
   });
 
   test("resume and execute are distinct operations", async () => {
     const { queue, consumer } = harness();
     await consumer.start();
     await queue.enqueue(execute);
-    await queue.enqueue({
-      type: "workflow.resume",
-      runId: "run_1",
-      approvalId: "approval_1",
-      attempt: 2,
-    });
+    await queue.enqueue(resume);
 
     expect(consumer.handled.map((job) => job.type)).toEqual([
       "workflow.execute",

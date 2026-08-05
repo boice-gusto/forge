@@ -30,6 +30,13 @@ export interface QueuePort {
   enqueue(job: ForgeJob): Promise<string>;
   /** Delivers each distinct operation at most once to the handler. */
   subscribe(handler: (job: ForgeJob) => Promise<void>): Promise<void>;
+  /** Work waiting for a subscriber. Work already handled is not waiting. */
   depth(): Promise<number>;
   health(): Promise<{ readonly available: boolean }>;
+  /**
+   * Releases the transport. A queue with a live connection keeps a process
+   * alive after its work is done, so shutting one down has to be expressible
+   * at the port rather than only on the adapter that happens to need it.
+   */
+  close(): Promise<void>;
 }

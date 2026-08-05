@@ -4,10 +4,15 @@
   "version": "0.1.0",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./durable": "./src/durable.ts"
   },
   "dependencies": {
     "@forge/approval-memory": "workspace:*",
+    "@forge/approval-postgres": "workspace:*",
+    "@forge/checkpoint-postgres": "workspace:*",
+    "@forge/queue-bullmq": "workspace:*",
+    "pg": "^8.22.0",
     "@forge/checkpoint-memory": "workspace:*",
     "@forge/compiler": "workspace:*",
     "@forge/engine-memory": "workspace:*",
@@ -21,6 +26,13 @@
     "@forge/provider-mock": "workspace:*",
     "@forge/sandbox": "workspace:*",
     "@forge/company": "workspace:*"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.1.0",
+    "@testcontainers/redis": "^12.1.0",
+    "@forge/store-conformance": "workspace:*",
+    "@types/pg": "^8.20.4",
+    "testcontainers": "^12.1.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

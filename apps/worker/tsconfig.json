@@ -1,1 +1,5 @@
-{ "extends": "../../tooling/tsconfig.base.json", "include": ["src/**/*.ts"] }
+{
+  "extends": "../../tooling/tsconfig.base.json",
+  "//": "test/ holds the restart proof and the process it forks. Outside src/ so neither the fork's entry point nor its fixture lands in the coverage set, but typechecked like everything else.",
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}
