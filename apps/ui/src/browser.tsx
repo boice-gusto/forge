@@ -17,7 +17,12 @@ if (rootElement === null) {
 // accepts one, the operator supplies a token that dies with the tab.
 const client = createForgeClient({
   baseUrl: sessionStorage.getItem("forge.apiUrl") ?? "http://127.0.0.1:3100",
-  token: sessionStorage.getItem("forge.operatorToken") ?? "",
+  // In a dev server only, fall back to the API's development token so
+  // `pnpm dev` needs no setup. `import.meta.env.DEV` is a compile-time
+  // constant, so this branch is not present in a production bundle at all.
+  token:
+    sessionStorage.getItem("forge.operatorToken") ??
+    (import.meta.env.DEV ? "local-development-only" : ""),
 });
 
 createRoot(rootElement).render(

@@ -66,5 +66,27 @@ export interface ApprovalPort {
    * authenticated operator — otherwise it would be visible to no one and the
    * run would stall behind a decision nobody could see they had to make.
    */
-  listPendingFor(principal: string): Promise<readonly ApprovalRecord[]>;
+
+  listPendingFor(
+    principal: string,
+    /**
+     * Roles the caller holds. A policy rule's `approvers` names *roles*
+     * (`marketing-lead`), not people, so matching them against a principal
+     * identity alone finds nothing — an inbox that silently showed no work is
+     * worse than no inbox. Membership is resolved at the authenticated
+     * boundary, never taken from the request.
+     */
+    roles?: readonly string[],
+  ): Promise<readonly ApprovalRecord[]>;
 }
+
+/**
+ * Stands for "every role", for a deployment with no directory to ask.
+ *
+ * A single shared admin token is one trust tier: refusing to show a gate named
+ * `marketing-lead` would hide work from the only operator there is, and the run
+ * would stall behind a decision nobody could see. Declared here rather than
+ * left as a magic string, so a store must implement it deliberately and a
+ * reader can find every place it is honoured.
+ */
+export const ANY_ROLE = "*";

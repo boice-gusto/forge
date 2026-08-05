@@ -87,8 +87,11 @@ GET  /v1/approvals                                          → the global inbox
 POST /v1/runs/:runId/approvals/:approvalId/decision         → approve | reject | edit | timeout
 ```
 
-A gate is in your inbox if it names you as an approver **or names nobody**. A
-gate no one could see would stall behind a decision nobody knew was owed.
+A gate is in your inbox if it names a role you hold, or names nobody. A policy
+rule's `approvers` names **roles**, not people, so membership is resolved at the
+authenticated boundary and never read from the request. With no directory to
+ask, one shared admin token holds `ANY_ROLE` — hiding a gate from the only
+operator there is would stall the run behind a decision nobody could see.
 
 Authorisation is `Bearer <admin token>`. **The principal comes from the authenticated
 caller, never from the body.** Do not add a `principal` field to a request payload —
@@ -177,6 +180,28 @@ Gate analysis is condition-agnostic, so an arm cannot launder a bypass: an effec
 reachable through a verdict arm still needs an approval that names it, and
 `WF_MISSING_APPROVAL` fires if it does not have one.
 
+## Running it locally
+
+```sh
+pnpm dev      # API on 127.0.0.1:3100, UI on 127.0.0.1:3101
+```
+
+**No Docker required.** Every port has an in-memory adapter; only the two
+Postgres stores need a container runtime, and their suites skip — loudly, naming
+the adapter they left unverified — when none is reachable. The full nine-step
+verification passes on a machine with no Docker at all.
+
+CI sets `FORGE_REQUIRE_STORES=1`, which turns that skip into a failure and
+applies those packages' coverage floors. Do not probe `docker info` instead:
+Testcontainers reads `DOCKER_HOST` and ignores Docker contexts, so on a Colima
+or rootless host the CLI succeeds while every container test silently skips.
+
+To run the store suites locally: `DOCKER_HOST=unix://$HOME/.colima/<profile>/docker.sock
+TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock pnpm test`.
+
+`forge dev up` is separate — it starts the declared Redis/Postgres/OTel stack in
+`infra/local/`, which nothing in the default path needs yet.
+
 ## Company packages
 
 A company package is a directory with `forge.company.json` naming its domains,
@@ -247,9 +272,6 @@ in `packages/`, it belongs in a company repository instead.
 ## Verifying
 
 ```sh
-# The Postgres store suites need Docker. Without it they skip, coverage for
-# those packages drops to zero, and test:coverage fails — a silent skip must
-# not read as green. On a Colima host, export DOCKER_HOST first.
 pnpm lint && pnpm typecheck && pnpm test && pnpm test:coverage
 pnpm test:architecture && pnpm test:security
 pnpm security:secrets && pnpm security:licenses

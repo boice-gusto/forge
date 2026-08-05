@@ -54,6 +54,13 @@ function toDecision(body: DecisionBody): ApprovalDecision | undefined {
 
 export interface RunRoutesOptions {
   /** Resolves the acting principal from the request, at the trusted boundary. */
+  /**
+   * Roles the caller holds. A policy rule names roles, not people, so an inbox
+   * that matched only on identity would show almost nothing. Resolved here at
+   * the authenticated boundary — never read from the request — and destined to
+   * come from the IdP once one exists (012 §8).
+   */
+  readonly rolesFor?: (principal: string) => readonly string[];
   readonly principalFor: (
     authorization: string | undefined,
   ) => string | undefined;
@@ -206,7 +213,12 @@ export function registerRunRoutes(
       return reply.code(401).send({ status: "unauthorized" });
 
     const perStore = await Promise.all(
-      stores().map((stack) => stack.approvals.listPendingFor(principal)),
+      stores().map((stack) =>
+        stack.approvals.listPendingFor(
+          principal,
+          options.rolesFor?.(principal) ?? [],
+        ),
+      ),
     );
     // Closest to expiry first. An expired gate is a timeout, not a slow yes,
     // so the one about to run out is the one that needs an operator now.

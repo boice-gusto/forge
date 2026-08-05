@@ -6,6 +6,7 @@ import type {
   ClockPort,
   IdPort,
 } from "@forge/ports";
+import { ANY_ROLE } from "@forge/ports";
 import type { Pool } from "pg";
 
 const TERMINAL: Record<ApprovalDecision["kind"], ApprovalStatus> = {
@@ -169,15 +170,15 @@ export function createPostgresApprovalStore(
       return rows.map(toRecord);
     },
 
-    async listPendingFor(principal) {
+    async listPendingFor(principal, roles = []) {
       const { rows } = await pool.query<ApprovalRow>(
         // A gate that names nobody is open to any authenticated operator;
         // otherwise it would sit in no inbox at all and stall its run.
         `select ${COLUMNS} from forge_approval
           where status = 'PENDING'
-            and (cardinality(approvers) = 0 or $1 = any(approvers))
+            and ($2 or cardinality(approvers) = 0 or approvers && $1::text[])
           order by seq`,
-        [principal],
+        [[principal, ...roles], roles.includes(ANY_ROLE)],
       );
       return rows.map(toRecord);
     },

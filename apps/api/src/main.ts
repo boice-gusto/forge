@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { ANY_ROLE } from "@forge/ports";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import {
@@ -15,7 +16,21 @@ export interface ApiOptions {
   readonly adminToken: string;
   /** Principal attributed to an authenticated caller. */
   readonly principal?: string;
+  /**
+   * Roles that principal holds, used to scope the approval inbox. A policy
+   * rule's `approvers` names roles rather than people, so without this the
+   * inbox matches on identity alone and shows nothing.
+   */
+  readonly roles?: readonly string[];
 }
+
+/**
+ * A single shared admin token is, in effect, every role: there is one operator
+ * and no directory to ask. Said out loud rather than left as a matching
+ * accident, because it is exactly the assumption an IdP has to replace
+ * (012 §8) — at which point the inbox narrows to real membership.
+ */
+const ALL_ROLES = [ANY_ROLE] as const;
 
 export function createApiApp(options: ApiOptions): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -46,6 +61,12 @@ export function createApiApp(options: ApiOptions): FastifyInstance {
 
   registerRunRoutes(app, {
     // The boundary decides who is acting. A body field never does.
+    /**
+     * One shared admin token means one operator who is, in effect, every role.
+     * Stated explicitly rather than left to a matching accident: with a real
+     * IdP this resolves actual membership, and the inbox narrows accordingly.
+     */
+    rolesFor: () => options.roles ?? ALL_ROLES,
     principalFor: (authorization) =>
       authorization === `Bearer ${options.adminToken}`
         ? (options.principal ?? "local-operator")

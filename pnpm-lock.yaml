@@ -457,6 +457,9 @@ importers:
       '@forge/ports':
         specifier: workspace:*
         version: link:../ports
+      testcontainers:
+        specifier: ^12.1.0
+        version: 12.1.0
 
   packages/types:
     dependencies:

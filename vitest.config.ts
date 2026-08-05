@@ -10,6 +10,42 @@ import { defineConfig } from "vitest/config";
  * the compiler decides what may run, and the runtime decides what actually
  * does.
  */
+/**
+ * The durable-store suites need a container runtime; nothing else does. Local
+ * development must not require Docker, so their floors only apply when the
+ * suites were actually required to run. CI sets `FORGE_REQUIRE_STORES=1`, which
+ * also turns a skipped store suite into a failure — so in CI these floors are
+ * always applied and always meaningful, and locally a contributor without
+ * Docker still gets a clean run with a loud warning.
+ */
+const storesRequired = process.env.FORGE_REQUIRE_STORES === "1";
+
+const storeThresholds = storesRequired
+  ? {
+      "packages/approval-postgres/src/**": {
+        lines: 96,
+        functions: 100,
+        branches: 92,
+        statements: 96,
+      },
+      "packages/checkpoint-postgres/src/**": {
+        lines: 93,
+        functions: 100,
+        branches: 75,
+        statements: 93,
+      },
+      // Not 100: the probe's "no runtime reachable" catch cannot execute in a
+      // run that requires a runtime, and these floors only apply in that run.
+      // The decision it guards is tested separately as a pure function.
+      "packages/store-conformance/src/**": {
+        lines: 99,
+        functions: 100,
+        branches: 83,
+        statements: 99,
+      },
+    }
+  : {};
+
 export default defineConfig({
   test: {
     coverage: {
@@ -28,8 +64,18 @@ export default defineConfig({
         "**/src/browser.tsx",
         "**/src/measure-*.ts",
         "**/src/measure-*.tsx",
+        // Skipped suites would otherwise drag the global aggregate down and
+        // fail a Docker-less run for a reason unrelated to the change at hand.
+        ...(storesRequired
+          ? []
+          : [
+              "packages/approval-postgres/**",
+              "packages/checkpoint-postgres/**",
+              "packages/store-conformance/**",
+            ]),
       ],
       thresholds: {
+        ...storeThresholds,
         lines: 94,
         functions: 96,
         branches: 80,
@@ -118,27 +164,6 @@ export default defineConfig({
           functions: 95,
           branches: 93,
           statements: 97,
-        },
-        // The durable stores. Floors here have a second job: if Docker goes
-        // missing in CI these suites skip, coverage drops to zero, and
-        // test:coverage fails hard — so a silent skip cannot pass as green.
-        "packages/approval-postgres/src/**": {
-          lines: 96,
-          functions: 100,
-          branches: 92,
-          statements: 96,
-        },
-        "packages/checkpoint-postgres/src/**": {
-          lines: 93,
-          functions: 100,
-          branches: 75,
-          statements: 93,
-        },
-        "packages/store-conformance/src/**": {
-          lines: 100,
-          functions: 100,
-          branches: 83,
-          statements: 100,
         },
         // The loader decides what a company package is allowed to become.
         "packages/company/src/**": {

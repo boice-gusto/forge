@@ -5,6 +5,7 @@ export type {
   ApprovalRequest,
   ApprovalStatus,
 } from "./approval.js";
+export { ANY_ROLE } from "./approval.js";
 export type {
   CheckpointInput,
   CheckpointRecord,

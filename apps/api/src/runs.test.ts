@@ -32,6 +32,21 @@ function app() {
   });
 }
 
+/**
+ * An API whose caller holds exactly these roles, standing in for a directory.
+ * The default `app()` grants every role, which is the right stance for one
+ * shared admin token but the wrong one for testing that scoping works.
+ */
+function appWithRoles(roles: readonly string[]) {
+  return createApiApp({
+    build: { version: "0.1.0", gitSha: "test", buildTime: "2026-01-01" },
+    dependencies: { queue: "healthy", persistence: "healthy" },
+    adminToken: BEARER,
+    principal: "marketing-lead",
+    roles,
+  });
+}
+
 const startBody = fixture;
 
 /** The same workflow, gated for somebody who is not the caller. */
@@ -466,7 +481,7 @@ describe("the operator can see the estate without knowing a run id first", () =>
   });
 
   test("a gate that names another approver is not in this operator's inbox", async () => {
-    const server = app();
+    const server = appWithRoles(["marketing-lead"]);
     const mine = await startRun(server);
     await startRun(server, gatedFor("finance-lead"));
 
@@ -481,6 +496,45 @@ describe("the operator can see the estate without knowing a run id first", () =>
     expect(inbox.pending.map((gate: { runId: string }) => gate.runId)).toEqual([
       mine.runId,
     ]);
+  });
+
+  test("a role the caller holds puts the gate in their inbox", async () => {
+    // `approvers` names roles, not people. Matching on identity alone found
+    // nothing, so every gate naming a role sat in no inbox at all.
+    const server = appWithRoles(["finance-lead"]);
+    const theirs = await startRun(server, gatedFor("finance-lead"));
+
+    const inbox = (
+      await server.inject({
+        method: "GET",
+        url: "/v1/approvals",
+        headers: AUTH,
+      })
+    ).json();
+
+    expect(inbox.pending.map((gate: { runId: string }) => gate.runId)).toEqual([
+      theirs.runId,
+    ]);
+  });
+
+  test("with no directory to ask, one admin token sees every gate", async () => {
+    // The deployment stance behind `ALL_ROLES`: hiding a gate from the only
+    // operator there is would stall the run behind a decision nobody can see.
+    const server = app();
+    const mine = await startRun(server);
+    const theirs = await startRun(server, gatedFor("finance-lead"));
+
+    const inbox = (
+      await server.inject({
+        method: "GET",
+        url: "/v1/approvals",
+        headers: AUTH,
+      })
+    ).json();
+
+    expect(
+      inbox.pending.map((gate: { runId: string }) => gate.runId).sort(),
+    ).toEqual([mine.runId, theirs.runId].sort());
   });
 
   test("the inbox refuses an unauthenticated caller rather than showing everything", async () => {

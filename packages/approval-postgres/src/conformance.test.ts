@@ -1,8 +1,10 @@
-import { describeApprovalStoreConformance } from "@forge/store-conformance";
+import {
+  containerRuntimeAvailable,
+  describeApprovalStoreConformance,
+} from "@forge/store-conformance";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import pg from "pg";
-import { getContainerRuntimeClient } from "testcontainers";
 import { afterAll, beforeAll, describe } from "vitest";
 
 import { applyApprovalSchema } from "./schema.js";
@@ -12,22 +14,7 @@ const POSTGRES_IMAGE = "postgres:16-alpine";
 /** A cold image pull is slow; a hung container should still fail, not wait. */
 const CONTAINER_START_TIMEOUT_MS = 240_000;
 
-async function containerRuntimeReachable(): Promise<boolean> {
-  try {
-    await getContainerRuntimeClient();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const dockerAvailable = await containerRuntimeReachable();
-if (!dockerAvailable) {
-  // Skipping is only honest if it is loud. A silent skip reads as a pass.
-  console.warn(
-    "[approval-postgres] No container runtime is reachable, so the Postgres conformance suite is SKIPPED and durable approvals are unverified. Start Docker (or set DOCKER_HOST) and re-run.",
-  );
-}
+const dockerAvailable = await containerRuntimeAvailable("approval-postgres");
 
 describe.skipIf(!dockerAvailable)("approval-postgres", () => {
   let container: StartedPostgreSqlContainer;

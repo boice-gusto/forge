@@ -7,6 +7,7 @@ import type {
   ClockPort,
   IdPort,
 } from "@forge/ports";
+import { ANY_ROLE } from "@forge/ports";
 
 const TERMINAL: Record<string, ApprovalStatus> = {
   approve: "APPROVED",
@@ -70,12 +71,15 @@ export function createMemoryApprovalStore(
       return [...records.values()].filter((record) => record.runId === runId);
     },
 
-    async listPendingFor(principal: string) {
+    async listPendingFor(principal: string, roles: readonly string[] = []) {
+      const held = new Set([principal, ...roles]);
+      const seesEverything = held.has(ANY_ROLE);
       return [...records.values()].filter(
         (record) =>
           record.status === "PENDING" &&
-          (record.approvers.length === 0 ||
-            record.approvers.includes(principal)),
+          (seesEverything ||
+            record.approvers.length === 0 ||
+            record.approvers.some((approver) => held.has(approver))),
       );
     },
   };

@@ -8,6 +8,18 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      # The durable-store suites skip when no container runtime is reachable,
+      # and a skip is invisible in a CI summary. This turns skipping into a
+      # failure and applies those packages' coverage floors. Local development
+      # deliberately does not set it — nothing but these two adapters needs
+      # Docker, and gating the whole repo on it would push people to skip
+      # verification altogether.
+      #
+      # Probing `docker info` instead would not work: Testcontainers reads
+      # DOCKER_HOST and ignores Docker contexts, so the CLI can succeed on a
+      # Colima or rootless host while every container test silently skips.
+      FORGE_REQUIRE_STORES: "1"
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -18,11 +30,6 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # The Postgres store suites skip when Docker is absent. A skip is
-      # invisible in the CI summary, so an absent daemon must fail loudly
-      # rather than let those adapters go unverified.
-      - name: Require Docker for the Testcontainers suites
-        run: docker info > /dev/null || (echo "Docker unavailable; the Postgres store suites would silently skip" && exit 1)
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
