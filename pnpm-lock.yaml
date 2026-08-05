@@ -247,6 +247,15 @@ importers:
         specifier: workspace:*
         version: link:../ir
 
+  packages/plugin-sdk:
+    dependencies:
+      '@forge/types':
+        specifier: workspace:*
+        version: link:../types
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
   packages/policy-memory:
     dependencies:
       '@forge/ports':

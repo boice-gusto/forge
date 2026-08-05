@@ -63,6 +63,26 @@ function unreadable(path: string | undefined, asJson: boolean): CliResult {
     : humanResult(payload.message, CLI_EXIT_CODE.INVALID_ARTIFACT);
 }
 
+/**
+ * Build the local stack a run needs. Each optional field is spread only when
+ * present so an absent one keeps the stack's own default rather than
+ * overwriting it with `undefined`.
+ */
+function stackFor(file: WorkflowFile) {
+  return createLocalStack({
+    rules: file.policy?.rules ?? [],
+    grants: file.policy?.grants ?? [],
+    ...(file.actor === undefined ? {} : { actor: file.actor }),
+    ...(file.environment === undefined
+      ? {}
+      : { environment: file.environment }),
+    ...(file.panel === undefined ? {} : { panel: file.panel }),
+    ...(file.review?.votes === undefined
+      ? {}
+      : { votesFor: () => file.review?.votes ?? {} }),
+  });
+}
+
 export async function compileWorkflowFile(
   path: string | undefined,
   asJson: boolean,
@@ -121,6 +141,46 @@ export async function compileWorkflowFile(
       );
 }
 
+/**
+ * Human rendering. A gated run says what it is waiting on, who can decide it,
+ * and when the gate expires — a bare "AWAITING_APPROVAL" tells the reader
+ * nothing they can act on.
+ */
+function renderRun(
+  run: {
+    readonly runId: string;
+    readonly status: string;
+    readonly workflowId: string;
+    readonly error?: string | undefined;
+  },
+  dispatchedEffects: readonly string[],
+  pending:
+    | {
+        readonly approvalId: string;
+        readonly nodeId: string;
+        readonly effect: string;
+        readonly policyId: string;
+        readonly approvers: readonly string[];
+        readonly expiresAt: string;
+      }
+    | undefined,
+): string {
+  const lines = [
+    `Run ${run.runId} — ${run.status}`,
+    `  workflow  ${run.workflowId}`,
+    `  effects   ${dispatchedEffects.join(", ") || "none dispatched"}`,
+  ];
+  if (pending !== undefined) {
+    lines.push(
+      `  awaiting  ${pending.approvalId} on ${pending.nodeId} (${pending.effect})`,
+      `  required by ${pending.policyId}; approvers ${pending.approvers.join(", ") || "unspecified"}`,
+      `  expires   ${pending.expiresAt}`,
+    );
+  }
+  if (run.error !== undefined) lines.push(`  error     ${run.error}`);
+  return lines.join("\n");
+}
+
 export async function runWorkflowFile(
   path: string | undefined,
   asJson: boolean,
@@ -132,18 +192,7 @@ export async function runWorkflowFile(
   const outcome = compileToArtifact(file.workflow);
   if (!outcome.ok) return compileWorkflowFile(path, asJson);
 
-  const stack = createLocalStack({
-    rules: file.policy?.rules ?? [],
-    grants: file.policy?.grants ?? [],
-    ...(file.actor === undefined ? {} : { actor: file.actor }),
-    ...(file.environment === undefined
-      ? {}
-      : { environment: file.environment }),
-    ...(file.panel === undefined ? {} : { panel: file.panel }),
-    ...(file.review?.votes === undefined
-      ? {}
-      : { votesFor: () => file.review?.votes ?? {} }),
-  });
+  const stack = stackFor(file);
 
   const run = await stack.runtime.start({
     artifact: outcome.artifact,
@@ -183,20 +232,7 @@ export async function runWorkflowFile(
       ? CLI_EXIT_CODE.UNAVAILABLE
       : CLI_EXIT_CODE.SUCCESS;
 
-  if (asJson) return jsonResult(payload, exitCode);
-
-  const lines = [
-    `Run ${run.runId} — ${run.status}`,
-    `  workflow  ${run.workflowId}`,
-    `  effects   ${payload.dispatchedEffects.join(", ") || "none dispatched"}`,
-  ];
-  if (pending !== undefined) {
-    lines.push(
-      `  awaiting  ${pending.approvalId} on ${pending.nodeId} (${pending.effect})`,
-      `  required by ${pending.policyId}; approvers ${pending.approvers.join(", ") || "unspecified"}`,
-      `  expires   ${pending.expiresAt}`,
-    );
-  }
-  if (run.error !== undefined) lines.push(`  error     ${run.error}`);
-  return humanResult(lines.join("\n"), exitCode);
+  return asJson
+    ? jsonResult(payload, exitCode)
+    : humanResult(renderRun(run, payload.dispatchedEffects, pending), exitCode);
 }
