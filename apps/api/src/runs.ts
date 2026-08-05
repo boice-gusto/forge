@@ -5,7 +5,7 @@ import {
 } from "@forge/composition";
 import type { PanelDefinition, Vote } from "@forge/panel";
 import type { PolicyRule } from "@forge/policy-memory";
-import type { ApprovalDecision } from "@forge/ports";
+import type { ApprovalDecision, JsonValue } from "@forge/ports";
 import type { FastifyInstance } from "fastify";
 
 /**
@@ -28,6 +28,8 @@ interface StartBody {
   /** Which arm each branch takes, keyed by node id. */
   readonly branch?: Readonly<Record<string, string>>;
   readonly changedPaths?: readonly string[];
+  /** The run's input, which the workflow's input nodes produce. */
+  readonly payload?: JsonValue;
 }
 
 interface DecisionBody {
@@ -96,6 +98,32 @@ interface RunEventView {
   readonly attributes: Readonly<Record<string, string | number | boolean>>;
 }
 
+/**
+ * A stack of this run's own, because it brought its own policy. Policy comes
+ * from the request only because there is no policy store yet; when one exists
+ * this resolves from the company package, not the caller.
+ *
+ * Optional fields are spread only when present, so an absent one keeps the
+ * stack's own default rather than overwriting it with `undefined`.
+ */
+function stackFor(body: StartBody, shared: LocalStack): LocalStack {
+  return createLocalStack({
+    rules: body.policy?.rules ?? [],
+    grants: body.policy?.grants ?? [],
+    environment: "production",
+    // One id source across every stack. Without it each per-policy stack mints
+    // `run_1`, and the second run displaces the first in the run index.
+    ids: shared.ids,
+    ...(body.panel === undefined ? {} : { panel: body.panel }),
+    ...(body.review?.votes === undefined
+      ? {}
+      : { votesFor: () => body.review?.votes ?? {} }),
+    ...(body.branch === undefined
+      ? {}
+      : { branchFor: (nodeId: string) => body.branch?.[nodeId] }),
+  });
+}
+
 export function registerRunRoutes(
   app: FastifyInstance,
   options: RunRoutesOptions,
@@ -113,6 +141,14 @@ export function registerRunRoutes(
   ];
 
   app.post("/v1/workflows/compile", async (request, reply) => {
+    // Authenticated like every sibling route. Compiling reads and writes no
+    // run state, which is why this was overlooked — but it is unmetered work
+    // on a control plane, and one endpoint that behaves differently from the
+    // rest is the one nobody thinks about.
+    if (options.principalFor(request.headers.authorization) === undefined) {
+      return reply.code(401).send({ status: "unauthorized" });
+    }
+
     const body = (request.body ?? {}) as StartBody;
     const outcome = compileToArtifact(body.workflow);
     if (!outcome.ok) {
@@ -152,32 +188,15 @@ export function registerRunRoutes(
       });
     }
 
-    // Policy comes from the request only because there is no policy store yet.
-    // When one exists this resolves from the company package, not the caller.
-    const stack =
-      body.policy === undefined
-        ? shared
-        : createLocalStack({
-            rules: body.policy.rules ?? [],
-            grants: body.policy.grants ?? [],
-            environment: "production",
-            // One id source across every stack. Without it each per-policy
-            // stack mints `run_1`, and the second run displaces the first in
-            // the index above.
-            ids: shared.ids,
-            ...(body.panel === undefined ? {} : { panel: body.panel }),
-            ...(body.review?.votes === undefined
-              ? {}
-              : { votesFor: () => body.review?.votes ?? {} }),
-            ...(body.branch === undefined
-              ? {}
-              : { branchFor: (nodeId: string) => body.branch?.[nodeId] }),
-          });
+    const stack = body.policy === undefined ? shared : stackFor(body, shared);
 
     const run = await stack.runtime.start({
       artifact: outcome.artifact,
       capabilities: body.capabilities ?? [],
       changedPaths: body.changedPaths ?? [],
+      // Absent stays absent: an omitted payload must not become an empty one,
+      // or a node reading it would proceed on data nobody sent.
+      ...(body.payload === undefined ? {} : { payload: body.payload }),
     });
     stacks.set(run.runId, stack);
 
@@ -224,6 +243,14 @@ export function registerRunRoutes(
   app.get<{ Params: { runId: string } }>(
     "/v1/runs/:runId",
     async (request, reply) => {
+      // A run record names the effects that actually fired. Its two sibling
+      // routes check; this one did not, so the whole record was readable
+      // unauthenticated. Checked before the lookup, so an anonymous caller
+      // cannot tell a missing run from one they may not see.
+      if (options.principalFor(request.headers.authorization) === undefined) {
+        return reply.code(401).send({ status: "unauthorized" });
+      }
+
       const stack = stacks.get(request.params.runId) ?? shared;
       const run = stack.runtime.getRun(request.params.runId);
       if (run === undefined)

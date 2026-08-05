@@ -81,6 +81,7 @@ describe("control plane", () => {
     const response = await app().inject({
       method: "POST",
       url: "/v1/workflows/compile",
+      headers: AUTH,
       payload: { workflow: fixture.workflow },
     });
     const body = response.json();
@@ -98,6 +99,7 @@ describe("control plane", () => {
     const response = await app().inject({
       method: "POST",
       url: "/v1/workflows/compile",
+      headers: AUTH,
       payload: { workflow: { id: "broken", version: "nope", nodes: [] } },
     });
 
@@ -738,5 +740,106 @@ describe("an event family this build does not know is served, not dropped", () =
         (event: { name: string }) => event.name === "forge.worker.job",
       ),
     ).toMatchObject({ kind: "other", attributes: { jobId: "job_1" } });
+  });
+});
+
+/**
+ * The run data plane, from the boundary. The payload the caller sends is the
+ * value the workflow's input nodes produce — and an omitted one is still
+ * omitted, not an empty object a node could quietly read.
+ */
+describe("a run carries the payload it was started with", () => {
+  const dataWorkflow = {
+    id: "acme.api-data",
+    version: "1.0.0",
+    sideEffects: ["slack.post"],
+    nodes: [
+      { id: "intake", kind: "input", schemaRef: "s@1" },
+      { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["send"] },
+      {
+        id: "send",
+        kind: "tool",
+        skillRef: "t@1",
+        effect: "slack.post",
+        reads: { node: "intake", path: ["body"] },
+      },
+      { id: "done", kind: "output", schemaRef: "s@1" },
+    ],
+    edges: [
+      { from: "intake", to: "gate" },
+      { from: "gate", to: "send" },
+      { from: "send", to: "done" },
+    ],
+  };
+
+  const openPolicy = {
+    rules: [
+      {
+        id: "acme.api-data.open",
+        action: "slack.post",
+        environment: "production",
+        decision: "allow",
+        reason: "Test rule.",
+      },
+    ],
+    grants: [],
+  };
+
+  test("a payload flows to the effect and the run succeeds", async () => {
+    const run = await startRun(app(), {
+      workflow: dataWorkflow,
+      policy: openPolicy,
+      payload: { body: "the copy" },
+    });
+
+    expect(run.status).toBe("SUCCEEDED");
+    expect(run.performedEffects).toEqual(["send"]);
+  });
+
+  test("an omitted payload is not an empty one; the read fails closed", async () => {
+    const run = await startRun(app(), {
+      workflow: dataWorkflow,
+      policy: openPolicy,
+    });
+
+    expect(run.status).toBe("FAILED");
+    expect(run.error).toContain("no value");
+    expect(run.performedEffects).toEqual([]);
+  });
+});
+
+describe("every control-plane route is authenticated", () => {
+  test("compile refuses an unauthenticated caller", async () => {
+    // It reads no run state, so it looked harmless and was left open. It is
+    // still unmetered work on a control plane, and a company acceptance suite
+    // found it by revoking its token and watching compile keep working.
+    const response = await app().inject({
+      method: "POST",
+      url: "/v1/workflows/compile",
+      payload: { workflow: fixture.workflow },
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  test("no route answers without a bearer token", async () => {
+    const server = app();
+    const routes: readonly ["POST" | "GET", string][] = [
+      ["POST", "/v1/workflows/compile"],
+      ["POST", "/v1/runs"],
+      ["GET", "/v1/runs"],
+      ["GET", "/v1/approvals"],
+      ["GET", "/v1/runs/run_1"],
+      ["GET", "/v1/runs/run_1/approvals"],
+      ["GET", "/v1/runs/run_1/events"],
+      ["POST", "/v1/runs/run_1/approvals/approval_1/decision"],
+    ];
+
+    for (const [method, url] of routes) {
+      const response = await server.inject({ method, url, payload: {} });
+      expect(`${method} ${url} -> ${response.statusCode}`).toBe(
+        `${method} ${url} -> 401`,
+      );
+    }
   });
 });

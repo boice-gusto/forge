@@ -293,6 +293,9 @@ importers:
       '@forge/runtime':
         specifier: workspace:*
         version: link:../runtime
+      '@forge/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@forge/types':
         specifier: workspace:*
         version: link:../types
@@ -437,11 +440,44 @@ importers:
       '@forge/provider-mock':
         specifier: workspace:*
         version: link:../provider-mock
+      '@forge/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@forge/types':
         specifier: workspace:*
         version: link:../types
 
-  packages/sandbox: {}
+  packages/sandbox:
+    dependencies:
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../ports
+    devDependencies:
+      '@forge/sandbox-conformance':
+        specifier: workspace:*
+        version: link:../sandbox-conformance
+
+  packages/sandbox-conformance:
+    dependencies:
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../ports
+
+  packages/sandbox-docker:
+    dependencies:
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../ports
+      '@forge/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+    devDependencies:
+      '@forge/sandbox-conformance':
+        specifier: workspace:*
+        version: link:../sandbox-conformance
+      '@forge/store-conformance':
+        specifier: workspace:*
+        version: link:../store-conformance
 
   packages/sdk:
     dependencies:

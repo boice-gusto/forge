@@ -83,6 +83,40 @@ function describeDurability(harness: CheckpointConformanceHarness): void {
       ]);
     });
 
+    test("the values the run had produced survive the round trip", async () => {
+      // The reason this field exists: a gate can stay open for days, and a
+      // resume that recomputed instead of restoring would dispatch an action
+      // nobody approved. A store that drops it breaks that silently, which is
+      // exactly how it went unnoticed until a durable adapter was written.
+      const handle = await harness.create();
+      const values = {
+        intake: { member: "synthetic-001", amount: 4200 },
+        draft: "copy the reviewer saw",
+        route: "clean",
+      };
+
+      const written = await handle.store.save({
+        ...CONFORMANCE_CHECKPOINT,
+        values,
+      });
+
+      expect(written.values).toEqual(values);
+      const peer = await handle.peer();
+      expect((await peer.load(written.checkpointId))?.values).toEqual(values);
+    });
+
+    test("a checkpoint with no values reads back with none, not with empty", async () => {
+      // Absent and "produced nothing" are different: an input node with no
+      // payload produces nothing, and inventing `{}` would let a read of it
+      // succeed against a value that was never there.
+      const handle = await harness.create();
+      const written = await handle.store.save(CONFORMANCE_CHECKPOINT);
+
+      const peer = await handle.peer();
+      const read = await peer.load(written.checkpointId);
+      expect(read?.values).toBeUndefined();
+    });
+
     test("the state version and resume token survive the round trip verbatim", async () => {
       const handle = await harness.create();
       const written = await handle.store.save({

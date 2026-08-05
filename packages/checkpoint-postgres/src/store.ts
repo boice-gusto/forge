@@ -7,9 +7,11 @@ interface CheckpointRow {
   readonly step_id: string;
   readonly state_version: number;
   readonly resume_token: string;
+  readonly values: Record<string, unknown> | null;
 }
 
-const COLUMNS = "checkpoint_id, run_id, step_id, state_version, resume_token";
+const COLUMNS =
+  "checkpoint_id, run_id, step_id, state_version, resume_token, values";
 
 function toRecord(row: CheckpointRow): CheckpointRecord {
   return {
@@ -18,6 +20,13 @@ function toRecord(row: CheckpointRow): CheckpointRecord {
     stepId: row.step_id,
     stateVersion: row.state_version,
     resumeToken: row.resume_token,
+    // Absent stays absent. Coercing null to `{}` would turn "produced nothing"
+    // into "produced an empty result", and a resume would read past it.
+    ...(row.values === null
+      ? {}
+      : {
+          values: row.values as NonNullable<CheckpointRecord["values"]>,
+        }),
   };
 }
 
@@ -37,10 +46,16 @@ export function createPostgresCheckpointStore(pool: Pool): CheckpointStorePort {
       // once in a CTE so the two cannot drift apart.
       const { rows } = await pool.query<CheckpointRow>(
         `with issued as (select nextval('forge_checkpoint_seq') as seq)
-         insert into forge_checkpoint (seq, checkpoint_id, run_id, step_id, state_version, resume_token)
-         select seq, 'checkpoint_' || seq, $1, $2, $3, $4 from issued
+         insert into forge_checkpoint (seq, checkpoint_id, run_id, step_id, state_version, resume_token, values)
+         select seq, 'checkpoint_' || seq, $1, $2, $3, $4, $5 from issued
          returning ${COLUMNS}`,
-        [input.runId, input.stepId, input.stateVersion, input.resumeToken],
+        [
+          input.runId,
+          input.stepId,
+          input.stateVersion,
+          input.resumeToken,
+          input.values === undefined ? null : JSON.stringify(input.values),
+        ],
       );
 
       const saved = rows[0];

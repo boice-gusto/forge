@@ -18,7 +18,12 @@ create table if not exists forge_checkpoint (
   run_id        text    not null,
   step_id       text    not null,
   state_version integer not null,
-  resume_token  text    not null
+  resume_token  text    not null,
+  -- The values the run's nodes had produced, as jsonb rather than text: the
+  -- runtime already refuses anything that is not JSON, so the column may as
+  -- well refuse it too. Null means the run produced nothing, which is not the
+  -- same as an empty object -- a read past that must not succeed.
+  values        jsonb
 );
 
 create index if not exists forge_checkpoint_by_run

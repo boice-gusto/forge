@@ -37,6 +37,13 @@ const storeThresholds = storesRequired
       // Not 100: the probe's "no runtime reachable" catch cannot execute in a
       // run that requires a runtime, and these floors only apply in that run.
       // The decision it guards is tested separately as a pure function.
+      // A real container per lease, so this is gated with the stores.
+      "packages/sandbox-docker/src/**": {
+        lines: 88,
+        functions: 95,
+        branches: 70,
+        statements: 88,
+      },
       "packages/store-conformance/src/**": {
         lines: 99,
         functions: 100,
@@ -72,6 +79,7 @@ export default defineConfig({
               "packages/approval-postgres/**",
               "packages/checkpoint-postgres/**",
               "packages/store-conformance/**",
+              "packages/sandbox-docker/**",
             ]),
       ],
       thresholds: {
@@ -164,6 +172,20 @@ export default defineConfig({
           functions: 95,
           branches: 93,
           statements: 97,
+        },
+        "packages/sandbox/src/**": {
+          lines: 100,
+          functions: 94,
+          branches: 88,
+          statements: 96,
+        },
+        // Branches sit low on purpose: the uncovered arms are the callbacks the
+        // suite asserts must never run.
+        "packages/sandbox-conformance/src/**": {
+          lines: 96,
+          functions: 93,
+          branches: 48,
+          statements: 96,
         },
         // The loader decides what a company package is allowed to become.
         "packages/company/src/**": {
