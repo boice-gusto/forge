@@ -304,3 +304,11 @@ export async function createDurableStack(
     },
   };
 }
+
+/**
+ * Re-exported because a composition root binding `effects` has to name the
+ * shape it is binding, and reaching past `@forge/composition` into
+ * `@forge/runtime` for a type would put a process entry point on the wrong
+ * side of the layering the architecture check enforces.
+ */
+export type { EffectSink };

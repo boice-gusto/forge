@@ -1,0 +1,17 @@
+{
+  "apiVersion": "forge.dev/v1",
+  "kind": "Company",
+  "metadata": {
+    "id": "brokenadapter",
+    "name": "Broken Adapter",
+    "version": "0.1.0"
+  },
+  "spec": {
+    "domains": [],
+    "plugins": [{ "package": "./plugin.ts", "version": "^0.1.0" }],
+    "policyPacks": [],
+    "adapters": {},
+    "capabilities": [],
+    "defaults": { "approvalRequiredFor": [] }
+  }
+}

@@ -17,7 +17,11 @@
     "policyPacks": ["domains/marketing/policies/publish"],
     "adapters": {
       "notification": {
-        "binding": "@forge/provider-mock",
+        "binding": "./adapters/notification.ts",
+        "configRef": "config/notification"
+      },
+      "effects": {
+        "binding": "./adapters/notification.ts",
         "configRef": "config/notification"
       }
     },

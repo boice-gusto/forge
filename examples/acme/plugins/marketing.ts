@@ -60,9 +60,23 @@ const plugin: ForgePlugin = {
       }),
     );
 
+    /**
+     * A module this package actually ships. It named `@forge/provider-mock`
+     * before, which Acme does not depend on — the binding was a string in a
+     * manifest that nothing ever imported, so nothing ever noticed it could
+     * not be loaded. The loader resolves adapters at boot now, which is what
+     * turned a promise into a fact.
+     */
     context.adapters.add({
       id: "notification",
-      binding: "@forge/provider-mock",
+      binding: "./adapters/notification.ts",
+      configRef: "config/notification",
+    });
+
+    /** Where a gated effect lands. A worker refuses to start without one. */
+    context.adapters.add({
+      id: "effects",
+      binding: "./adapters/notification.ts",
       configRef: "config/notification",
     });
   },

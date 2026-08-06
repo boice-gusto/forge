@@ -60,7 +60,7 @@ const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 /** A relative specifier resolves against the company root, not the cwd. */
-function specifierFor(root: string, specifier: string): string {
+export function specifierFor(root: string, specifier: string): string {
   if (!specifier.startsWith(".")) return specifier;
   const absolute = resolve(isAbsolute(root) ? root : resolve(root), specifier);
   return pathToFileURL(absolute).href;

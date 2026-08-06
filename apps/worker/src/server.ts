@@ -1,6 +1,9 @@
 import { loadDeploymentPolicy, NO_COMPANY_POLICY } from "@forge/company";
 import { createRunConsumer, runtimeHost } from "@forge/composition";
-import { createDurableStack } from "@forge/composition/durable";
+import {
+  createDurableStack,
+  type EffectSink,
+} from "@forge/composition/durable";
 
 import { startWorker } from "./main.js";
 
@@ -74,10 +77,56 @@ const deployment =
         forgeVersion: process.env.FORGE_VERSION ?? "0.1.0",
       });
 
+/**
+ * Where a gated action actually lands.
+ *
+ * The default sink returns `undefined` and does nothing, which in a control
+ * plane is reasonable — it is not the thing that acts — and in a *worker* is
+ * the whole job missing. A worker with the default sink walks every run,
+ * passes every gate, records every effect as dispatched, and performs none of
+ * them. A human approves, the audit log says the action went out, and nothing
+ * went anywhere. That is the same shape as the health probe hard-coded to
+ * "healthy", and worse, because it is silent on the safety-critical path.
+ *
+ * So: a worker binds the company's `effects` adapter, or refuses to start.
+ */
+function effectSinkFrom(bound: unknown): EffectSink {
+  const candidate =
+    (bound as { default?: unknown; effects?: unknown })?.default ??
+    (bound as { effects?: unknown })?.effects;
+  if (
+    typeof candidate === "object" &&
+    candidate !== null &&
+    typeof (candidate as EffectSink).perform === "function"
+  ) {
+    return candidate as EffectSink;
+  }
+  process.stderr.write(
+    '[forge-worker] The company\'s "effects" adapter resolved to something ' +
+      "with no perform(); a worker cannot dispatch with it. Export the sink " +
+      "as the module's default, or as `effects`.\n",
+  );
+  process.exit(1);
+}
+
+const boundEffects = deployment.adapters.effects;
+if (boundEffects === undefined && process.env.FORGE_WORKER_NO_EFFECTS !== "1") {
+  process.stderr.write(
+    '[forge-worker] This company binds no "effects" adapter, so every gated ' +
+      "action would be recorded as dispatched and performed nowhere. Add an " +
+      'adapter binding with id "effects", or set FORGE_WORKER_NO_EFFECTS=1 ' +
+      "if this deployment really is meant to walk runs without acting.\n",
+  );
+  process.exit(1);
+}
+
 const stack = await createDurableStack({
   rules: deployment.rules,
   grants: deployment.grants,
   environment: "production",
+  ...(boundEffects === undefined
+    ? {}
+    : { effects: effectSinkFrom(boundEffects) }),
   ...(process.env.FORGE_SANDBOX_PROFILES === undefined
     ? {}
     : { sandboxProfiles: csv(process.env.FORGE_SANDBOX_PROFILES) }),
