@@ -78,17 +78,29 @@ every node kind.
 
 ```
 POST /v1/workflows/compile                                  → public surface or diagnostics
-POST /v1/runs                                               → 201 run record
+POST /v1/runs                                               → 202 + Location; a PENDING run
 GET  /v1/runs                                               → every run, newest first
 GET  /v1/runs/:runId                                        → run record
 GET  /v1/runs/:runId/approvals                              → { pending, approvals } incl. history
-GET  /v1/runs/:runId/events                                 → the run's forge.* stream
+GET  /v1/runs/:runId/events                                 → the run's durable timeline
 GET  /v1/approvals                                          → the global inbox, scoped to the caller
 POST /v1/runs/:runId/approvals/:approvalId/decision         → approve | reject | edit | timeout
 POST /v1/auth/session                                       → establish a cookie session (UI)
 GET  /v1/auth/session                                       → who am I
 DELETE /v1/auth/session                                     → sign out
 ```
+
+**A run does not execute inside the request that started it.** `POST /v1/runs`
+persists the run and enqueues it, and the reply is a `PENDING` record with a
+`Location`. Use `ForgeClient.waitForRun` to wait for it to settle — which means
+reaching a gate or finishing, *not* reaching a terminal state. A helper that
+waited for terminal would make every gate assertion unfalsifiable.
+
+**Policy is the deployment's, not the request's.** It resolves from the company
+package named by `FORGE_COMPANY`. A body cannot carry `policy`, `panel`,
+`review.votes` or `branch`: the last three are worse than the first, because
+naming the judge's votes or the branch arm steers the very decision the caller
+is asking a human to approve.
 
 A caller presents a credential that the bound `IdentityPort` resolves to a
 subject and a set of roles. Two transports, one identity: `Authorization:
