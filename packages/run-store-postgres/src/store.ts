@@ -7,6 +7,8 @@ import type {
   RunStorePort,
   StoredArtifact,
 } from "@forge/ports";
+import { RUN_STORE_ERRORS } from "@forge/ports";
+
 import type { Pool } from "pg";
 
 interface RunRow {
@@ -167,10 +169,10 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
       );
       const existing = current[0];
       if (existing === undefined) {
-        throw new Error(`FORGE_RUN_NOT_FOUND: ${record.runId}`);
+        throw new Error(`${RUN_STORE_ERRORS.notFound}: ${record.runId}`);
       }
       throw new Error(
-        `FORGE_RUN_CONFLICT: ${record.runId} is at revision ${existing.revision}, not ${expectedRevision}.`,
+        `${RUN_STORE_ERRORS.conflict}: ${record.runId} is at revision ${existing.revision}, not ${expectedRevision}.`,
       );
     },
 
@@ -228,7 +230,9 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
       );
       // Already settled is not an error; never claimed is.
       if (rows.length === 0) {
-        throw new Error(`FORGE_EFFECT_NOT_CLAIMED: ${runId}/${nodeId}`);
+        throw new Error(
+          `${RUN_STORE_ERRORS.effectNotClaimed}: ${runId}/${nodeId}`,
+        );
       }
     },
 

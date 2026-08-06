@@ -6,7 +6,12 @@ import {
   type Connector,
   type IntakeLedgerPort,
 } from "@forge/intake";
-import type { ApprovalDecision, JsonValue, RunStatus } from "@forge/ports";
+import {
+  type ApprovalDecision,
+  type JsonValue,
+  RUN_STORE_ERRORS,
+  type RunStatus,
+} from "@forge/ports";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { mayDecide, type Principal } from "./identity.js";
@@ -569,9 +574,15 @@ export function registerRunRoutes(
         if (message.startsWith("Unknown run")) {
           return reply.code(404).send({ status: "not_found" });
         }
+        /**
+         * The store's codes come from `@forge/ports`; the two the runtime
+         * raises on its own are spelled here because they are the runtime's,
+         * not a store's. Three packages agree on these strings, and a rename
+         * that missed one would turn a 409 into an unhandled 500.
+         */
         const code = [
-          "FORGE_EFFECT_SETTLED",
-          "FORGE_EFFECT_NOT_CLAIMED",
+          RUN_STORE_ERRORS.effectSettled,
+          RUN_STORE_ERRORS.effectNotClaimed,
           "FORGE_RUN_AWAITING_APPROVAL",
           "FORGE_RUN_NOT_REDRIVABLE",
         ].find((known) => message.startsWith(known));

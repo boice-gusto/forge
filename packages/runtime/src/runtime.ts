@@ -31,6 +31,7 @@ import type {
   Span,
   SpanParent,
 } from "@forge/ports";
+import { RUN_STORE_ERRORS } from "@forge/ports";
 import type { Role } from "@forge/types";
 
 /**
@@ -445,7 +446,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   const valueLedgers = new Map<string, ValueLedger>();
 
   /** What a run store raises when the record moved on under a writer. */
-  const CONFLICT = "FORGE_RUN_CONFLICT";
+  const CONFLICT = RUN_STORE_ERRORS.conflict;
 
   /**
    * The single place a run's status changes, so the lifecycle transition
@@ -1600,12 +1601,12 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       );
       if (claimed === undefined) {
         throw new Error(
-          `FORGE_EFFECT_NOT_CLAIMED: run ${runId} never claimed '${nodeId}'; there is nothing to redrive.`,
+          `${RUN_STORE_ERRORS.effectNotClaimed}: run ${runId} never claimed '${nodeId}'; there is nothing to redrive.`,
         );
       }
       if (claimed.settledAt !== undefined) {
         throw new Error(
-          `FORGE_EFFECT_SETTLED: '${nodeId}' completed at ${claimed.settledAt}; performing it again is not a recovery.`,
+          `${RUN_STORE_ERRORS.effectSettled}: '${nodeId}' completed at ${claimed.settledAt}; performing it again is not a recovery.`,
         );
       }
       if (state.record.pendingApprovalId !== undefined) {

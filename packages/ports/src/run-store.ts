@@ -38,6 +38,37 @@ export type RunStatus =
   | "CANCELLED";
 
 /**
+ * The failures a run store raises, as codes rather than prose.
+ *
+ * These are **control flow across a package boundary**, which is what makes
+ * them worth naming. A store throws one; the runtime decides whether to cede
+ * or propagate by matching on it; the API turns it into a status code. That is
+ * three packages agreeing on a string, and until now they agreed by all
+ * spelling it correctly. A store that renamed one would not fail to compile —
+ * the runtime would simply stop recognising a conflict and start propagating
+ * it, and a redundant queue delivery would begin dead-lettering healthy runs.
+ *
+ * Carried as a message prefix rather than an error subclass because these
+ * cross a process boundary in a job's failure text as often as they cross a
+ * function call.
+ */
+export const RUN_STORE_ERRORS = {
+  /** The record moved on since the writer read it. See `update`. */
+  conflict: "FORGE_RUN_CONFLICT",
+  /** No such run. Distinct from a run that exists and is in a bad state. */
+  notFound: "FORGE_RUN_NOT_FOUND",
+  /** A run id that already exists; two runs sharing one is one run. */
+  exists: "FORGE_RUN_EXISTS",
+  /** Nothing has claimed this node's effect, so there is nothing to settle. */
+  effectNotClaimed: "FORGE_EFFECT_NOT_CLAIMED",
+  /** The action completed. Redriving it is the failure the claim prevents. */
+  effectSettled: "FORGE_EFFECT_SETTLED",
+} as const;
+
+export type RunStoreErrorCode =
+  (typeof RUN_STORE_ERRORS)[keyof typeof RUN_STORE_ERRORS];
+
+/**
  * A run that will not move again on its own.
  *
  * `AWAITING_APPROVAL` is **not** here, and that omission is the whole reason

@@ -67,6 +67,7 @@ export type {
   RunListQuery,
   RunRecord,
   RunStatus,
+  RunStoreErrorCode,
   RunStorePort,
   StoredArtifact,
   UnsettledEffect,
@@ -74,6 +75,7 @@ export type {
 export {
   hasStopped,
   isTerminalRun,
+  RUN_STORE_ERRORS,
   STOPPED_RUN_STATUSES,
   TERMINAL_RUN_STATUSES,
 } from "./run-store.js";

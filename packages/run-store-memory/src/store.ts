@@ -8,6 +8,7 @@ import type {
   RunRecord,
   RunStorePort,
 } from "@forge/ports";
+import { RUN_STORE_ERRORS } from "@forge/ports";
 
 /**
  * `RunStorePort` in a Map. The local stack's binding, and the reference the
@@ -38,7 +39,7 @@ export function createMemoryRunStore(): RunStorePort {
   const find = (runId: string): Stored => {
     const stored = runs.get(runId);
     if (stored === undefined) {
-      throw new Error(`FORGE_RUN_NOT_FOUND: ${runId}`);
+      throw new Error(`${RUN_STORE_ERRORS.notFound}: ${runId}`);
     }
     return stored;
   };
@@ -46,7 +47,7 @@ export function createMemoryRunStore(): RunStorePort {
   return {
     async create(input) {
       if (runs.has(input.record.runId)) {
-        throw new Error(`FORGE_RUN_EXISTS: ${input.record.runId}`);
+        throw new Error(`${RUN_STORE_ERRORS.exists}: ${input.record.runId}`);
       }
       runs.set(input.record.runId, {
         record: detach(input.record),
@@ -109,7 +110,7 @@ export function createMemoryRunStore(): RunStorePort {
       // make it read again.
       if (stored.revision !== expectedRevision) {
         throw new Error(
-          `FORGE_RUN_CONFLICT: ${record.runId} is at revision ${stored.revision}, not ${expectedRevision}.`,
+          `${RUN_STORE_ERRORS.conflict}: ${record.runId} is at revision ${stored.revision}, not ${expectedRevision}.`,
         );
       }
       stored.record = detach(record);
@@ -154,7 +155,9 @@ export function createMemoryRunStore(): RunStorePort {
         (effect) => effect.nodeId === nodeId,
       ) as { settledAt?: string } | undefined;
       if (claimed === undefined) {
-        throw new Error(`FORGE_EFFECT_NOT_CLAIMED: ${runId}/${nodeId}`);
+        throw new Error(
+          `${RUN_STORE_ERRORS.effectNotClaimed}: ${runId}/${nodeId}`,
+        );
       }
       // First settlement wins, like every other pin here: a second one would
       // be a later process rewriting when the action actually happened.

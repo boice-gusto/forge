@@ -1,6 +1,6 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 83 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 85 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
@@ -145,6 +145,43 @@ nothing go red, and then writing the fixture that could tell the difference.
 
 The route now keeps the raw string in its own Fastify plugin scope, and a
 signed pretty-printed body is a test.
+
+### What a sweep for duplication actually found
+
+Measured rather than guessed at: every string literal appearing in two or more
+packages, every `FORGE_*` name, every repeated number, and a near-duplicate
+check over each vocabulary to see whether drift had *happened* rather than
+whether it *could*.
+
+Three things were real and are fixed:
+
+- **Seven hand-written terminal-status sets**, one already missing
+  `CANCELLED`. Now two named sets, because there are two concepts:
+  `TERMINAL_RUN_STATUSES` (finished) and `STOPPED_RUN_STATUSES` (not moving,
+  which includes a gate). Conflating them is what made a working redrive look
+  broken for a day.
+- **`RunHost` returned `Promise<string>`**, hiding `UNKNOWN` — "there is no
+  such run" — among the lifecycle statuses. It is `HostOutcome` now. Narrowing
+  it immediately surfaced a second spelling: `apps/worker`'s test returned
+  lowercase `"unknown"`. Both were valid strings, so nothing had caught it.
+- **Run-store error codes are control flow across three packages** — thrown by
+  a store, matched by the runtime to decide whether to cede, mapped by the API
+  to a status code. A rename would not have failed to compile; it would have
+  stopped the runtime recognising a conflict.
+
+Three things looked duplicated and were left alone, with reasons:
+
+- **Event names.** 45 distinct `forge.*` names, 18 used in two or more
+  packages — and a near-duplicate check found no typos. The emitters are
+  covered by tests in their own packages, and the assertions elsewhere are the
+  *specification* of the wire name. Extracting them is churn, not a fix.
+- **Environment variable names.** 64 distinct, no near-duplicates.
+- **`@forge/sdk`'s copy of `RunStatus`.** Deliberate: a public package must not
+  widen when an internal type does, and it says so where the copy lives.
+
+The rest of what a naive scan flags — HTTP status codes, spec section numbers
+in comments, test fixture names like `marketing-lead` — is not duplication in
+any sense worth a constant.
 
 ### A wait that waited for nothing
 
