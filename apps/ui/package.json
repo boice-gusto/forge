@@ -6,7 +6,9 @@
   "scripts": {
     "build": "vite build && tsc --noEmit",
     "dev": "vite --host 127.0.0.1 --port 3101",
-    "typecheck": "tsc --noEmit"
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit",
+    "typecheck:e2e": "tsc --noEmit -p e2e/tsconfig.json"
   },
   "dependencies": {
     "@forge/observability": "workspace:*",
@@ -15,6 +17,7 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.0",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.0",
