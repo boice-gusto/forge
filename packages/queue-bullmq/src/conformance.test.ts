@@ -53,6 +53,30 @@ describe.skipIf(!dockerAvailable)("queue-bullmq", () => {
 
       expect(await queue.health()).toEqual({ available: false });
     });
+
+    test("health and close answer rather than hanging when Redis is gone", async () => {
+      // The producer runs with `maxRetriesPerRequest: null` so an enqueue
+      // survives a blip, which means a command issued while Redis is gone
+      // buffers instead of rejecting. Unbounded, that turns a readiness probe
+      // into a hang, and a load balancer reading a timeout is worse off than
+      // one reading a 503.
+      const queue = createBullMqQueue({
+        // A port nothing listens on: the client keeps trying, forever.
+        url: "redis://127.0.0.1:1",
+        name: "forge-edges-timeout",
+      });
+
+      const probed = Date.now();
+      expect(await queue.health()).toEqual({ available: false });
+      expect(Date.now() - probed).toBeLessThan(4_000);
+
+      // And the shutdown path, which hangs for the same reason and costs more
+      // when it does: a worker draining on SIGTERM against a dead Redis waits
+      // for a handshake nobody will complete, and is SIGKILLed mid-flush.
+      const draining = Date.now();
+      await queue.close();
+      expect(Date.now() - draining).toBeLessThan(8_000);
+    }, 20_000);
   });
 
   describeQueueConformance({
