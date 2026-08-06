@@ -299,6 +299,17 @@ export function registerRunRoutes(
           ...(outcome.value.payload === undefined
             ? {}
             : { payload: outcome.value.payload }),
+          /**
+           * Recorded on the run, because nothing downstream can reconstruct
+           * it. The worker that tells this Slack thread its run reached a gate
+           * never saw the delivery — and `receivedAt` is dropped, because a
+           * time this process happened to observe is not a fact about the run.
+           */
+          origin: {
+            channel: outcome.value.origin.channel,
+            externalId: outcome.value.origin.externalId,
+            externalActor: outcome.value.origin.externalActor,
+          },
         });
 
         await stack.queue.enqueue({

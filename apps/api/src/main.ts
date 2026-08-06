@@ -6,6 +6,7 @@ import {
   createRunConsumer,
   runtimeHost,
 } from "@forge/composition";
+import { createProgressAnnouncer } from "@forge/intake";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import { createRequestAuthenticator, registerAuthRoutes } from "./auth.js";
@@ -57,6 +58,13 @@ export interface ApiOptions {
    * endpoint whose only authentication is the connector's own signature check.
    */
   readonly intake?: RunRoutesOptions["intake"];
+  /**
+   * Where this control plane is reachable, for the links a connector posts
+   * back. Configuration, not something to infer from a request: a `Host`
+   * header is the caller's to set, and a link built from one is a link an
+   * attacker chose.
+   */
+  readonly publicUrl?: string;
 }
 
 export function createApiApp(options: ApiOptions): FastifyInstance {
@@ -126,6 +134,25 @@ export function createApiApp(options: ApiOptions): FastifyInstance {
       queue: stack.queue,
       host: runtimeHost(stack.runtime),
       observability: stack.observability,
+      /**
+       * Telling a webhook's own system where its run got to (015 Phase 8).
+       *
+       * Only when connectors are bound, because only then is there anybody to
+       * tell — and only for runs that carry an origin, which a run started at
+       * the API does not.
+       */
+      ...(options.intake === undefined
+        ? {}
+        : {
+            progress: {
+              announcer: createProgressAnnouncer({
+                connectors: options.intake.connectors,
+              }),
+              runs: stack.runs,
+              runUrl: (runId: string) =>
+                `${options.publicUrl ?? ""}/v1/runs/${runId}`,
+            },
+          }),
     }).start();
   });
 

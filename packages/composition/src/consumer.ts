@@ -1,4 +1,10 @@
-import type { ForgeJob, ObservabilityPort, QueuePort } from "@forge/ports";
+import type { ProgressAnnouncer } from "@forge/intake";
+import type {
+  ForgeJob,
+  ObservabilityPort,
+  QueuePort,
+  RunStorePort,
+} from "@forge/ports";
 import type { Runtime } from "@forge/runtime";
 
 /**
@@ -61,6 +67,23 @@ export interface RunConsumerOptions {
   readonly queue: QueuePort;
   readonly host: RunHost;
   readonly observability: ObservabilityPort;
+  /**
+   * Telling the system a request came from where its run got to (015 Phase 8).
+   *
+   * Absent by default. A deployment with no connectors has nobody to tell, and
+   * a run started at the API already has its answer in the response.
+   *
+   * Read from the store rather than from what the walk returned, deliberately:
+   * the store is the record, and an announcement describing a process's belief
+   * rather than the persisted state is a notification that can disagree with
+   * `GET /v1/runs`. It also carries the origin, which the walk never sees.
+   */
+  readonly progress?: {
+    readonly announcer: ProgressAnnouncer;
+    readonly runs: RunStorePort;
+    /** Turns a run id into somewhere a human can look, behind Forge's auth. */
+    readonly runUrl: (runId: string) => string;
+  };
 }
 
 export interface RunConsumer {
@@ -96,6 +119,35 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
     },
   };
 
+  /**
+   * Announced after the work, never before, and never in its place.
+   *
+   * Failures are the announcer's to swallow — it fails open and is bounded, so
+   * a Slack outage cannot fail a job that has already dispatched an effect a
+   * human approved. What is enforced *here* is the ordering: a notification
+   * that went out before the state was durable would be a promise the system
+   * has not yet made.
+   */
+  async function announce(runId: string): Promise<void> {
+    const progress = options.progress;
+    if (progress === undefined) return;
+
+    const persisted = await progress.runs.load(runId);
+    const record = persisted?.record;
+    // A run with no origin came from the API, which already has its answer.
+    if (record?.origin === undefined) return;
+
+    await progress.announcer.announce({
+      origin: { ...record.origin, receivedAt: "" },
+      runId: record.runId,
+      status: record.status,
+      ...(record.pendingApprovalId === undefined
+        ? {}
+        : { pendingApprovalId: record.pendingApprovalId }),
+      runUrl: progress.runUrl(record.runId),
+    });
+  }
+
   async function handle(job: ForgeJob): Promise<void> {
     if (job.type === "workflow.cancel") {
       await options.host.cancel(job.runId);
@@ -112,6 +164,7 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
         approvalId: job.approvalId,
         status,
       });
+      await announce(job.runId);
       return;
     }
 
@@ -126,5 +179,6 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
       // Proof the slot is not held across a gate.
       parked: status === "AWAITING_APPROVAL",
     });
+    await announce(job.runId);
   }
 }

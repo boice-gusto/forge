@@ -74,6 +74,27 @@ export interface RunRecord {
    * honoured and changes nothing.
    */
   readonly redriving?: string | undefined;
+  /**
+   * Where this run was asked for, when it was not asked for through the API.
+   *
+   * Persisted because nothing downstream can reconstruct it: the process that
+   * tells a Slack thread its run has reached a gate is a worker that never saw
+   * the webhook. It is also what an operator reads at three in the morning to
+   * learn whether a human typed this or a webhook fired it.
+   *
+   * Structurally the same as `@forge/intake`'s `RequestOrigin` and
+   * deliberately not imported from it: intake depends on ports, so the arrow
+   * cannot run the other way. Three fields duplicated is cheaper than a cycle,
+   * and the compiler catches a drift at every call site that carries one
+   * across.
+   */
+  readonly origin?:
+    | {
+        readonly channel: string;
+        readonly externalId: string;
+        readonly externalActor: string;
+      }
+    | undefined;
 }
 
 /**

@@ -122,6 +122,12 @@ export interface StartInput {
    * supplied stops the run.
    */
   readonly payload?: JsonValue;
+  /**
+   * The channel that asked, when something other than the API did. Recorded on
+   * the run so a worker that never saw the delivery can still tell the thread
+   * it came from where the run got to.
+   */
+  readonly origin?: RunRecord["origin"];
 }
 
 export function effectHash(input: {
@@ -1383,6 +1389,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         ...(span.traceparent === undefined
           ? {}
           : { traceparent: span.traceparent }),
+        ...(input.origin === undefined ? {} : { origin: input.origin }),
       },
       span,
       capabilities: input.capabilities ?? [],

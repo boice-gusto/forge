@@ -32,7 +32,8 @@
     "@forge/queue-memory": "workspace:*",
     "@forge/observability": "workspace:*",
     "@forge/event-store-memory": "workspace:*",
-    "@forge/event-store-postgres": "workspace:*"
+    "@forge/event-store-postgres": "workspace:*",
+    "@forge/intake": "workspace:*"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^12.1.0",

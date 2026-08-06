@@ -240,6 +240,105 @@ describe("a signed webhook starts a run and gets no further", () => {
     expect(response.json().runId).toBeDefined();
   });
 
+  test("the thread that asked is told where its run got to", async () => {
+    /**
+     * The whole loop, and the reason a run remembers its origin: the process
+     * that publishes this is a worker that never saw the delivery. Everything
+     * it knows arrives through the run store.
+     *
+     * What goes back is a status and a link. The details stay in Forge, behind
+     * Forge's own authentication — a Slack channel is not an access control
+     * list.
+     */
+    const told: unknown[] = [];
+    const publishing = {
+      ...createSlackConnector({
+        signingSecret: SECRET,
+        workflows: { "acme.brief": fixture.workflow },
+        capabilities: { "acme.brief": fixture.capabilities },
+        now: () => AT,
+      }),
+      async publish(update: unknown) {
+        told.push(update);
+      },
+    };
+
+    const server = createApiApp({
+      build: { version: "0.1.0", gitSha: "test", buildTime: "2026-01-01" },
+      dependencies: { queue: "healthy", persistence: "healthy" },
+      identity: createDevelopmentIdentity([
+        { subject: "marketing-lead", secret: BEARER, roles: [ANY_ROLE] },
+      ]),
+      stack: acmeStack(),
+      publicUrl: "https://forge.internal",
+      intake: {
+        connectors: { slack: publishing },
+        ledger: createMemoryIntakeLedger(),
+      },
+    });
+
+    const started = await server.inject({
+      method: "POST",
+      url: "/v1/intake/slack",
+      ...deliver(shortcut("Ev0TOLD")),
+    });
+    const runId = started.json().runId as string;
+    await settle(server, runId);
+
+    expect(`told: ${JSON.stringify(told)}`).toContain("AWAITING_APPROVAL");
+    expect(told[0]).toMatchObject({
+      runId,
+      status: "AWAITING_APPROVAL",
+      origin: { channel: "slack", externalId: "Ev0TOLD" },
+      runUrl: `https://forge.internal/v1/runs/${runId}`,
+    });
+    // Nothing about what the run is doing, only where to look.
+    expect(JSON.stringify(told)).not.toContain("the copy");
+  });
+
+  test("a run the API started tells nobody, because nobody asked through a channel", async () => {
+    // Guards the test above: an announcer that published everything would
+    // pass it and would post a Slack message for every operator's `POST
+    // /v1/runs`, including runs from a completely different team.
+    const told: unknown[] = [];
+    const publishing = {
+      ...createSlackConnector({
+        signingSecret: SECRET,
+        workflows: { "acme.brief": fixture.workflow },
+        now: () => AT,
+      }),
+      async publish(update: unknown) {
+        told.push(update);
+      },
+    };
+
+    const server = createApiApp({
+      build: { version: "0.1.0", gitSha: "test", buildTime: "2026-01-01" },
+      dependencies: { queue: "healthy", persistence: "healthy" },
+      identity: createDevelopmentIdentity([
+        { subject: "marketing-lead", secret: BEARER, roles: [ANY_ROLE] },
+      ]),
+      stack: acmeStack(),
+      intake: {
+        connectors: { slack: publishing },
+        ledger: createMemoryIntakeLedger(),
+      },
+    });
+
+    const started = await server.inject({
+      method: "POST",
+      url: "/v1/runs",
+      headers: AUTH,
+      payload: {
+        workflow: fixture.workflow,
+        capabilities: fixture.capabilities,
+      },
+    });
+    await settle(server, started.json().runId as string);
+
+    expect(told).toEqual([]);
+  });
+
   test("a forged delivery is a bare 401 and starts nothing", async () => {
     const server = app();
     const honest = deliver(shortcut("Ev0FORGED"));

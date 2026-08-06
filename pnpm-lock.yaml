@@ -374,6 +374,9 @@ importers:
       '@forge/event-store-postgres':
         specifier: workspace:*
         version: link:../event-store-postgres
+      '@forge/intake':
+        specifier: workspace:*
+        version: link:../intake
       '@forge/ir':
         specifier: workspace:*
         version: link:../ir
