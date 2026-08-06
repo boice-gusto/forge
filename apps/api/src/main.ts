@@ -19,7 +19,7 @@ import {
   type IdentityPort,
   type SessionStore,
 } from "./identity.js";
-import { registerRunRoutes } from "./runs.js";
+import { type RunRoutesOptions, registerRunRoutes } from "./runs.js";
 
 export interface ApiOptions {
   readonly build: BuildInfo;
@@ -48,6 +48,15 @@ export interface ApiOptions {
   readonly stack?: ControlPlaneStack;
   /** Overridable so a suite can age a session out without waiting for one. */
   readonly sessions?: SessionStore;
+  /**
+   * Intake adapters this deployment serves (015 Phase 8), and the ledger they
+   * deduplicate against.
+   *
+   * Absent by default, and that is the right default: a deployment that has
+   * not thought about webhooks does not have one. A bound channel is a public
+   * endpoint whose only authentication is the connector's own signature check.
+   */
+  readonly intake?: RunRoutesOptions["intake"];
 }
 
 export function createApiApp(options: ApiOptions): FastifyInstance {
@@ -91,7 +100,11 @@ export function createApiApp(options: ApiOptions): FastifyInstance {
   const stack = options.stack ?? createLocalStack();
 
   registerAuthRoutes(app, { identity: options.identity, sessions });
-  registerRunRoutes(app, { authenticate, stack });
+  registerRunRoutes(app, {
+    authenticate,
+    stack,
+    ...(options.intake === undefined ? {} : { intake: options.intake }),
+  });
 
   /**
    * The process consumes the queue it writes to.

@@ -1,0 +1,22 @@
+{
+  "name": "@forge/intake-postgres",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@forge/intake": "workspace:*",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.1.0",
+    "@types/pg": "^8.20.4",
+    "testcontainers": "^12.1.0",
+    "@forge/store-conformance": "workspace:*"
+  }
+}

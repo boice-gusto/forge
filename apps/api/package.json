@@ -14,12 +14,14 @@
     "@forge/composition": "workspace:*",
     "@forge/policy-memory": "workspace:*",
     "@forge/ports": "workspace:*",
-    "@forge/types": "workspace:*"
+    "@forge/types": "workspace:*",
+    "@forge/intake": "workspace:*"
   },
   "devDependencies": {
     "@forge/store-conformance": "workspace:*",
     "@testcontainers/postgresql": "^12.1.0",
     "@testcontainers/redis": "^12.1.0",
-    "testcontainers": "^12.1.0"
+    "testcontainers": "^12.1.0",
+    "@forge/connector-slack": "workspace:*"
   }
 }

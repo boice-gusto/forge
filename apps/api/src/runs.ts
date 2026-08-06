@@ -1,8 +1,13 @@
 import { Readable } from "node:stream";
 
 import { type ControlPlaneStack, compileToArtifact } from "@forge/composition";
+import {
+  acceptDelivery,
+  type Connector,
+  type IntakeLedgerPort,
+} from "@forge/intake";
 import type { ApprovalDecision, JsonValue, RunStatus } from "@forge/ports";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { mayDecide, type Principal } from "./identity.js";
 
@@ -79,6 +84,18 @@ export interface RunRoutesOptions {
    * reads the store rather than a map of runs this process happens to remember.
    */
   readonly stack: ControlPlaneStack;
+  /**
+   * Intake adapters this deployment serves, by channel, and the ledger they
+   * deduplicate against (015 Phase 8).
+   *
+   * Absent means this control plane has no webhook endpoint at all — which is
+   * the right default. A channel that is not bound is a 404, not an endpoint
+   * that authenticates nobody.
+   */
+  readonly intake?: {
+    readonly connectors: Readonly<Record<string, Connector>>;
+    readonly ledger: IntakeLedgerPort;
+  };
 }
 
 /**
@@ -174,6 +191,130 @@ export function registerRunRoutes(
   options: RunRoutesOptions,
 ): void {
   const { stack } = options;
+
+  /**
+   * A connector's endpoint (015 Phase 8).
+   *
+   * Deliberately *not* behind `authenticate`. The caller is Slack, or Jira, or
+   * a Buzz relay — none of them holds a Forge credential, and demanding one
+   * would mean handing an operator's token to a third party. Authentication
+   * here is the connector's signature check, which establishes the *sending
+   * system*; it says nothing about whether the run may happen, and nothing
+   * downstream treats it as if it did. Policy still decides, gates still open,
+   * and the origin is recorded so an audit can say which webhook asked.
+   *
+   * The reply is deliberately uninformative. Everything on the other side is
+   * untrusted, and telling a forged signature why it failed is telling an
+   * attacker how to succeed — so `UNVERIFIED` is a bare 401, and every other
+   * refusal is a 202 that promises nothing.
+   */
+  /**
+   * What an untrusted caller is told, and how little of it.
+   *
+   * `UNVERIFIED` is a bare 401: telling a forged signature *why* it failed is
+   * telling an attacker how to succeed. Everything else is a 202 that promises
+   * nothing — a duplicate is the *correct* outcome of a redelivery, and a
+   * sender that receives an error for one keeps retrying, which is the single
+   * behaviour deduplication exists to stop. `UNSUPPORTED` is most of a busy
+   * workspace's traffic and is not a failure either.
+   */
+  const refuse = (
+    reply: FastifyReply,
+    code: "UNVERIFIED" | "DUPLICATE" | "UNSUPPORTED" | "MALFORMED",
+  ) =>
+    code === "UNVERIFIED"
+      ? reply.code(401).send({ status: "unauthorized" })
+      : reply.code(202).send({ status: "accepted", outcome: code });
+
+  /**
+   * Registered in its own plugin scope so it can keep the raw body.
+   *
+   * Fastify parses a JSON body before any handler runs, and a parsed body
+   * cannot be signature-checked: `JSON.parse` then `JSON.stringify` does not
+   * round-trip — whitespace, number formatting, unicode escapes — so a digest
+   * over a re-serialised body is a digest over something the sender never
+   * signed. For a compact body the two happen to agree, which is exactly what
+   * makes the mistake survive testing.
+   *
+   * Scoped rather than global because every other route wants its body
+   * parsed, and a content-type parser registered on `app` would change all of
+   * them. The connector parses this itself, after it has decided the sender
+   * is real.
+   */
+  void app.register(async (scoped) => {
+    scoped.addContentTypeParser(
+      "application/json",
+      { parseAs: "string" },
+      (_request, body, done) => {
+        done(null, body);
+      },
+    );
+
+    scoped.post<{ Params: { channel: string } }>(
+      "/v1/intake/:channel",
+      async (request, reply) => {
+        const intake = options.intake;
+        const connector = intake?.connectors[request.params.channel];
+        if (intake === undefined || connector === undefined) {
+          // A channel nobody bound. Not an endpoint that authenticates nobody.
+          return reply.code(404).send({ status: "not_found" });
+        }
+
+        /**
+         * The raw body, not a parsed one. A signature covers the bytes that were
+         * sent: `JSON.parse` followed by `JSON.stringify` does not round-trip,
+         * so a re-serialised body verifies against a signature the sender never
+         * computed — which is to say against nothing.
+         */
+        const raw =
+          typeof request.body === "string"
+            ? request.body
+            : JSON.stringify(request.body ?? {});
+
+        const outcome = await acceptDelivery(connector, intake.ledger, {
+          body: raw,
+          headers: request.headers as Record<string, string>,
+        });
+
+        if (!outcome.ok) return refuse(reply, outcome.code);
+
+        const compiled = compileToArtifact(outcome.value.workflow);
+        if (!compiled.ok) {
+          /**
+           * The deployment's own workflow did not compile, which is a
+           * deployment fault and not the sender's. 500, and the diagnostics stay
+           * here: a webhook caller learns nothing about the inside.
+           */
+          request.log.error(
+            { diagnostics: compiled.diagnostics, origin: outcome.value.origin },
+            "intake workflow failed to compile",
+          );
+          return reply.code(500).send({ status: "error" });
+        }
+
+        const run = await stack.runtime.create({
+          artifact: compiled.artifact,
+          capabilities: [...outcome.value.capabilities],
+          changedPaths: [...outcome.value.changedPaths],
+          ...(outcome.value.payload === undefined
+            ? {}
+            : { payload: outcome.value.payload }),
+        });
+
+        await stack.queue.enqueue({
+          type: "workflow.execute",
+          runId: run.runId,
+          workflowVersionId: run.fingerprint,
+          attempt: run.attempt,
+        });
+
+        // The run id goes back so a connector can post a link into the thread
+        // it came from. It is not a promise the run succeeded — nothing has
+        // walked.
+        return reply.code(202).send({ status: "accepted", runId: run.runId });
+      },
+    );
+  });
 
   app.post("/v1/workflows/compile", async (request, reply) => {
     // Authenticated like every sibling route. Compiling reads and writes no
