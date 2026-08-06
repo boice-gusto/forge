@@ -1458,3 +1458,39 @@ describe("every control-plane route is authenticated", () => {
     expect(login.headers["set-cookie"]).toBeUndefined();
   });
 });
+
+describe("a decision names one gate on one run", () => {
+  test("an approval decided through another run's URL is not found", async () => {
+    // The path parameter was decorative: the approval id alone selected the
+    // run, so a caller sending the right gate with the wrong run got a 200 and
+    // a decision applied to a run they never named. The binding and the
+    // approver check always held, so this was never a bypass — but a control
+    // plane that acts on a mismatched pair is telling the operator something
+    // untrue about what they just did.
+    const server = app();
+    const mine = await startRun(server);
+    const other = await startRun(server);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/v1/runs/${other.runId}/approvals/${mine.pendingApprovalId}/decision`,
+      headers: AUTH,
+      payload: { decision: "approve" },
+    });
+
+    expect(response.statusCode).toBe(404);
+
+    // And neither run moved.
+    for (const run of [mine, other]) {
+      const after = (
+        await server.inject({
+          method: "GET",
+          url: `/v1/runs/${run.runId}`,
+          headers: AUTH,
+        })
+      ).json();
+      expect(after.status).toBe("AWAITING_APPROVAL");
+      expect(after.performedEffects).toEqual([]);
+    }
+  });
+});

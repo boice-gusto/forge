@@ -349,6 +349,15 @@ export function registerRunRoutes(
        * naming its id, which is not a boundary.
        */
       const approval = await stack.approvals.get(request.params.approvalId);
+      // The run in the path must be the run the gate belongs to. Without this
+      // the path parameter is decorative: a caller sending the right approval
+      // with the wrong run gets a 200 and a decision applied to a run they did
+      // not name. Not a bypass — the binding and the approver check still hold
+      // — but "a decision bound to one exact action" cannot also mean "and any
+      // run you like".
+      if (approval !== undefined && approval.runId !== request.params.runId) {
+        return reply.code(404).send({ status: "not_found" });
+      }
       if (approval !== undefined && !mayDecide(principal, approval.approvers)) {
         return reply.code(403).send({
           status: "forbidden",
