@@ -318,6 +318,34 @@ export function registerRunRoutes(
     });
   });
 
+  /**
+   * Actions this deployment claimed and was never seen to finish.
+   *
+   * The claim is written before the action, deliberately: losing an effect is
+   * recoverable and repeating one is not. "Recoverable" only means anything if
+   * somebody is told, and nothing told anybody — the run carried on, the
+   * ledger said the node had dispatched, and an action a human approved simply
+   * never happened.
+   *
+   * Deliberately a report and nothing more. There is no redrive button here,
+   * because nobody can tell from this record whether the action failed to
+   * happen or happened and the process died before it could say so. Re-running
+   * it is a decision to perform a side effect under that uncertainty, which is
+   * the one thing in this system that requires a human bound to the exact
+   * action — so it goes through a gate like everything else, not through an
+   * operator endpoint that quietly re-sends.
+   *
+   * Estate-wide and not per-run, because nobody knows which run to go and look
+   * at. Authenticated for the same reason `GET /v1/runs/:runId` is: it names
+   * effects and the runs they belong to.
+   */
+  app.get("/v1/effects/unsettled", async (request, reply) => {
+    if ((await options.authenticate(request)) === undefined) {
+      return reply.code(401).send({ status: "unauthorized" });
+    }
+    return reply.send({ unsettled: await stack.runs.listUnsettled() });
+  });
+
   app.get<{ Params: { runId: string } }>(
     "/v1/runs/:runId",
     async (request, reply) => {

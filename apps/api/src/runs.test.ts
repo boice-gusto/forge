@@ -964,6 +964,85 @@ describe("the operator can see the estate without knowing a run id first", () =>
   });
 });
 
+describe("an action claimed and never carried out is not left for nobody to find", () => {
+  test("a claim with no settlement is reported to an operator", async () => {
+    /**
+     * The gap the claim-before-action ordering deliberately leaves. It is the
+     * right ordering — losing an effect is recoverable, repeating one is not —
+     * but "recoverable" is a promise to somebody, and until this route there
+     * was nobody to make it to. The run reported SUCCEEDED, the ledger said
+     * the node had dispatched, and the action a human approved never happened.
+     *
+     * Staged by claiming directly against the store, which is exactly the
+     * state a process leaves behind when it dies between the claim and the
+     * call.
+     */
+    const stack = acmeStack();
+    const server = app(stack);
+    const started = await startRun(server);
+
+    await stack.runs.claimEffect({
+      runId: started.runId,
+      nodeId: "publish",
+      effect: "slack.post",
+      at: "2026-08-04T00:00:01.000Z",
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/v1/effects/unsettled",
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().unsettled).toEqual([
+      {
+        runId: started.runId,
+        nodeId: "publish",
+        effect: "slack.post",
+        claimedAt: "2026-08-04T00:00:01.000Z",
+      },
+    ]);
+  });
+
+  test("an action that was actually carried out is not reported as lost", async () => {
+    /**
+     * The guard, and it has to be a run that really dispatches.
+     *
+     * The first version of this test started a run and stopped at its gate, so
+     * no claim was ever taken and the empty list was empty for a reason that
+     * had nothing to do with settlement. It passed with the runtime's
+     * `settleEffect` call deleted. A run that dispatches is the only shape
+     * that can tell "settled" from "never claimed" — otherwise every operator
+     * seeing an empty page is reading a page that is always empty.
+     */
+    const server = app();
+    const started = await startRun(server);
+    const run = await decideRun(server, started, { decision: "approve" });
+    expect(run.performedEffects).toEqual(["publish"]);
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/v1/effects/unsettled",
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().unsettled).toEqual([]);
+  });
+
+  test("the report refuses an unauthenticated caller", async () => {
+    // It names effects and the runs they belong to, which is the same reason
+    // the run record is behind a credential.
+    const response = await app().inject({
+      method: "GET",
+      url: "/v1/effects/unsettled",
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+});
+
 describe("a decided gate stays visible to the run inspector", () => {
   test("approving empties the pending list but not the history", async () => {
     const server = app();

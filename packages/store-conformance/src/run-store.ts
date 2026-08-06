@@ -1,4 +1,4 @@
-import type { RunStatus } from "@forge/ports";
+import type { RunStatus, RunStorePort } from "@forge/ports";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -532,6 +532,123 @@ function describeEffects(harness: RunStoreConformanceHarness): void {
   });
 }
 
+function describeSettlement(harness: RunStoreConformanceHarness): void {
+  describe("an action claimed and never finished is findable", () => {
+    const claim = async (store: RunStorePort, nodeId: string, at: string) => {
+      await store.claimEffect({
+        runId: CONFORMANCE_RUN_ID,
+        nodeId,
+        effect: "prod.write",
+        at,
+      });
+    };
+
+    test("a claim with no settlement is reported, estate-wide", async () => {
+      /**
+       * The failure this makes visible: the claim is written before the
+       * action, so a process that dies in between leaves an action that a
+       * human approved, that the ledger believes was dispatched, and that
+       * never happened. The run carries on and reports SUCCEEDED.
+       *
+       * "Losing one is recoverable" — the reason the claim comes first — is
+       * only true if somebody is told, and until this nobody was. Asked
+       * without a run id because nobody knows which run to go and look at.
+       */
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+      await claim(handle.store, "publish", "2026-08-04T00:00:01.000Z");
+
+      const peer = await handle.peer();
+      expect(await peer.listUnsettled()).toEqual([
+        {
+          runId: CONFORMANCE_RUN_ID,
+          nodeId: "publish",
+          effect: "prod.write",
+          claimedAt: "2026-08-04T00:00:01.000Z",
+        },
+      ]);
+    });
+
+    test("a settled action drops off the list and says when it finished", async () => {
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+      await claim(handle.store, "publish", "2026-08-04T00:00:01.000Z");
+      await handle.store.settleEffect(
+        CONFORMANCE_RUN_ID,
+        "publish",
+        "2026-08-04T00:00:02.000Z",
+      );
+
+      const peer = await handle.peer();
+      expect(await peer.listUnsettled()).toEqual([]);
+      expect((await peer.load(CONFORMANCE_RUN_ID))?.effects[0]).toMatchObject({
+        dispatchedAt: "2026-08-04T00:00:01.000Z",
+        settledAt: "2026-08-04T00:00:02.000Z",
+      });
+    });
+
+    test("the oldest claim is first, because it is the one still unexplained", async () => {
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+      await claim(handle.store, "later", "2026-08-04T00:00:09.000Z");
+      await claim(handle.store, "earlier", "2026-08-04T00:00:01.000Z");
+
+      expect(
+        (await (await handle.peer()).listUnsettled()).map(
+          (entry) => entry.nodeId,
+        ),
+      ).toEqual(["earlier", "later"]);
+    });
+
+    test("settling twice keeps the first answer", async () => {
+      // When the action happened is a fact, and a redelivery arriving later
+      // must not restate it. A settlement that moved would make the window
+      // this whole mechanism measures unmeasurable.
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+      await claim(handle.store, "publish", "2026-08-04T00:00:01.000Z");
+      await handle.store.settleEffect(
+        CONFORMANCE_RUN_ID,
+        "publish",
+        "2026-08-04T00:00:02.000Z",
+      );
+      await handle.store.settleEffect(
+        CONFORMANCE_RUN_ID,
+        "publish",
+        "2026-08-04T00:00:59.000Z",
+      );
+
+      expect(
+        (await (await handle.peer()).load(CONFORMANCE_RUN_ID))?.effects[0],
+      ).toMatchObject({ settledAt: "2026-08-04T00:00:02.000Z" });
+    });
+
+    test("settling something that was never claimed is refused", async () => {
+      // A settlement with no claim would mean an action performed outside the
+      // one path that gates them, and recording it quietly is the worst of
+      // both: no gate, and no gap to find later either.
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+
+      await expect(
+        handle.store.settleEffect(
+          CONFORMANCE_RUN_ID,
+          "publish",
+          "2026-08-04T00:00:02.000Z",
+        ),
+      ).rejects.toThrow("FORGE_EFFECT_NOT_CLAIMED");
+    });
+
+    test("a store with nothing outstanding reports nothing", async () => {
+      // Guards the four above: a list that always came back empty would pass
+      // "drops off the list" and prove nothing.
+      const { store } = await harness.create();
+
+      expect(await store.listUnsettled()).toEqual([]);
+    });
+  });
+}
+
 function describeIsolation(harness: RunStoreConformanceHarness): void {
   describe("two stores are two stores", () => {
     test("a run written to one store is not visible in another", async () => {
@@ -560,6 +677,7 @@ export function describeRunStoreConformance(
     describeValues(harness);
     describeRoutes(harness);
     describeEffects(harness);
+    describeSettlement(harness);
     describeIsolation(harness);
   });
 }

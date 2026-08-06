@@ -147,5 +147,33 @@ export function createMemoryRunStore(): RunStorePort {
       );
       return true;
     },
+
+    async settleEffect(runId, nodeId, at) {
+      const stored = find(runId);
+      const claimed = stored.effects.find(
+        (effect) => effect.nodeId === nodeId,
+      ) as { settledAt?: string } | undefined;
+      if (claimed === undefined) {
+        throw new Error(`FORGE_EFFECT_NOT_CLAIMED: ${runId}/${nodeId}`);
+      }
+      // First settlement wins, like every other pin here: a second one would
+      // be a later process rewriting when the action actually happened.
+      claimed.settledAt ??= at;
+    },
+
+    async listUnsettled() {
+      return [...runs.entries()]
+        .flatMap(([runId, stored]) =>
+          stored.effects
+            .filter((effect) => effect.settledAt === undefined)
+            .map((effect) => ({
+              runId,
+              nodeId: effect.nodeId,
+              effect: effect.effect,
+              claimedAt: effect.dispatchedAt,
+            })),
+        )
+        .sort((left, right) => left.claimedAt.localeCompare(right.claimedAt));
+    },
   };
 }

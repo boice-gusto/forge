@@ -69,6 +69,7 @@ export type {
   RunStatus,
   RunStorePort,
   StoredArtifact,
+  UnsettledEffect,
 } from "./run-store.js";
 export type {
   SandboxExecResult,

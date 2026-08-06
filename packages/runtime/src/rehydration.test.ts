@@ -666,10 +666,24 @@ describe("two workers racing one dispatch", () => {
     );
 
     const second = forge.start();
-    // Reading the run is enough to restore the ledger: it knows what it
-    // dispatched before it is asked to do anything with it.
-    await second.runtime.loadRun(run.runId);
-    expect(second.runtime.ledger(run.runId)).toEqual(["publish"]);
+    /**
+     * Reading does not restore the ledger, and must not.
+     *
+     * This used to assert the opposite — that `loadRun` primed the ledger as a
+     * side effect. It did, by rehydrating, and rehydrating adopts the store's
+     * copy into the shared run state. That is right for a process about to
+     * walk a run and wrong for one answering a GET: a status poll landing
+     * mid-walk wrote an older revision back over the walk's own, and the walk
+     * then failed a conflict against work it had done itself, leaving the run
+     * at RUNNING with nothing in any log to say why.
+     *
+     * A read is a read. The ledger is restored by re-entering the run, which
+     * is the next line and the thing this test is actually about.
+     */
+    expect(await second.runtime.loadRun(run.runId)).toMatchObject({
+      runId: run.runId,
+    });
+    expect(second.runtime.ledger(run.runId)).toEqual([]);
 
     const finished = await second.runtime.resume(run.runId);
 

@@ -863,6 +863,20 @@ export function createRuntime(options: RuntimeOptions): Runtime {
             effect,
             input,
           );
+          /**
+           * Immediately, and before anything else. The claim was written
+           * *before* the call, so between the two the store holds "somebody is
+           * doing this" with no way to tell a slow action from a dead process.
+           * This closes that window as soon as there is an answer to close it
+           * with — every instruction between here and the call is time an
+           * operator would spend looking at a false alarm, or worse, time a
+           * real lost effect spends looking like one.
+           */
+          await options.runs.settleEffect(
+            runId,
+            nodeId,
+            options.clock.now().toISOString(),
+          );
           await pinValue(
             nodeId,
             produced === undefined ? undefined : pin(nodeId, produced),
@@ -1449,7 +1463,22 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     },
 
     async loadRun(runId) {
-      return (await hydrate(runId))?.record;
+      /**
+       * A read, and only a read.
+       *
+       * This went through `hydrate`, which adopts the store's copy into the
+       * shared `RunState` — correct for a process about to walk the run, and
+       * actively harmful for one merely answering `GET /v1/runs/:runId`. A
+       * poll landing mid-walk would read the record a moment before the walk's
+       * write committed and then write that older revision back over the
+       * walk's, and the walk's next transition failed as a conflict against
+       * work it had done itself. The run stopped at RUNNING and stayed there,
+       * with nothing in any log to say why.
+       *
+       * The store is the record; the in-process map is a cache of it. A reader
+       * has no business touching the cache.
+       */
+      return (await options.runs.load(runId))?.record;
     },
 
     async decide(approvalId, decision, principal) {

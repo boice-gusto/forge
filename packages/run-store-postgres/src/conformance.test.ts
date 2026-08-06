@@ -45,12 +45,25 @@ describe.skipIf(!dockerAvailable)("run-store-postgres", () => {
     await container?.stop();
   });
 
+  /**
+   * One connection, released quickly.
+   *
+   * Every test gets a fresh schema and therefore a fresh pool, and pools live
+   * until `afterAll` — so the connections held here scale with the size of the
+   * suite, not with what any one test needs. At `max: 5` the suite ran out of
+   * Postgres's hundred and started failing with "too many clients already":
+   * tests going red because of how many other tests exist, which is the least
+   * informative failure a suite can have. The tests are sequential, so one
+   * connection each is all any of them uses, and a short idle timeout hands it
+   * back before the next test asks for its own.
+   */
   function poolFor(schema: string): pg.Pool {
     return track(
       new pg.Pool({
         connectionString: container.getConnectionUri(),
         options: `-c search_path=${schema}`,
-        max: 5,
+        max: 1,
+        idleTimeoutMillis: 250,
       }),
     );
   }

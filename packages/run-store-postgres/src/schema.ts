@@ -81,14 +81,28 @@ create table if not exists forge_run_effect (
   input         jsonb,
   has_input     boolean not null,
   dispatched_at text not null,
+  -- When the action came back. Null is the window this column exists to make
+  -- visible: claimed, and never seen to finish.
+  settled_at    text,
 
   -- One dispatch per node per run. Stated where the row lives, because two
   -- workers racing a resume cannot be stopped by a check in JavaScript.
   constraint forge_run_effect_once unique (run_id, node_id)
 );
 
+-- For a database created before settlement was recorded. Existing rows are
+-- left null rather than backfilled: nothing knows whether those actions
+-- completed, and inventing a settlement time would answer the one question
+-- this column is for.
+alter table forge_run_effect add column if not exists settled_at text;
+
 create index if not exists forge_run_effect_by_run
   on forge_run_effect (run_id, seq);
+
+-- Partial, because the interesting rows are the rare ones and a full index on
+-- a column that is almost always set would be mostly dead weight.
+create index if not exists forge_run_effect_unsettled
+  on forge_run_effect (dispatched_at) where settled_at is null;
 `;
 
 /** Applies {@link RUN_STORE_SCHEMA_SQL}. Safe to run on every boot. */

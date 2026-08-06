@@ -35,6 +35,7 @@ interface EffectRow {
   readonly input: JsonValue | null;
   readonly has_input: boolean;
   readonly dispatched_at: string;
+  readonly settled_at: string | null;
 }
 
 /** `undefined` is absent; anything else, JSON null included, is a value. */
@@ -89,7 +90,7 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
           [runId],
         ),
         pool.query<EffectRow>(
-          `select node_id, effect, input, has_input, dispatched_at
+          `select node_id, effect, input, has_input, dispatched_at, settled_at
              from forge_run_effect where run_id = $1 order by seq`,
           [runId],
         ),
@@ -119,6 +120,9 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
             effect: row.effect,
             ...(row.has_input ? { input: row.input } : {}),
             dispatchedAt: row.dispatched_at,
+            // Absent, not null: "never seen to finish" is a gap, and a null
+            // reads as a value somebody chose.
+            ...(row.settled_at === null ? {} : { settledAt: row.settled_at }),
           }),
         ),
       };
@@ -206,6 +210,46 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
         ],
       );
       return rows.length === 1;
+    },
+
+    async settleEffect(runId, nodeId, at) {
+      // `is null` in the predicate rather than a blind set: first settlement
+      // wins, so a later process cannot rewrite when the action happened.
+      const { rowCount } = await pool.query(
+        `update forge_run_effect set settled_at = $3
+          where run_id = $1 and node_id = $2 and settled_at is null`,
+        [runId, nodeId, at],
+      );
+      if (rowCount === 1) return;
+
+      const { rows } = await pool.query(
+        `select 1 from forge_run_effect where run_id = $1 and node_id = $2`,
+        [runId, nodeId],
+      );
+      // Already settled is not an error; never claimed is.
+      if (rows.length === 0) {
+        throw new Error(`FORGE_EFFECT_NOT_CLAIMED: ${runId}/${nodeId}`);
+      }
+    },
+
+    async listUnsettled() {
+      const { rows } = await pool.query<{
+        run_id: string;
+        node_id: string;
+        effect: string;
+        dispatched_at: string;
+      }>(
+        `select run_id, node_id, effect, dispatched_at
+           from forge_run_effect
+          where settled_at is null
+          order by dispatched_at, seq`,
+      );
+      return rows.map((row) => ({
+        runId: row.run_id,
+        nodeId: row.node_id,
+        effect: row.effect,
+        claimedAt: row.dispatched_at,
+      }));
     },
   };
 }

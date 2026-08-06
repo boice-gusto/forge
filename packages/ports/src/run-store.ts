@@ -114,6 +114,35 @@ export interface DispatchedEffect {
   readonly effect: string;
   readonly input?: JsonValue | undefined;
   readonly dispatchedAt: string;
+  /**
+   * When the action came back. Absent means it was claimed and never seen to
+   * finish — see {@link RunStorePort.listUnsettled}.
+   */
+  readonly settledAt?: string | undefined;
+}
+
+/**
+ * An action a run claimed and was never seen to complete.
+ *
+ * The claim is written before the action, deliberately: a crash between the
+ * two loses an effect, and a crash the other way round performs one twice, and
+ * for a system whose premise is that a human authorised exactly one action,
+ * losing one is recoverable and repeating one is not.
+ *
+ * "Recoverable" is only true if somebody is told. Until now nothing was: the
+ * run went on, the ledger said the node had dispatched, and the action the
+ * human approved silently never happened. This is the record of that gap.
+ *
+ * It is not, by itself, proof the action did not happen — the process may have
+ * died after the call landed and before it could say so. That ambiguity is why
+ * this is a report to an operator rather than an input to an automatic retry.
+ */
+export interface UnsettledEffect {
+  readonly runId: string;
+  readonly nodeId: string;
+  readonly effect: string;
+  /** When the claim was taken. */
+  readonly claimedAt: string;
 }
 
 /** What a run is made of, read back whole. */
@@ -222,4 +251,20 @@ export interface RunStorePort {
    * exactly one action, losing one is recoverable and repeating one is not.
    */
   claimEffect(claim: EffectClaim): Promise<boolean>;
+  /**
+   * Records that a claimed action came back.
+   *
+   * Separate from the claim because the whole point is the window between
+   * them. Settling in the same write would make the claim a record of
+   * completion, which is the guarantee this system cannot offer.
+   */
+  settleEffect(runId: string, nodeId: string, at: string): Promise<void>;
+  /**
+   * Every action claimed and never settled, oldest claim first.
+   *
+   * The estate-wide question, asked without knowing a run id, because nobody
+   * knows to go looking at the run this happened to. An operator reads this;
+   * nothing acts on it (see {@link UnsettledEffect}).
+   */
+  listUnsettled(): Promise<readonly UnsettledEffect[]>;
 }
