@@ -1,12 +1,12 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 62 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 66 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
 was checked against the repository.
 
-**Scale:** 41 packages, 3 apps, 1,318 unit tests (98.6% statements / 90.9%
+**Scale:** 41 packages, 3 apps, 1,350 unit tests (98.7% statements / 91.3%
 branches) plus 18 resilience scenarios against real containers. Ten CI steps —
 `lint`, `typecheck`, `test`, `test:coverage`, `test:packaging`,
 `test:architecture`, `test:security`, `security:secrets`, `security:licenses`,
@@ -26,6 +26,9 @@ needs Docker, so it fails on its own terms rather than inside `verify`.
 | **Async start** | `POST /v1/runs` persists and enqueues, 202 + `Location`. `POST …/decision` does the same, so no route walks a graph inside a request. The consumer is bound in both persistence modes, so both routes are one code path |
 | **Live events** | `GET /v1/runs/:runId/events` streams SSE off the durable history, resumable by `Last-Event-ID`. The tail re-authenticates each pass, because a stream outlives the credential that opened it |
 | **Resilience** | `harness/` — load, chaos and disaster recovery against real Postgres and Redis, killing them mid-run on purpose |
+| **One trace per run, across processes** | The run record carries a W3C `traceparent`, so the process that creates a run, the worker that walks it and whoever resumes it after a decision all record in one trace. Sampling travels with it |
+| **Optimistic concurrency** | `RunStorePort.update()` presents the revision it read. A stale write is refused rather than applied, and the runtime cedes to whoever got there first instead of failing a job |
+| **Lost effects are findable** | An action claimed and never seen to finish is reported at `GET /v1/effects/unsettled`. A report, not a button — see below |
 | **Policy** | OPA Wasm behind `PolicyPort` (ADR-007), Rego compiled ahead of time and committed. Policy resolves from the deployment's company package, never from a request |
 | **Provider** | `@forge/provider-anthropic` on the real SDK with an injectable transport; retryable classification is table-driven |
 | **Sandbox** | A scope the work runs inside, with a Docker adapter: no host mounts, zero capabilities, non-root, read-only rootfs |
@@ -43,20 +46,22 @@ cannot drift apart without one of them failing.
 | Gap | Why |
 |---|---|
 | **No LangGraph engine** | ADR-002, deliberately amended rather than left open. The engine carries Forge's own semantics — sandbox scoping, arm pruning, the data plane's short-circuit — and moving those into a vendor's execution model would put the invariants beyond this repository's tests |
-| **No W3C trace context on the run record** | A run resumed in another process starts a new trace instead of continuing the one that began it. The spans are right; the thread between them is not |
-| **`RunStorePort.update()` has no optimistic concurrency** | Last writer wins. Two processes advancing one run is already refused a layer up, by the queue's single delivery, but the store does not enforce it itself |
-| **A claimed-but-unperformed effect has no operator-visible signal** | The harness can find one (`claimedButUnperformed()`); nothing surfaces it, and there is no redrive route |
+| **No redrive for a lost effect** | Deliberate, not pending. Nobody can tell from the record whether the action failed to happen or happened and the process died before saying so. Re-running it under that uncertainty is a decision to perform a side effect, which in this system means a human bound to that exact action — so it belongs behind a gate, not behind an operator endpoint that quietly re-sends |
+| **Two concurrent walks in one process still share a `RunState`** | The queue delivers once, so this needs a redelivery *and* a coincidence. Reads no longer touch it, which was the reachable half |
+| **No deadline on enqueue** | A job that is never taken is indistinguishable from one taken slowly |
+| **`apps/worker` has no injectable effect sink** | It builds its own, so a deployment cannot bind a transform table without editing the binary |
+| **No sandbox chaos scenario** | The harness kills Postgres and Redis; it does not kill a container mid-lease |
 | **Four `forge.gusto` scenarios are `todo`** | Held open by a test that goes red the day the API stops ignoring `environment`, so they cannot rot quietly |
 | **Phase 8 not started** | Phase 7 is done and found four production defects; 8 is next |
 
 ## Next, in order
 
-1. **W3C trace context on the run record**, so a run resumed in another process continues its trace rather than starting a new one.
-2. **Optimistic concurrency on `RunStorePort.update()`**, so the store enforces what the queue currently implies.
-3. **Surface a claimed-but-unperformed effect**, and a redrive route for it. The harness can already detect one.
+1. **A gated redrive**, so a lost effect can be re-performed by a human decision rather than not at all.
+2. **An injectable effect sink for `apps/worker`.**
+3. **A sandbox chaos scenario** — kill the container mid-lease.
 4. **Phase 8.**
 
-### What Phase 7 found
+### What Phase 7 and the work after it found
 
 Four defects, each reaching production behaviour, none visible to the unit
 suite:
@@ -79,11 +84,23 @@ suite:
   that turns a readiness probe into a timeout, and turns a SIGTERM drain into a
   SIGKILL that drops the telemetry explaining the outage.
 
+And one more, found by adding optimistic concurrency and watching a durable
+restart go intermittently red:
+
+- **A status poll could strand a walking run.** `loadRun` went through
+  `hydrate`, which adopts the store's copy into the shared `RunState`. Right
+  for a process about to walk a run; wrong for one answering
+  `GET /v1/runs/:runId`. A poll landing mid-walk read the record a moment
+  before the walk's write committed and wrote that older revision back over
+  it — and the walk's next transition then failed a conflict against work it
+  had done itself. The run stopped at RUNNING and stayed there, with nothing
+  in any log to say why. A read is now a read.
+
 ---
 
 ## What this codebase has learned the hard way
 
-**Eleven checks were found that could not fail.** Each was written to answer a
+**Twelve checks were found that could not fail.** Each was written to answer a
 question, passed immediately, and was never asked to fail again:
 
 - `test:architecture` never opened a source file — it tested hand-written strings.
@@ -128,7 +145,15 @@ unavailable. It passed. It also passed with the consumer check replaced by
 `return { available: true }`, because closing the queue breaks the ping first
 and the run never reaches the line under test. It was deleted rather than kept,
 and `queue.ts` now says in place that the term is not independently falsifiable
-and why. Knowing the trap is not the same as being immune to it.
+and why.
+
+The twelfth arrived a day later, from the same author, guarding the new
+lost-effect report: "a deployment with nothing outstanding reports nothing." It
+started a run and stopped at its gate, so no effect was ever claimed and the
+list was empty for a reason that had nothing to do with settlement — it passed
+with the runtime's `settleEffect` call deleted. It now drives a run that
+actually dispatches. Knowing the trap is not the same as being immune to it,
+twice over.
 
 Two authorisation holes were found the same way — an orphaned node dispatching
 an ungated effect, and a decision route that authenticated the caller but never
