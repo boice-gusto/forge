@@ -24,6 +24,23 @@ export interface CheckpointRecord extends CheckpointInput {
   readonly checkpointId: string;
 }
 
+/**
+ * The failures a checkpoint store raises, as codes rather than prose — control
+ * flow across a package boundary, in the same form as `RUN_STORE_ERRORS` and
+ * for the same reason.
+ */
+export const CHECKPOINT_ERRORS = {
+  /**
+   * `save` wrote no row. Returning a record the store does not hold would hand
+   * back a `checkpointId` that resumes nothing, and the position it was meant
+   * to pin is lost at the moment the process that knew it exits.
+   */
+  notWritten: "FORGE_CHECKPOINT_NOT_WRITTEN",
+} as const;
+
+export type CheckpointErrorCode =
+  (typeof CHECKPOINT_ERRORS)[keyof typeof CHECKPOINT_ERRORS];
+
 export interface CheckpointStorePort {
   save(input: CheckpointInput): Promise<CheckpointRecord>;
   load(checkpointId: string): Promise<CheckpointRecord | undefined>;

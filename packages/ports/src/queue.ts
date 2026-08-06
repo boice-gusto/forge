@@ -33,6 +33,53 @@ export type ForgeJob =
       readonly attempt: number;
     };
 
+/**
+ * The `type` discriminants, for the places that handle one as a string rather
+ * than as a `ForgeJob`.
+ *
+ * {@link ForgeJob} stays the contract and is not derived from this — the union
+ * carries each job's payload and the compiler already checks it at every site
+ * that builds or narrows one. What this is for is the sites where the type has
+ * been separated from its payload and the compiler has nothing to check: a
+ * transport's wire schema listing the discriminants it accepts, an observability
+ * attribute, a dead-letter dashboard's filter. A job type added to the union and
+ * missed in one of those is a job that enqueues cleanly and is refused on
+ * arrival, with nothing to fail at build time: `connector.publish` is in the
+ * union and absent from `@forge/queue-bullmq`'s wire schema today.
+ */
+export type ForgeJobType = ForgeJob["type"];
+
+export const FORGE_JOB_TYPES = {
+  execute: "workflow.execute",
+  resume: "workflow.resume",
+  cancel: "workflow.cancel",
+  publish: "connector.publish",
+} as const satisfies Record<string, ForgeJobType>;
+
+/**
+ * The failures a queue adapter raises, as codes rather than prose — for the
+ * same reason as `RUN_STORE_ERRORS`: they are control flow across a package
+ * boundary, carried as a message prefix because a queue failure crosses a
+ * process boundary in a job's failure text as often as it crosses a call.
+ */
+export const QUEUE_ERRORS = {
+  /**
+   * A second `subscribe` on one transport. An adapter holds one consumer, and
+   * that reference is what `close` releases and what `health` reads to answer
+   * whether this process is still taking jobs. Replacing it would leave the
+   * first consumer running, unclosable and invisible to the probe — so the
+   * second call is refused rather than accepted.
+   */
+  alreadySubscribed: "FORGE_QUEUE_ALREADY_SUBSCRIBED",
+  /**
+   * A payload the transport does not recognise. Fails closed: coercing it into
+   * the nearest job it resembles is how a cancel becomes an execute.
+   */
+  invalidJob: "FORGE_QUEUE_INVALID_JOB",
+} as const;
+
+export type QueueErrorCode = (typeof QUEUE_ERRORS)[keyof typeof QUEUE_ERRORS];
+
 /** Stable per intended operation, so at-least-once delivery is safe. */
 export function operationKey(job: ForgeJob): string {
   if (job.type === "workflow.cancel") return `cancel:${job.runId}`;

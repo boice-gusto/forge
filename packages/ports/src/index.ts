@@ -1,15 +1,19 @@
 export {
   ANY_ROLE,
+  APPROVAL_ERRORS,
   type ApprovalDecision,
+  type ApprovalErrorCode,
   type ApprovalPort,
   type ApprovalRecord,
   type ApprovalRequest,
   type ApprovalStatus,
 } from "./approval.js";
-export type {
-  CheckpointInput,
-  CheckpointRecord,
-  CheckpointStorePort,
+export {
+  CHECKPOINT_ERRORS,
+  type CheckpointErrorCode,
+  type CheckpointInput,
+  type CheckpointRecord,
+  type CheckpointStorePort,
 } from "./checkpoint.js";
 export {
   type ClockPort,
@@ -26,6 +30,7 @@ export type {
   GraphEnginePort,
   JudgeVerdict,
 } from "./engine.js";
+export type { DependencyStatus } from "./health.js";
 export type {
   ObservabilityPort,
   RecordedSpan,
@@ -43,6 +48,7 @@ export type {
   PolicyPort,
   PolicyRequest,
 } from "./policy.js";
+export { FORGE_POLICY_IDS, type ForgePolicyId } from "./policy-ids.js";
 export type {
   CreateProviderSessionInput,
   ProviderCapability,
@@ -53,8 +59,12 @@ export type {
   ResumeProviderSessionInput,
 } from "./provider.js";
 export {
+  FORGE_JOB_TYPES,
   type ForgeJob,
+  type ForgeJobType,
   operationKey,
+  QUEUE_ERRORS,
+  type QueueErrorCode,
   type QueuePort,
 } from "./queue.js";
 export type {
@@ -69,6 +79,7 @@ export type {
   RunStatus,
   RunStoreErrorCode,
   RunStorePort,
+  RuntimeErrorCode,
   StoredArtifact,
   UnsettledEffect,
 } from "./run-store.js";
@@ -76,6 +87,7 @@ export {
   hasStopped,
   isTerminalRun,
   RUN_STORE_ERRORS,
+  RUNTIME_ERRORS,
   STOPPED_RUN_STATUSES,
   TERMINAL_RUN_STATUSES,
 } from "./run-store.js";

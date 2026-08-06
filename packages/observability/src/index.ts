@@ -7,6 +7,7 @@ export type {
   RunEventInput,
   RunEventStorePort,
 } from "@forge/ports";
+export { FORGE_EVENTS, type ForgeEventName } from "./events.js";
 export { failOpen } from "./fail-open.js";
 export {
   createForgeLogger,

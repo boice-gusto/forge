@@ -69,6 +69,27 @@ export type RunStoreErrorCode =
   (typeof RUN_STORE_ERRORS)[keyof typeof RUN_STORE_ERRORS];
 
 /**
+ * The refusals the *runtime* raises about a run, as opposed to the store's.
+ *
+ * Separate from {@link RUN_STORE_ERRORS} because they are raised by a
+ * different layer for different reasons, and the API maps them to a different
+ * status code. Named here rather than in the runtime because the runtime
+ * raises them and the control plane matches them — the same cross-package
+ * agreement, and the same silent failure if one side is renamed alone.
+ */
+export const RUNTIME_ERRORS = {
+  /** The run is already waiting on a gate; a second is how one gets voided. */
+  awaitingApproval: "FORGE_RUN_AWAITING_APPROVAL",
+  /** Cancelled. Redriving it would reverse a human's decision to stop. */
+  notRedrivable: "FORGE_RUN_NOT_REDRIVABLE",
+  /** The claim was accounted for between the gate opening and the decision. */
+  redriveStale: "FORGE_REDRIVE_STALE",
+} as const;
+
+export type RuntimeErrorCode =
+  (typeof RUNTIME_ERRORS)[keyof typeof RUNTIME_ERRORS];
+
+/**
  * A run that will not move again on its own.
  *
  * `AWAITING_APPROVAL` is **not** here, and that omission is the whole reason

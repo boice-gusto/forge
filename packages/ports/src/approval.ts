@@ -39,6 +39,24 @@ export interface ApprovalRecord extends ApprovalRequest {
   readonly createdAt: string;
 }
 
+/**
+ * The failures an approval store raises, as codes rather than prose — control
+ * flow across a package boundary, in the same form as `RUN_STORE_ERRORS` and
+ * for the same reason.
+ */
+export const APPROVAL_ERRORS = {
+  /**
+   * `request` wrote no row. The run is about to park on a gate that does not
+   * exist, so this has to be loud: a swallowed failure here leaves a run
+   * waiting forever on an approval no inbox will ever list and no decision can
+   * ever clear.
+   */
+  notOpened: "FORGE_APPROVAL_NOT_OPENED",
+} as const;
+
+export type ApprovalErrorCode =
+  (typeof APPROVAL_ERRORS)[keyof typeof APPROVAL_ERRORS];
+
 export interface ApprovalPort {
   request(request: ApprovalRequest): Promise<ApprovalRecord>;
   /**
