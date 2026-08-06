@@ -156,6 +156,74 @@ function describeParenting(harness: ObservabilityConformanceHarness): void {
       await subject.shutdown();
     });
 
+    test("a span started from a traceparent joins the trace it names", async () => {
+      /**
+       * The cross-process case, and the reason `Span.traceparent` exists.
+       *
+       * Two subjects, because that is what two processes look like from here:
+       * the second has never seen the first's span and holds nothing but a
+       * string off a database row. If the string is not enough, a run reads in
+       * a tracing backend as several unrelated traces sharing a `runId`
+       * attribute — which is precisely the state the parenting rules above
+       * were written to replace, arriving through the back door.
+       */
+      const creator = await harness.create();
+      const run = creator.observability.startSpan("forge.run.start", {
+        runId: "run_1",
+      });
+      const traceparent = run.traceparent;
+      run.end();
+      expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/);
+
+      const resumer = await harness.create();
+      resumer.observability
+        .startSpan("forge.node.effect", { runId: "run_1" }, traceparent)
+        .end();
+      resumer.observability.event(
+        "forge.effect.dispatched",
+        { runId: "run_1" },
+        traceparent,
+      );
+
+      const opened = named(await drain(creator), "forge.run.start");
+      const resumed = await drain(resumer);
+      const child = named(resumed, "forge.node.effect");
+      const event = named(resumed, "forge.effect.dispatched");
+
+      // One trace, spanning two processes, and both records hang off the span
+      // the first one opened.
+      expect(child.traceId).toBe(opened.traceId);
+      expect(child.parentSpanId).toBe(opened.spanId);
+      expect(event.traceId).toBe(opened.traceId);
+      expect(event.parentSpanId).toBe(opened.spanId);
+
+      await creator.shutdown();
+      await resumer.shutdown();
+    });
+
+    test("a traceparent that does not parse is a root, not a failure", async () => {
+      // It arrives from a database column written by another process and
+      // possibly another version of this code. Something unreadable must cost
+      // a trace edge, never a span — and never a run.
+      const subject = await harness.create();
+
+      subject.observability
+        .startSpan("forge.node.effect", {}, "not-a-traceparent")
+        .end();
+      subject.observability
+        .startSpan(
+          "forge.node.other",
+          {},
+          `00-${"0".repeat(32)}-${"0".repeat(16)}-01`,
+        )
+        .end();
+
+      const records = await drain(subject);
+      expect(named(records, "forge.node.effect").parentSpanId).toBeUndefined();
+      expect(named(records, "forge.node.other").parentSpanId).toBeUndefined();
+      await subject.shutdown();
+    });
+
     test("a span started with no parent is a root", async () => {
       const subject = await harness.create();
 
@@ -207,9 +275,22 @@ function describeParenting(harness: ObservabilityConformanceHarness): void {
       await subject.shutdown();
     });
 
-    test("a span from another adapter is a root here, not a failure", async () => {
-      // Two sinks in one process is a real configuration, and a handle only
-      // one of them can read is the ordinary case, not a corrupt one.
+    test("a span from another sink parents by traceparent, and records here", async () => {
+      /**
+       * Two sinks in one process is a real configuration, and a handle only
+       * one of them can read is the ordinary case, not a corrupt one.
+       *
+       * This once asserted that such a span became a root. That was true when
+       * a parent could only be an adapter-private handle, and it stopped being
+       * true the moment spans carried a `traceparent`: a portable parent is
+       * portable, including three inches sideways to another sink in the same
+       * process. Making it a root here would mean a deployment that sends
+       * spans to two collectors gets one trace and one orphan.
+       *
+       * What is unchanged, and is the part that would actually be a bug, is
+       * where the record goes. A span belongs to the sink it was recorded
+       * through, never to the sink that issued its parent handle.
+       */
       const elsewhere = await harness.create();
       const subject = await harness.create();
       const foreign = elsewhere.observability.startSpan("forge.run.start", {
@@ -222,15 +303,18 @@ function describeParenting(harness: ObservabilityConformanceHarness): void {
       }).not.toThrow();
       foreign.end();
 
-      const records = await drain(subject);
-      expect(named(records, "forge.node.agent").parentSpanId).toBeUndefined();
-      expect(
-        named(records, "forge.effect.dispatched").parentSpanId,
-      ).toBeUndefined();
-      // Nor did the other adapter quietly acquire the children.
-      expect(
-        (await drain(elsewhere)).map((record) => record.name),
-      ).not.toContain("forge.node.agent");
+      const here = await drain(subject);
+      const there = await drain(elsewhere);
+      const opened = named(there, "forge.run.start");
+
+      expect(named(here, "forge.node.agent").parentSpanId).toBe(opened.spanId);
+      expect(named(here, "forge.effect.dispatched").parentSpanId).toBe(
+        opened.spanId,
+      );
+      // And the other sink did not quietly acquire the children.
+      expect(there.map((record) => record.name)).not.toContain(
+        "forge.node.agent",
+      );
       await subject.shutdown();
       await elsewhere.shutdown();
     });

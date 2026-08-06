@@ -1,10 +1,21 @@
 import {
   createSpanContexts,
   failOpen,
+  parseTraceparent,
   redactAttributes,
+  traceparentOf,
 } from "@forge/observability";
-import type { ObservabilityPort, Span, SpanAttributes } from "@forge/ports";
-import { type Context, ROOT_CONTEXT, trace } from "@opentelemetry/api";
+import type {
+  ObservabilityPort,
+  SpanAttributes,
+  SpanParent,
+} from "@forge/ports";
+import {
+  type Context,
+  ROOT_CONTEXT,
+  TraceFlags,
+  trace,
+} from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
@@ -130,11 +141,38 @@ export function createOtelObservability(
    * read, and reading one would make the parent depend on whatever else in the
    * process happens to have installed a context manager.
    */
+  /**
+   * A parent in another process, named by the run record rather than held as
+   * an object.
+   *
+   * `isRemote` is what tells the SDK this span id belongs to a span it never
+   * saw and must not try to resolve locally. Without it a backend has a
+   * dangling reference; with it, the trace joins up across the API process
+   * that created the run, the worker that walked it, and whichever process
+   * resumed it after a human decided.
+   */
+  const remoteContext = (
+    parent: SpanParent | undefined,
+  ): Context | undefined => {
+    const parsed = parseTraceparent(traceparentOf(parent));
+    if (parsed === undefined) return undefined;
+    return trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: parsed.traceId,
+      spanId: parsed.spanId,
+      traceFlags:
+        (Number.parseInt(parsed.flags, 16) & TraceFlags.SAMPLED) ===
+        TraceFlags.SAMPLED
+          ? TraceFlags.SAMPLED
+          : TraceFlags.NONE,
+      isRemote: true,
+    });
+  };
+
   const startOtelSpan = (
     name: string,
     attributes: SpanAttributes,
     kind: "span" | "event",
-    parent: Span | undefined,
+    parent: SpanParent | undefined,
   ) =>
     tracer.startSpan(
       name,
@@ -144,12 +182,17 @@ export function createOtelObservability(
           [TELEMETRY_KIND_ATTRIBUTE]: kind,
         },
       },
-      contexts.resolve(parent) ?? ROOT_CONTEXT,
+      contexts.resolve(parent) ?? remoteContext(parent) ?? ROOT_CONTEXT,
     );
 
   const port: ObservabilityPort = {
-    startSpan(name: string, attributes: SpanAttributes = {}, parent?: Span) {
+    startSpan(
+      name: string,
+      attributes: SpanAttributes = {},
+      parent?: SpanParent,
+    ) {
       const span = startOtelSpan(name, attributes, "span", parent);
+      const { traceId, spanId, traceFlags } = span.spanContext();
       return {
         end(endAttributes?: SpanAttributes) {
           if (endAttributes !== undefined) {
@@ -158,9 +201,14 @@ export function createOtelObservability(
           span.end();
         },
         context: contexts.issue(trace.setSpan(ROOT_CONTEXT, span)),
+        // Read now rather than on demand: `spanContext()` is stable for the
+        // life of the span, and whoever persists this may do so after `end()`.
+        traceparent: `00-${traceId}-${spanId}-${traceFlags
+          .toString(16)
+          .padStart(2, "0")}`,
       };
     },
-    event(name: string, attributes: SpanAttributes = {}, parent?: Span) {
+    event(name: string, attributes: SpanAttributes = {}, parent?: SpanParent) {
       startOtelSpan(name, attributes, "event", parent).end();
     },
   };

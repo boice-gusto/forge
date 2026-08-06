@@ -48,6 +48,21 @@ export interface RunRecord {
   readonly error?: string | undefined;
   /** What the output node resolved to, once one has run. */
   readonly result?: JsonValue | undefined;
+  /**
+   * The trace this run belongs to, in W3C form.
+   *
+   * A run is created by one process, walked by whichever worker takes the job,
+   * and resumed by a third after a human decides — so the span opened at
+   * creation is gone by the time most of the run happens. Without this, every
+   * one of those is a root, and a run reads in a tracing backend as a pile of
+   * unrelated traces that happen to share a `runId` attribute. With it, the
+   * question an incident actually asks — *what did this run do, in order* —
+   * has one answer.
+   *
+   * Absent when the observability adapter cannot express one; a missing edge
+   * costs a trace, never a run.
+   */
+  readonly traceparent?: string | undefined;
 }
 
 /**

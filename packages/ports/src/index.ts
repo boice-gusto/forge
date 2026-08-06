@@ -35,6 +35,8 @@ export type {
   Span,
   SpanAttributes,
   SpanContext,
+  SpanParent,
+  Traceparent,
 } from "./observability.js";
 export type {
   PolicyDecision,

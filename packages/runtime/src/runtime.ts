@@ -29,6 +29,7 @@ import type {
   SandboxLease,
   SandboxPort,
   Span,
+  SpanParent,
 } from "@forge/ports";
 import type { Role } from "@forge/types";
 
@@ -368,12 +369,25 @@ interface RunState {
    * walk already carries makes misparenting impossible rather than unlikely.
    *
    * Absent on a run rehydrated by `resume()` or `decide()`, which may be in a
-   * process that never saw the run start. Those spans are roots until the
-   * trace context travels with the run record, and a missing parent costs a
-   * trace edge, never a run.
+   * process that never saw the run start. That process parents to
+   * `record.traceparent` instead — see {@link parentOf} — so the trace is
+   * still one trace. A missing parent costs a trace edge, never a run.
    */
-  span?: Span;
+  span?: Span | undefined;
 }
+
+/**
+ * Where this run's telemetry hangs from, in whichever form is available.
+ *
+ * The open span if this process started the run. Otherwise the traceparent off
+ * the run record, written by the process that did. A run is created by the
+ * control plane, walked by whichever worker takes the job, and resumed by a
+ * third process after a human decides, so the second form is the common one —
+ * without it, an incident asking "what did this run do" gets three unrelated
+ * traces that happen to share a `runId` attribute.
+ */
+const parentOf = (state: RunState): SpanParent | undefined =>
+  state.span ?? state.record.traceparent;
 
 export function createRuntime(options: RuntimeOptions): Runtime {
   /**
@@ -429,7 +443,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           to: patch.status,
           attempt: state.record.attempt,
         },
-        state.span,
+        parentOf(state),
       );
     }
     return state.record;
@@ -550,7 +564,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     const runId = state.record.runId;
     // Everything this walk records belongs to the run, so it all hangs from
     // the run's span. `undefined` on a rehydrated run, which makes these roots.
-    const parent = state.span;
+    const parent = parentOf(state);
     const ledger = ledgers.get(runId) as string[];
     const routes = routeLedgers.get(runId) as Map<string, string>;
     const values = valueLedgers.get(runId) as ValueLedger;
@@ -1046,7 +1060,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           effect: approval.effect,
           expiresAt: approval.expiresAt,
         },
-        state.span,
+        parentOf(state),
       );
       return refuse(
         `Approval ${approvalId} was not decided within its deadline.`,
@@ -1061,7 +1075,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         approvalId,
         effectHash: approval.effectHash,
       },
-      state.span,
+      parentOf(state),
     );
     return carry(state, approval.nodeId);
   }
@@ -1130,7 +1144,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           // The decision the clock refused.
           attempted: decision.kind,
         },
-        state.span,
+        parentOf(state),
       );
       return {
         state,
@@ -1154,7 +1168,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         decision: decision.kind,
         principalHash: principalTag(principal),
       },
-      state.span,
+      parentOf(state),
     );
 
     if (decision.kind === "reject") {
@@ -1202,7 +1216,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           // the amended action.
           reissuedAs: reissued.approvalId,
         },
-        state.span,
+        parentOf(state),
       );
       return {
         state,
@@ -1229,6 +1243,22 @@ export function createRuntime(options: RuntimeOptions): Runtime {
    */
   async function place(input: StartInput): Promise<RunState> {
     const runId = options.ids.next("run");
+
+    /**
+     * Opened before the record is written, because the record carries it.
+     *
+     * This span is the run's root, and its traceparent is the only thing that
+     * will let another process — the worker that takes the job, the process
+     * that resumes after a decision — record underneath it. Writing it in the
+     * same `create()` as the rest is what makes it true for every run rather
+     * than for runs whose second write happened to land.
+     */
+    const span = observability.startSpan("forge.run.start", {
+      runId,
+      workflowId: input.artifact.workflowId,
+      fingerprint: input.artifact.fingerprint,
+    });
+
     const state: RunState = {
       record: {
         runId,
@@ -1237,7 +1267,11 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         status: "PENDING",
         attempt: 1,
         performedEffects: [],
+        ...(span.traceparent === undefined
+          ? {}
+          : { traceparent: span.traceparent }),
       },
+      span,
       capabilities: input.capabilities ?? [],
       authorised: new Set<string>(),
       plan: await options.engine.materialize(input.artifact.ir),
@@ -1280,31 +1314,32 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     return state;
   }
 
-  const startSpanFor = (state: RunState): Span =>
-    observability.startSpan("forge.run.start", {
-      runId: state.record.runId,
-      workflowId: state.record.workflowId,
-      fingerprint: state.record.fingerprint,
-    });
-
   return {
     async create(input) {
       const state = await place(input);
-      // Opened and closed here. The walk happens wherever the execute job is
-      // consumed, which is usually not this process, so holding the span open
-      // would leave it open forever — and parenting the walk to it would be a
-      // lie about which process did the work.
-      startSpanFor(state).end({ status: state.record.status });
+      /**
+       * Closed here, and the handle dropped. The walk happens wherever the
+       * execute job is consumed, which is usually not this process, so holding
+       * the span open would leave it open forever — and parenting the walk to
+       * a live span in a process that is not doing the work would be a lie
+       * about who did it.
+       *
+       * The trace survives regardless: `record.traceparent` names this span,
+       * so whichever process walks the run records under it. A closed span is
+       * a perfectly good parent; that is what makes the run one trace instead
+       * of one per process that touched it.
+       */
+      state.span?.end({ status: state.record.status });
+      state.span = undefined;
       return state.record;
     },
 
     async start(input) {
       const state = await place(input);
-      const span = startSpanFor(state);
-      state.span = span;
+      const span = state.span;
       await update(state, { status: "RUNNING" });
       const record = await advance(state);
-      span.end({ status: record.status });
+      span?.end({ status: record.status });
       return record;
     },
 

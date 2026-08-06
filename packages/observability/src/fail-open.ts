@@ -26,8 +26,12 @@ export function failOpen(port: ObservabilityPort): ObservabilityPort {
           },
           // The wrapper is a different object from the span the adapter made,
           // so a child parented on it would find nothing unless the handle
-          // travels with it.
+          // travels with it. Both forms travel: the in-process handle, and the
+          // portable one that is all a resuming process will have.
           ...(span.context === undefined ? {} : { context: span.context }),
+          ...(span.traceparent === undefined
+            ? {}
+            : { traceparent: span.traceparent }),
         };
       } catch {
         return NOOP_SPAN;

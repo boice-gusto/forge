@@ -98,6 +98,7 @@ function toRecord(span: ReadableSpan): ExportedRecord {
       span.attributes[TELEMETRY_KIND_ATTRIBUTE] === "event" ? "event" : "span",
     attributes,
     spanId: span.spanContext().spanId,
+    traceId: span.spanContext().traceId,
     ...(span.parentSpanContext === undefined
       ? {}
       : { parentSpanId: span.parentSpanContext.spanId }),

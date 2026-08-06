@@ -16,3 +16,9 @@ export {
 export { redact, redactAttributes } from "./redaction.js";
 export { type RunEventRecorder, recordRunEvents } from "./run-events.js";
 export { createSpanContexts, type SpanContexts } from "./span-context.js";
+export {
+  formatTraceparent,
+  type ParsedTraceparent,
+  parseTraceparent,
+  traceparentOf,
+} from "./traceparent.js";

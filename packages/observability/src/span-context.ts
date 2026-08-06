@@ -1,10 +1,15 @@
-import type { Span, SpanContext } from "@forge/ports";
+import type { SpanContext, SpanParent } from "@forge/ports";
 
 export interface SpanContexts<T> {
   /** A handle the caller can pass back as `parent`. */
   issue(value: T): SpanContext;
-  /** What `parent` points at, or nothing if this adapter did not issue it. */
-  resolve(parent?: Span): T | undefined;
+  /**
+   * What `parent` points at, or nothing if this adapter did not issue it —
+   * which includes a `traceparent` string, since that names a span in another
+   * process and there is nothing local for it to point at. The adapter
+   * handles that form itself.
+   */
+  resolve(parent?: SpanParent): T | undefined;
 }
 
 /**
@@ -28,7 +33,7 @@ export function createSpanContexts<T>(): SpanContexts<T> {
     },
     resolve(parent) {
       try {
-        const token = parent?.context;
+        const token = typeof parent === "string" ? undefined : parent?.context;
         return token === undefined ? undefined : issued.get(token);
       } catch {
         return undefined;

@@ -7,6 +7,7 @@ import type {
   RunEventStorePort,
   Span,
   SpanAttributes,
+  SpanParent,
 } from "@forge/ports";
 
 import { failOpen } from "./fail-open.js";
@@ -96,7 +97,11 @@ export function recordRunEvents(
    * empty the operator's timeline, and a database that is down must not empty
    * the trace — so neither is inside the other's `try`.
    */
-  function open(name: string, attributes: SpanAttributes, parent?: Span): Span {
+  function open(
+    name: string,
+    attributes: SpanAttributes,
+    parent?: SpanParent,
+  ): Span {
     try {
       return sink.startSpan(name, attributes, parent);
     } catch {
@@ -108,7 +113,7 @@ export function recordRunEvents(
     startSpan(
       name: string,
       attributes: SpanAttributes = {},
-      parent?: Span,
+      parent?: SpanParent,
     ): Span {
       const span = open(name, attributes, parent);
       const appended = append("span", name, attributes);
@@ -127,7 +132,7 @@ export function recordRunEvents(
         ...(span.context === undefined ? {} : { context: span.context }),
       };
     },
-    event(name: string, attributes: SpanAttributes = {}, parent?: Span) {
+    event(name: string, attributes: SpanAttributes = {}, parent?: SpanParent) {
       try {
         sink.event(name, attributes, parent);
       } catch {}

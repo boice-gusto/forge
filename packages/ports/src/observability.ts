@@ -9,8 +9,39 @@ export type SpanAttributes = Readonly<
  */
 export type SpanContext = object;
 
+/**
+ * A W3C `traceparent` — `00-<trace id>-<span id>-<flags>` — as it travels
+ * between processes.
+ *
+ * The portable form of a parent. A {@link SpanContext} is meaningful only to
+ * the adapter that issued it and only for as long as that process lives, which
+ * is exactly the lifetime a Forge run outlasts: a run is created by one
+ * process, walked by another, and resumed by a third after a human decides.
+ * A string on the run record is what makes those one trace instead of three.
+ */
+export type Traceparent = string;
+
+/**
+ * Where a span hangs from.
+ *
+ * Two forms of the same fact. In-process it is the span itself, which the
+ * adapter recognises. Across a process boundary only the {@link Traceparent}
+ * survives, so it is accepted directly rather than requiring the caller to
+ * reconstitute a `Span` it has no way to build.
+ */
+export type SpanParent = Span | Traceparent;
+
 export interface Span {
   end(attributes?: SpanAttributes): void;
+  /**
+   * This span in portable form, if the adapter can express it.
+   *
+   * Read by whoever persists the run, so a process that has never seen this
+   * span can still record underneath it. Optional because an adapter that
+   * traces nothing has nothing to hand over, and a missing edge costs a trace,
+   * never a run.
+   */
+  readonly traceparent?: Traceparent;
   /**
    * Hand back as `parent` to start a child under this span.
    *
@@ -36,11 +67,17 @@ export interface RecordedSpan {
  * `parent` is data, never a continuation. A port that took the caller's
  * callback so it could establish an ambient context would be a port that can
  * drop the run it was only supposed to report on, and telemetry is the one
- * thing here that fails open.
+ * thing here that fails open. Widening it to accept a {@link Traceparent} is
+ * the same principle carried across a process boundary — still data, just the
+ * only form of it that survives the trip.
  */
 export interface ObservabilityPort {
-  startSpan(name: string, attributes?: SpanAttributes, parent?: Span): Span;
-  event(name: string, attributes?: SpanAttributes, parent?: Span): void;
+  startSpan(
+    name: string,
+    attributes?: SpanAttributes,
+    parent?: SpanParent,
+  ): Span;
+  event(name: string, attributes?: SpanAttributes, parent?: SpanParent): void;
 }
 
 /* -------------------------------------------------------------------------- */

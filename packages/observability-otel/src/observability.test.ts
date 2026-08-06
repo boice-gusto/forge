@@ -120,3 +120,42 @@ describe("construction says what is missing rather than guessing", () => {
     ).not.toThrow();
   });
 });
+
+describe("a resumed run inherits the sampling decision, not just the trace", () => {
+  const traceparentWith = (flags: string) =>
+    `00-${"a1".repeat(16)}-${"b2".repeat(8)}-${flags}`;
+
+  test("a run sampled in at creation keeps recording when another process resumes it", async () => {
+    const exporter = new RecordingExporter();
+    const observability = createOtelObservability({ exporter, env: {} });
+
+    observability
+      .startSpan("forge.node.effect", { runId: "run_1" }, traceparentWith("01"))
+      .end();
+    await observability.shutdown();
+
+    expect(names(exporter)).toEqual(["forge.node.effect"]);
+    expect(exporter.spans[0]?.spanContext().traceId).toBe("a1".repeat(16));
+  });
+
+  test("a run sampled out at creation stays sampled out", async () => {
+    /**
+     * The half of the flags that is easy to drop and expensive to have
+     * dropped. Sampling is decided once, for the run, by the process that
+     * started it. A resuming process that ignored the decision would give a
+     * backend the tail of a trace whose head was never sent — a run that
+     * appears to begin at its approval gate — and would quietly undo whatever
+     * sampling rate the deployment chose, at exactly the volume that rate was
+     * chosen to control.
+     */
+    const exporter = new RecordingExporter();
+    const observability = createOtelObservability({ exporter, env: {} });
+
+    observability
+      .startSpan("forge.node.effect", { runId: "run_1" }, traceparentWith("00"))
+      .end();
+    await observability.shutdown();
+
+    expect(names(exporter)).toEqual([]);
+  });
+});

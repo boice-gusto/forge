@@ -24,6 +24,16 @@ export interface ExportedRecord {
    */
   readonly spanId: string;
   readonly parentSpanId?: string;
+  /**
+   * Which trace the sink filed this record under.
+   *
+   * Separate from `spanId` because the question it answers is different: two
+   * records can be unrelated as parent and child and still belong to the same
+   * run, which is exactly the state a run resumed in another process is in.
+   * The parent span lives in a process that has exited; only the trace is
+   * shared.
+   */
+  readonly traceId: string;
 }
 
 /**

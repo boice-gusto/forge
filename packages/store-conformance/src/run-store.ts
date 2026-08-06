@@ -45,6 +45,31 @@ function describeIdentity(harness: RunStoreConformanceHarness): void {
       expect(loaded?.record.pendingApprovalId).toBeUndefined();
       expect(loaded?.record.error).toBeUndefined();
       expect(loaded?.record.result).toBeUndefined();
+      expect(loaded?.record.traceparent).toBeUndefined();
+    });
+
+    test("the trace the run belongs to survives the round trip", async () => {
+      /**
+       * A run outlives every process that touches it, so its trace has to be
+       * a property of the row rather than of anyone's memory. This is the only
+       * thing tying together the process that created the run, the worker that
+       * walked it and whoever resumed it after a human decided.
+       *
+       * Asserted here rather than left to whichever store happens to keep the
+       * record as one document: a store that normalised it into columns and
+       * forgot this one would cost nothing at write time and lose the run's
+       * trace at exactly the moment somebody was looking for it.
+       */
+      const traceparent = `00-${"a1".repeat(16)}-${"b2".repeat(8)}-01`;
+      const { store } = await harness.create();
+      await store.create({
+        ...CONFORMANCE_RUN,
+        record: { ...CONFORMANCE_RUN.record, traceparent },
+      });
+
+      expect((await store.load(CONFORMANCE_RUN_ID))?.record.traceparent).toBe(
+        traceparent,
+      );
     });
   });
 }

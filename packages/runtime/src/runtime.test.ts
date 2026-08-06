@@ -6,10 +6,14 @@ import { createMemoryObservability } from "@forge/observability-memory";
 import type { PanelDefinition, Vote } from "@forge/panel";
 import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
 import {
+  type ApprovalPort,
+  type CheckpointStorePort,
   createSequentialIds,
+  type IdPort,
   type JsonValue,
   type ObservabilityPort,
   type ProviderPort,
+  type RunStorePort,
   type SpanAttributes,
 } from "@forge/ports";
 import { createMockProvider } from "@forge/provider-mock";
@@ -80,6 +84,17 @@ function harness(
   failEvaluation = false,
   /** Supplied only to prove a broken sink cannot decide a run's fate. */
   sink?: ObservabilityPort,
+  /**
+   * Stores to share with an existing harness, which is what two processes over
+   * one database look like from here: separate runtimes, separate telemetry,
+   * the same rows.
+   */
+  shared?: {
+    runs: RunStorePort;
+    approvals: ApprovalPort;
+    checkpoints: CheckpointStorePort;
+    ids: IdPort;
+  },
 ) {
   const dispatched: string[] = [];
   let instant = new Date("2026-08-04T00:00:00.000Z");
@@ -87,9 +102,10 @@ function harness(
   const advance = (ms: number) => {
     instant = new Date(instant.getTime() + ms);
   };
-  const ids = createSequentialIds();
-  const approvals = createMemoryApprovalStore(clock, ids);
-  const checkpoints = createMemoryCheckpointStore();
+  const ids = shared?.ids ?? createSequentialIds();
+  const approvals = shared?.approvals ?? createMemoryApprovalStore(clock, ids);
+  const checkpoints = shared?.checkpoints ?? createMemoryCheckpointStore();
+  const runs = shared?.runs ?? createMemoryRunStore();
   const observability = createMemoryObservability();
 
   const runtime = createRuntime({
@@ -110,7 +126,7 @@ function harness(
       },
     },
     checkpoints,
-    runs: createMemoryRunStore(),
+    runs,
     clock,
     ids,
     actor: "svc.forge.worker",
@@ -122,6 +138,8 @@ function harness(
     dispatched,
     checkpoints,
     approvals,
+    runs,
+    ids,
     advance,
     observability,
   };
@@ -1167,6 +1185,85 @@ describe("a run's telemetry is one trace", () => {
     if (entry === undefined) throw new Error(`No run span for ${runId}.`);
     return entry.seq;
   }
+
+  test("a run resumed in another process continues the trace it started", async () => {
+    /**
+     * The failure this closes is invisible in a single process and total in
+     * production. A run is created by the control plane, walked by whichever
+     * worker takes the job, and resumed by a third process after a human
+     * decides — three processes, and until the run record carried a
+     * traceparent, three unrelated traces sharing a `runId` attribute. An
+     * incident asking "what did this run do, in order" got a third of an
+     * answer and no way to know it.
+     *
+     * Two runtimes over one store, each with its own recorder, because that is
+     * what two processes look like from in here. The second has never seen the
+     * first's span: everything it can know arrives through the row.
+     */
+    const creator = harness(REQUIRE_APPROVAL, ["slack.write"]);
+    const created = await creator.runtime.create({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+
+    const worker = harness(
+      REQUIRE_APPROVAL,
+      ["slack.write"],
+      false,
+      undefined,
+      {
+        runs: creator.runs,
+        approvals: creator.approvals,
+        checkpoints: creator.checkpoints,
+        ids: creator.ids,
+      },
+    );
+    const parked = await worker.runtime.resume(created.runId);
+    expect(parked?.status).toBe("AWAITING_APPROVAL");
+
+    const decider = harness(
+      REQUIRE_APPROVAL,
+      ["slack.write"],
+      false,
+      undefined,
+      {
+        runs: creator.runs,
+        approvals: creator.approvals,
+        checkpoints: creator.checkpoints,
+        ids: creator.ids,
+      },
+    );
+    const finished = await decider.runtime.decide(
+      parked?.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+    expect(finished.status).toBe("SUCCEEDED");
+
+    // The trace the first process opened.
+    const opened = creator.observability.timeline.find(
+      (entry) => entry.name === "forge.run.start",
+    );
+    expect(opened).toBeDefined();
+
+    // Everything the other two recorded is in it — asserted over their whole
+    // timelines, so a call site that drops the parent is caught by the test
+    // that exists rather than by the one nobody wrote for it.
+    for (const process of [worker, decider]) {
+      expect(process.observability.timeline.length).toBeGreaterThan(2);
+      expect(
+        process.observability.timeline
+          .filter((entry) => entry.traceId !== opened?.traceId)
+          .map((entry) => entry.name),
+      ).toEqual([]);
+    }
+
+    // And the run that carried it says so, so an operator reading the row can
+    // find the trace without replaying anything.
+    expect(finished.traceparent).toBe(
+      `00-${opened?.traceId}-${opened?.spanId}-01`,
+    );
+  });
 
   test("every span and event a run records hangs from that run's span", async () => {
     // Asserted over the whole timeline rather than over a chosen span, so a

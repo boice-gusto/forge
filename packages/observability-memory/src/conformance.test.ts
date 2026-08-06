@@ -27,10 +27,11 @@ function subject(clock?: ClockPort): ObservabilitySubject {
         name: entry.name,
         kind: entry.kind,
         attributes: entry.attributes,
-        spanId: String(entry.seq),
-        ...(entry.parentSeq === undefined
+        spanId: entry.spanId,
+        traceId: entry.traceId,
+        ...(entry.parentSpanId === undefined
           ? {}
-          : { parentSpanId: String(entry.parentSeq) }),
+          : { parentSpanId: entry.parentSpanId }),
       })),
   };
 }
