@@ -1,6 +1,6 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 85 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 90 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
@@ -145,6 +145,18 @@ nothing go red, and then writing the fixture that could tell the difference.
 
 The route now keeps the raw string in its own Fastify plugin scope, and a
 signed pretty-printed body is a test.
+
+### Three dead throws behind a one-line `if`
+
+Replacing the runtime's `throw new Error("Unknown run.")` with a named code
+meant reformatting `if (x === undefined) throw …` onto two lines. Coverage
+immediately dropped, and three throws turned out never to have executed:
+deciding an approval that does not exist, deciding an approval whose run has
+gone, and cancelling a run that was never created.
+
+All three had been reported as covered, because v8 counts the *line*, and the
+line was the `if`. A guard that shares a line with its condition is invisible
+to line coverage. All three are now tested; two are reachable from a route.
 
 ### A job kind the wire schema had never heard of
 

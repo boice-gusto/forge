@@ -572,7 +572,14 @@ export function registerRunRoutes(
         return reply.code(202).send(run);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (message.startsWith("Unknown run")) {
+        /**
+         * `FORGE_RUN_NOT_FOUND`, not the prose the runtime used to throw.
+         * "There is no such run" is the same fact whether a store or the
+         * runtime noticed it, so it is the store's code — and matching an
+         * English sentence across a package boundary was the last piece of
+         * control flow here with nothing pinning it.
+         */
+        if (message.startsWith(RUN_STORE_ERRORS.notFound)) {
           return reply.code(404).send({ status: "not_found" });
         }
         /**

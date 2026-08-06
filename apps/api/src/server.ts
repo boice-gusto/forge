@@ -6,6 +6,7 @@ import {
 import { type ControlPlaneStack, createLocalStack } from "@forge/composition";
 import { createDurableStack } from "@forge/composition/durable";
 import { bindIntake } from "@forge/composition/intake-binding";
+import { FORGE_ENV } from "@forge/config";
 
 /**
  * Every channel a deployment serves must resolve, or a webhook that was
@@ -139,7 +140,7 @@ const FORGE_VERSION = "0.1.0";
  * ceiling at all (009 §17.3).
  */
 async function policy(): Promise<DeploymentPolicy> {
-  const root = process.env.FORGE_COMPANY;
+  const root = process.env[FORGE_ENV.company];
   if (root === undefined) {
     warn(
       "No FORGE_COMPANY. Starting with no policy packs, so every gated action " +
@@ -150,7 +151,7 @@ async function policy(): Promise<DeploymentPolicy> {
   }
   return loadDeploymentPolicy({
     root,
-    hostCapabilities: roleList(process.env.FORGE_HOST_CAPABILITIES ?? ""),
+    hostCapabilities: roleList(process.env[FORGE_ENV.hostCapabilities] ?? ""),
     forgeVersion: FORGE_VERSION,
   });
 }
@@ -167,7 +168,7 @@ async function stack(rules: DeploymentPolicy): Promise<ControlPlaneStack> {
   // What this deployment can actually isolate. A workflow naming a profile
   // that is absent stops rather than running with less isolation than it
   // declared, so a host serving a company declares that company's profiles.
-  const declared = process.env.FORGE_SANDBOX_PROFILES;
+  const declared = process.env[FORGE_ENV.sandboxProfiles];
   const sandboxProfiles =
     declared === undefined ? {} : { sandboxProfiles: roleList(declared) };
   const shared = {
@@ -218,14 +219,14 @@ const intake = bindIntake(
   refuseIntake,
 );
 
-const publicUrl = process.env.FORGE_PUBLIC_URL;
+const publicUrl = process.env[FORGE_ENV.publicUrl];
 
 await startApi(
   {
     build: {
-      version: process.env.FORGE_VERSION ?? FORGE_VERSION,
-      gitSha: process.env.FORGE_GIT_SHA ?? "local",
-      buildTime: process.env.FORGE_BUILD_TIME ?? new Date().toISOString(),
+      version: process.env[FORGE_ENV.version] ?? FORGE_VERSION,
+      gitSha: process.env[FORGE_ENV.gitSha] ?? "local",
+      buildTime: process.env[FORGE_ENV.buildTime] ?? new Date().toISOString(),
     },
     // The queue's own answer, per probe. A control plane that cannot reach
     // its queue accepts runs it will never advance, and saying "healthy"

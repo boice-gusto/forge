@@ -41,6 +41,9 @@ importers:
       '@forge/composition':
         specifier: workspace:*
         version: link:../../packages/composition
+      '@forge/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@forge/intake':
         specifier: workspace:*
         version: link:../../packages/intake
@@ -151,6 +154,9 @@ importers:
       '@forge/composition':
         specifier: workspace:*
         version: link:../../packages/composition
+      '@forge/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@forge/intake':
         specifier: workspace:*
         version: link:../../packages/intake

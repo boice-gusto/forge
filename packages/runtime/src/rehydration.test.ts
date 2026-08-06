@@ -469,7 +469,7 @@ describe("a run is re-entered, not re-walked", () => {
 
   test("the record and the cancel reach a run this runtime did not start", async () => {
     // The two calls a control plane could not make after a restart: the record
-    // was not found, and cancelling threw "Unknown run".
+    // was not found, and cancelling raised FORGE_RUN_NOT_FOUND.
     const forge = world();
     const { run } = await parked(forge);
     const second = forge.start();
@@ -966,6 +966,50 @@ describe("an action nobody can account for is redriven only by a decision", () =
     expect(Object.keys(persisted?.record ?? {})).not.toContain("redriving");
   });
 
+  test("deciding an approval that does not exist is refused", async () => {
+    /**
+     * Reachable from `POST …/decision` with any id at all, and until now
+     * untested — the throw shared a line with its `if`, so coverage counted
+     * the branch and never noticed the body was dead. Reformatting the line
+     * is what surfaced it.
+     */
+    await expect(
+      world()
+        .start()
+        .runtime.decide("approval_never_issued", { kind: "approve" }, "lead"),
+    ).rejects.toThrow("Unknown approval");
+  });
+
+  test("cancelling a run that does not exist is refused", async () => {
+    // Same shape as the two above, and uncovered for the same reason: the
+    // throw shared a line with its `if`.
+    await expect(
+      world().start().runtime.cancel("run_never_created"),
+    ).rejects.toThrow(raises("FORGE_RUN_NOT_FOUND"));
+  });
+
+  test("an approval whose run has gone is refused rather than acted on", async () => {
+    /**
+     * The approval store and the run store are separate, so they can disagree.
+     * An approval naming a run nothing can load must not authorise anything —
+     * there is no artifact to recompute the binding against, which is the
+     * whole basis on which a decision authorises one exact action.
+     */
+    const forge = world();
+    const { run } = await parked(forge);
+    const empty = createMemoryRunStore();
+    const orphaned = forge.start({ runs: empty });
+
+    await expect(
+      orphaned.runtime.decide(
+        run.pendingApprovalId as string,
+        { kind: "approve" },
+        "marketing-lead",
+      ),
+    ).rejects.toThrow(raises("FORGE_RUN_NOT_FOUND"));
+    expect(orphaned.acted).toEqual([]);
+  });
+
   test("an action known to have completed cannot be redriven", async () => {
     /**
      * The refusal that keeps exactly-once meaning anything. A settled action
@@ -1006,7 +1050,7 @@ describe("an action nobody can account for is redriven only by a decision", () =
   test("a run that does not exist cannot be redriven", async () => {
     await expect(
       world().start().runtime.redrive("run_never_existed", "publish"),
-    ).rejects.toThrow("Unknown run");
+    ).rejects.toThrow(raises("FORGE_RUN_NOT_FOUND"));
   });
 
   test("policy still decides, so a rule that now denies stops the redrive", async () => {

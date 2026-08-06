@@ -17,7 +17,8 @@
     "@forge/types": "workspace:*",
     "@forge/intake": "workspace:*",
     "@forge/intake-postgres": "workspace:*",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "@forge/config": "workspace:*"
   },
   "devDependencies": {
     "@forge/store-conformance": "workspace:*",

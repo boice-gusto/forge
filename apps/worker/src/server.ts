@@ -6,6 +6,7 @@ import {
   type TransformFn,
 } from "@forge/composition/durable";
 import { bindIntake } from "@forge/composition/intake-binding";
+import { FORGE_ENV } from "@forge/config";
 
 /**
  * Every channel a deployment serves must resolve, or a webhook that was
@@ -39,12 +40,12 @@ import { startWorker } from "./main.js";
  * the company package against it, and a deployment where those two disagree is
  * one whose probe names a version it is not running.
  */
-const forgeVersion = process.env.FORGE_VERSION ?? "0.1.0";
+const forgeVersion = process.env[FORGE_ENV.version] ?? "0.1.0";
 
 const build = {
   version: forgeVersion,
-  gitSha: process.env.FORGE_GIT_SHA ?? "local",
-  buildTime: process.env.FORGE_BUILD_TIME ?? new Date().toISOString(),
+  gitSha: process.env[FORGE_ENV.gitSha] ?? "local",
+  buildTime: process.env[FORGE_ENV.buildTime] ?? new Date().toISOString(),
 };
 
 const port = Number.parseInt(process.env.PORT ?? "3102", 10);
@@ -82,7 +83,7 @@ const csv = (spec: string): readonly string[] =>
  * could have — so a missing company is a refusal to start rather than a
  * warning and a silent default-deny.
  */
-const companyRoot = process.env.FORGE_COMPANY;
+const companyRoot = process.env[FORGE_ENV.company];
 if (companyRoot === undefined && process.env.FORGE_WORKER_NO_COMPANY !== "1") {
   process.stderr.write(
     "[forge-worker] FORGE_COMPANY is required: a worker sharing a queue with a " +
@@ -98,7 +99,7 @@ const deployment =
     ? NO_COMPANY_POLICY
     : await loadDeploymentPolicy({
         root: companyRoot,
-        hostCapabilities: csv(process.env.FORGE_HOST_CAPABILITIES ?? ""),
+        hostCapabilities: csv(process.env[FORGE_ENV.hostCapabilities] ?? ""),
         forgeVersion,
       });
 
@@ -203,7 +204,7 @@ const boundTransforms = deployment.adapters.transforms;
  * real, and refuses if it cannot. Profiles come from the deployment operator,
  * as the sandbox images do: an author names an alias, never an image.
  */
-const declaredProfiles = process.env.FORGE_SANDBOX_PROFILES;
+const declaredProfiles = process.env[FORGE_ENV.sandboxProfiles];
 const sandboxProfiles = csv(declaredProfiles ?? "");
 const sandboxImage = process.env.FORGE_SANDBOX_IMAGE;
 const declaredMemoryMb = process.env.FORGE_SANDBOX_MEMORY_MB;
@@ -346,7 +347,7 @@ const consumer = createRunConsumer({
           }),
           runs: stack.runs,
           runUrl: (runId: string) =>
-            `${process.env.FORGE_PUBLIC_URL ?? ""}/v1/runs/${runId}`,
+            `${process.env[FORGE_ENV.publicUrl] ?? ""}/v1/runs/${runId}`,
         },
       }),
 });

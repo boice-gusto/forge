@@ -1236,7 +1236,9 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     const approval = await options.approvals.get(approvalId);
     if (approval === undefined) throw new Error("Unknown approval.");
     const state = await hydrate(approval.runId);
-    if (state === undefined) throw new Error("Unknown run.");
+    if (state === undefined) {
+      throw new Error(`${RUN_STORE_ERRORS.notFound}: ${approval.runId}`);
+    }
 
     if (state.record.status === "CANCELLED")
       throw new Error("Run is cancelled.");
@@ -1584,7 +1586,9 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
     async redrive(runId, nodeId) {
       const state = await hydrate(runId);
-      if (state === undefined) throw new Error(`Unknown run: ${runId}.`);
+      if (state === undefined) {
+        throw new Error(`${RUN_STORE_ERRORS.notFound}: ${runId}`);
+      }
 
       /**
        * Only an action nobody can account for.
@@ -1700,7 +1704,9 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
     async cancel(runId) {
       const state = await hydrate(runId);
-      if (state === undefined) throw new Error("Unknown run.");
+      if (state === undefined) {
+        throw new Error(`${RUN_STORE_ERRORS.notFound}: ${runId}`);
+      }
       if (
         state.record.status === "SUCCEEDED" ||
         state.record.status === "FAILED"
