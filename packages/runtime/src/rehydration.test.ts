@@ -901,6 +901,61 @@ describe("an action nobody can account for is redriven only by a decision", () =
     expect(asking.acted).toEqual([]);
   });
 
+  test("a cancelled run is not brought back to life by a redrive", async () => {
+    /**
+     * A run somebody stopped on purpose. Its lost effect is still lost, and
+     * somebody may well want it performed — but not by resurrecting the run
+     * that was cancelled to stop exactly that kind of thing happening.
+     * `carry` sets a run RUNNING; on a cancelled one that would undo the
+     * cancellation as a side effect of a recovery.
+     */
+    const forge = world();
+    const { run } = await parked(forge);
+    // A claim taken and never settled on a run that is then stopped — the
+    // shape a cancellation lands in when it arrives mid-dispatch. Staged from
+    // a parked run rather than from `lost`, because `lost` leaves the run
+    // FAILED and a terminal run cannot be cancelled at all.
+    await forge.runs.claimEffect({
+      runId: run.runId,
+      nodeId: "publish",
+      effect: "slack.post",
+      input: DRAFT_ONE,
+      at: "2026-08-04T00:00:00.000Z",
+    });
+    const stopping = forge.start();
+    expect((await stopping.runtime.cancel(run.runId)).status).toBe("CANCELLED");
+
+    await expect(
+      stopping.runtime.redrive(run.runId, "publish"),
+    ).rejects.toThrow("FORGE_RUN_NOT_REDRIVABLE");
+    expect(stopping.acted).toEqual([]);
+    expect((await forge.runs.load(run.runId))?.record.status).toBe("CANCELLED");
+  });
+
+  test("the redrive marker is cleared, so the next gate is an ordinary one", async () => {
+    /**
+     * `redriving` names one node and one gate. Left set, the *next* approval
+     * on this run would be carried as a redrive: the node dispatched directly
+     * out of `carry`, bypassing the walk that decides whether it should run at
+     * all. A field that means "the pending gate is special" has to stop
+     * meaning that the moment the gate is gone.
+     */
+    const forge = world();
+    const { run } = await lost(forge);
+
+    const third = forge.start();
+    const reopened = await third.runtime.redrive(run.runId, "publish");
+    await third.runtime.decide(
+      reopened.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    const persisted = await forge.runs.load(run.runId);
+    expect(persisted?.record.redriving).toBeUndefined();
+    expect(Object.keys(persisted?.record ?? {})).not.toContain("redriving");
+  });
+
   test("an action known to have completed cannot be redriven", async () => {
     /**
      * The refusal that keeps exactly-once meaning anything. A settled action

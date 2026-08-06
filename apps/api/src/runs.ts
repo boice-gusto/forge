@@ -382,6 +382,7 @@ export function registerRunRoutes(
           "FORGE_EFFECT_SETTLED",
           "FORGE_EFFECT_NOT_CLAIMED",
           "FORGE_RUN_AWAITING_APPROVAL",
+          "FORGE_RUN_NOT_REDRIVABLE",
         ].find((known) => message.startsWith(known));
         if (code === undefined) throw error;
         return reply.code(409).send({ status: "conflict", code, message });

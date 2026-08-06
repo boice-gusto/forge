@@ -1,6 +1,6 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 74 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 75 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
@@ -51,6 +51,7 @@ cannot drift apart without one of them failing.
 | **No LangGraph engine** | ADR-002, deliberately amended rather than left open. The engine carries Forge's own semantics — sandbox scoping, arm pruning, the data plane's short-circuit — and moving those into a vendor's execution model would put the invariants beyond this repository's tests |
 | **Two concurrent walks in one process still share a `RunState`** | The queue delivers once, so this needs a redelivery *and* a coincidence. Reads no longer touch it, which was the reachable half |
 | **No deadline on enqueue** | A job that is never taken is indistinguishable from one taken slowly |
+| **`GET /v1/effects/unsettled` is unbounded** | Every outstanding action in the estate, no paging. Fine while the answer is "none"; wrong the day an outage makes it thousands |
 | **No transform table from the company package** | `createDurableStack` takes one; nothing resolves one from an adapter binding |
 | **Four `forge.gusto` scenarios are `todo`** | Held open by a test that goes red the day the API stops ignoring `environment`, so they cannot rot quietly |
 | **Phase 8 not started** | Phase 7 is done and found four production defects; 8 is next |

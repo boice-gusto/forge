@@ -1606,6 +1606,21 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           `FORGE_RUN_AWAITING_APPROVAL: run ${runId} is already waiting on ${state.record.pendingApprovalId}.`,
         );
       }
+      /**
+       * A cancellation is a human saying stop, and carrying a gate sets the
+       * run RUNNING — so a redrive here would undo that decision as a side
+       * effect of a recovery, and the run would go on to walk whatever came
+       * after the node in question.
+       *
+       * The action is still unaccounted for and somebody may well want it
+       * performed. That is a new decision about a new run, not a reason to
+       * reopen the one that was stopped.
+       */
+      if (state.record.status === "CANCELLED") {
+        throw new Error(
+          `FORGE_RUN_NOT_REDRIVABLE: run ${runId} was cancelled; redriving it would reverse that.`,
+        );
+      }
 
       /**
        * A new gate, bound exactly as the original was.
