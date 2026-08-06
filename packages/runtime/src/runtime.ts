@@ -20,6 +20,7 @@ import type {
   JsonValue,
   JudgeVerdict,
   ObservabilityPort,
+  PersistedRun,
   PolicyPort,
   ProviderPort,
   RunRecord,
@@ -449,12 +450,54 @@ export function createRuntime(options: RuntimeOptions): Runtime {
    * all. Nothing is recomputed: the values, the arms and the dispatches are the
    * ones the run recorded, which is what makes re-entering it safe.
    */
+  /**
+   * The three ledgers, from the store. A node that ran and produced nothing is
+   * a key with no value, so `has` still answers "this node has run" and it is
+   * never invoked again.
+   */
+  function restoreLedgers(runId: string, persisted: PersistedRun): void {
+    ledgers.set(runId, [...persisted.effects.map((effect) => effect.nodeId)]);
+    routeLedgers.set(
+      runId,
+      new Map(persisted.routes.map((route) => [route.nodeId, route.arm])),
+    );
+    valueLedgers.set(
+      runId,
+      new Map(persisted.values.map((pinned) => [pinned.nodeId, pinned.value])),
+    );
+  }
+
   async function hydrate(runId: string): Promise<RunState | undefined> {
     const known = runs.get(runId);
-    if (known !== undefined) return known;
 
+    /**
+     * Always re-read. The in-memory copy is only authoritative while *this*
+     * process is walking the run; the moment a worker advances it, serving the
+     * cached record hands back a status that is simply out of date.
+     *
+     * That is not a stale read you can shrug at. With the decision route
+     * enqueueing, `recordDecision` hydrated a cached `PENDING`, the resume
+     * re-walked the run from the start, and it opened a *second* gate — so a
+     * human's approval was recorded, spent on nothing, and another human was
+     * asked for the same decision. Found by the resilience harness, which is
+     * the only thing here that runs two processes over one database.
+     */
     const persisted = await options.runs.load(runId);
-    if (persisted === undefined) return undefined;
+    if (persisted === undefined) return known;
+
+    if (known !== undefined) {
+      // Mutated rather than replaced: a walk in flight holds this object, and
+      // handing it a different one would leave it writing to a copy nobody
+      // reads. The plan and the roles come from the sealed artifact, which
+      // cannot change for a run, so they are kept.
+      known.record = persisted.record;
+      known.capabilities = persisted.capabilities;
+      known.changedPaths = persisted.changedPaths;
+      for (const effect of persisted.effects)
+        known.authorised.add(effect.nodeId);
+      restoreLedgers(runId, persisted);
+      return known;
+    }
 
     // The one narrowing in the file. `@forge/ports` sits beside `@forge/ir`
     // rather than above it, so the store holds the sealed IR as JSON; the
@@ -479,17 +522,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     };
 
     runs.set(runId, state);
-    ledgers.set(runId, [...persisted.effects.map((effect) => effect.nodeId)]);
-    routeLedgers.set(
-      runId,
-      new Map(persisted.routes.map((route) => [route.nodeId, route.arm])),
-    );
-    // A node that ran and produced nothing is a key with no value, so `has`
-    // still answers "this node has run" and it is never invoked again.
-    valueLedgers.set(
-      runId,
-      new Map(persisted.values.map((pinned) => [pinned.nodeId, pinned.value])),
-    );
+    restoreLedgers(runId, persisted);
     return state;
   }
 
