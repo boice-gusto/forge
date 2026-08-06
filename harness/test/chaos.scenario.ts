@@ -305,25 +305,17 @@ describe("a worker killed between the durable claim and the action", () => {
     expect(await inspector.effects(runId)).toHaveLength(1);
   });
 
-  test("approving the redrive is accepted, and does not double-dispatch", async () => {
+  test("approving the redrive performs the lost action, once, and accounts for it", async () => {
     /**
-     * **Partly proven, and the gap is named rather than papered over.**
+     * The recovery, end to end, through the real routes, on an effect that was
+     * genuinely lost — a worker killed between the durable claim and the
+     * action, not a claim row a test wrote.
      *
-     * What holds here: the decision is accepted, and the ledger still contains
-     * exactly one row for `publish`. Whatever else happens, the redrive has
-     * not become the double dispatch the claim exists to prevent — which is
-     * the property that would be a customer-visible failure.
-     *
-     * What is **not** proven here, and is proven in
-     * `packages/runtime/src/rehydration.test.ts` instead: that approving it
-     * runs the action through to settlement. Driven through real processes
-     * against Postgres, the run stays at `AWAITING_APPROVAL` with `redriving`
-     * still set and the claim still unsettled — the enqueued resume does not
-     * carry the gate. The same sequence in-process, including a second runtime
-     * calling `resume` after `recordDecision`, works and is sabotage-verified.
-     * The difference has not been characterised, so nothing is asserted about
-     * it: an assertion nobody can explain is worse than a gap somebody wrote
-     * down.
+     * The run is allowed to finish first, because that is how a lost effect is
+     * actually met: not mid-flight, but afterwards, on a run that reported
+     * SUCCEEDED. That is also the case the first implementation got wrong —
+     * re-entering a terminal run replays its pinned output and never reaches
+     * the node — so this is the shape that matters.
      */
     const { backing, runId } = await killMidDispatch("gated");
     await resumeInProcess(backing, { runId, label: "finish" });
@@ -348,11 +340,39 @@ describe("a worker killed between the durable claim and the action", () => {
       "202",
     );
 
-    // One row, whatever else is true. Two would mean the recovery had become
-    // the failure it recovers from.
+    /**
+     * Waited for on the thing under test.
+     *
+     * Not on `settle()`, which counts `AWAITING_APPROVAL` as settled and so
+     * returns the instant it is called on a run already at a gate — having
+     * waited for a state the run never left. This test failed on that for a
+     * while, and the failure looked exactly like a product defect: the run
+     * still at its gate, the claim still unsettled, the approved action
+     * apparently lost. It was an assertion running before the enqueued resume
+     * had done anything.
+     */
+    await waitFor(
+      "the redriven action to be accounted for",
+      async () =>
+        JSON.stringify(await inspector.settlement(runId)).includes(
+          '"settled_at":"20',
+        ),
+      60_000,
+      100,
+    );
+
+    // One row, and one only. Two would mean the recovery had become the
+    // failure it recovers from.
     const effects = await inspector.effects(runId);
     expect(`redriven: ${JSON.stringify(effects)}`).toContain("publish");
     expect(effects).toHaveLength(1);
+
+    // And the run is finished rather than left at the gate it was redriven
+    // through.
+    expect(await inspector.record(runId)).toMatchObject({
+      status: "SUCCEEDED",
+    });
+    expect(await inspector.unsettled()).not.toContain(runId);
   });
 
   test("the queue will not deliver the resume again, so nothing redrives itself", async () => {

@@ -1,6 +1,6 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 73 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 74 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
@@ -57,27 +57,10 @@ cannot drift apart without one of them failing.
 
 ## Next, in order
 
-1. **Characterise why an enqueued redrive decision does not carry.** See below — the
-   only thing here that is known-broken rather than merely unbuilt.
-2. **A transform table from the company package**, resolved the way adapters now are.
-3. **Phase 8.**
+1. **A transform table from the company package**, resolved the way adapters now are.
+2. **Phase 8.**
 
-### Known broken: a redrive decided through the queue
-
-In-process, a redrive works and is proven nine ways, including a second
-runtime calling `resume` after `recordDecision`, and it fails when any of its
-three guarantees is broken.
-
-Driven through real processes against Postgres it does not complete. The run
-stays at `AWAITING_APPROVAL` with `redriving` still set and the claim still
-unsettled: the enqueued resume does not carry the gate. The effect is not
-double-dispatched — that much the harness asserts — but the approved action
-does not happen either, so **a redrive requested through the API cannot
-currently be relied on**.
-
-The difference between the two paths has not been characterised. Rather than
-assert something nobody can explain, the harness asserts only what reproduces
-and names the gap in place.
+---
 
 ### What Phase 7 and the work after it found
 
@@ -125,6 +108,21 @@ A worker now binds each for real or refuses to start, with a named environment
 variable for a deployment that genuinely wants a stand-in. The refusal
 immediately caught the resilience harness using the mock provider without
 saying so — which is what it is for.
+
+### A wait that waited for nothing
+
+The redrive was reported here as *known broken* for a day: driven through real
+processes it left the run at its gate with the claim unsettled and the approved
+action apparently lost. It was not broken. The harness's `settle()` counts
+`AWAITING_APPROVAL` as settled, so calling it on a run already at a gate
+returns immediately, having waited for a state the run never left — and the
+assertions then ran before the enqueued resume had done anything.
+
+Worth recording for two reasons. It is the same family as the vacuous checks
+below, seen from the other side: a helper that cannot fail to return is as
+misleading as an assertion that cannot fail. And the failure it produced was a
+*convincing* one — every symptom pointed at the feature under test, and the
+instinct to trust that reading is what makes this kind of bug expensive.
 
 And one more, found by adding optimistic concurrency and watching a durable
 restart go intermittently red:

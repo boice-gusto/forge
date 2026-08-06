@@ -56,6 +56,19 @@ export const startRun = (
  * is about a run parked at its *gate*, and a helper that waited for a finished
  * run would drive the run past the thing under test before asserting on it.
  */
+/**
+ * "Stopped", not "finished".
+ *
+ * `AWAITING_APPROVAL` is in here because a run parked at a gate has stopped
+ * moving, which is what most callers are waiting for. It is also a trap: call
+ * this on a run that is *already* at a gate and it returns immediately, having
+ * waited for a state the run never left. A test that then asserts on work an
+ * enqueued job has yet to do is racing, and will mostly lose.
+ *
+ * If what you need is "the decision was carried out", wait for that — the
+ * effect settling, the status changing from the one you started in — and not
+ * for this.
+ */
 const SETTLED = new Set([
   "AWAITING_APPROVAL",
   "SUCCEEDED",
