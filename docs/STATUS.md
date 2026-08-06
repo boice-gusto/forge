@@ -1,15 +1,17 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 61 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 62 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
 was checked against the repository.
 
-**Scale:** 41 packages, 3 apps, 1,282 tests, 98.6% statements / 91.4% branches.
-Ten CI steps: `lint`, `typecheck`, `test`, `test:coverage`, `test:packaging`,
+**Scale:** 41 packages, 3 apps, 1,318 unit tests (98.6% statements / 90.9%
+branches) plus 18 resilience scenarios against real containers. Ten CI steps —
+`lint`, `typecheck`, `test`, `test:coverage`, `test:packaging`,
 `test:architecture`, `test:security`, `security:secrets`, `security:licenses`,
-`measure:phase1`.
+`measure:phase1` — and a separate `resilience` job, which costs minutes and
+needs Docker, so it fails on its own terms rather than inside `verify`.
 
 ---
 
@@ -21,7 +23,9 @@ Ten CI steps: `lint`, `typecheck`, `test`, `test:coverage`, `test:packaging`,
 | **Runtime** | Full lifecycle, approvals with expiry/edit/timeout, exactly-once effects, retry as an attempt counter |
 | **Data plane** | Nodes produce and consume values, pinned per run so a resume cannot reroute under a decision already made |
 | **Durability** | Postgres run store, checkpoints, approvals and run events; BullMQ queue. A run survives the process that started it, including one with an `agent` before its gate, and **survives an API restart** |
-| **Async start** | `POST /v1/runs` persists and enqueues, 202 + `Location`. The consumer is bound in both persistence modes, so the route is one code path |
+| **Async start** | `POST /v1/runs` persists and enqueues, 202 + `Location`. `POST …/decision` does the same, so no route walks a graph inside a request. The consumer is bound in both persistence modes, so both routes are one code path |
+| **Live events** | `GET /v1/runs/:runId/events` streams SSE off the durable history, resumable by `Last-Event-ID`. The tail re-authenticates each pass, because a stream outlives the credential that opened it |
+| **Resilience** | `harness/` — load, chaos and disaster recovery against real Postgres and Redis, killing them mid-run on purpose |
 | **Policy** | OPA Wasm behind `PolicyPort` (ADR-007), Rego compiled ahead of time and committed. Policy resolves from the deployment's company package, never from a request |
 | **Provider** | `@forge/provider-anthropic` on the real SDK with an injectable transport; retryable classification is table-driven |
 | **Sandbox** | A scope the work runs inside, with a Docker adapter: no host mounts, zero capabilities, non-root, read-only rootfs |
@@ -38,26 +42,48 @@ cannot drift apart without one of them failing.
 
 | Gap | Why |
 |---|---|
-| **`POST …/decision` still walks inline** | 006 §10.3 would have it enqueue. Nothing about durability needs it — the ledgers are written as the walk proceeds — and `waitForRun` is general enough to absorb the change when wanted |
-| **No SSE** | 012 §4.3. The history is durable now, so a stream has something real to tail; the transport is the remaining work |
 | **No LangGraph engine** | ADR-002, deliberately amended rather than left open. The engine carries Forge's own semantics — sandbox scoping, arm pruning, the data plane's short-circuit — and moving those into a vendor's execution model would put the invariants beyond this repository's tests |
-| **No Playwright** | The UI is covered by Vitest and sits inside the coverage floors rather than excluded from them. Worth revisiting for flows a component test cannot express |
+| **No W3C trace context on the run record** | A run resumed in another process starts a new trace instead of continuing the one that began it. The spans are right; the thread between them is not |
+| **`RunStorePort.update()` has no optimistic concurrency** | Last writer wins. Two processes advancing one run is already refused a layer up, by the queue's single delivery, but the store does not enforce it itself |
+| **A claimed-but-unperformed effect has no operator-visible signal** | The harness can find one (`claimedButUnperformed()`); nothing surfaces it, and there is no redrive route |
 | **Four `forge.gusto` scenarios are `todo`** | Held open by a test that goes red the day the API stops ignoring `environment`, so they cannot rot quietly |
-| **Phases 7–8 not started** | Load, chaos and DR. Durability, identity, isolation and telemetry are the precondition, not the thing |
+| **Phase 8 not started** | Phase 7 is done and found four production defects; 8 is next |
 
 ## Next, in order
 
-1. **SSE for run events.** The history is durable; the transport is not.
-2. **Enqueue the decision**, so no route walks a graph inside a request.
-3. **W3C trace context on the run record**, so a run resumed in another process continues its trace rather than starting a new one.
-4. **Phase 7** — load, chaos, disaster recovery.
-5. **Playwright**, for the flows a component test cannot reach.
+1. **W3C trace context on the run record**, so a run resumed in another process continues its trace rather than starting a new one.
+2. **Optimistic concurrency on `RunStorePort.update()`**, so the store enforces what the queue currently implies.
+3. **Surface a claimed-but-unperformed effect**, and a redrive route for it. The harness can already detect one.
+4. **Phase 8.**
+
+### What Phase 7 found
+
+Four defects, each reaching production behaviour, none visible to the unit
+suite:
+
+- **An operator's approval was silently voided into a second gate.** `hydrate()`
+  cached run state per process and never re-read the store, so once the decision
+  route enqueued, the resume re-walked from the start and opened a *new*
+  approval. Observed: approval #1 `APPROVED`, approval #2 `PENDING`,
+  `effects=[]`, run back at `AWAITING_APPROVAL`. A human decided, and the
+  decision bought nothing.
+- **A Redis outage permanently stopped a process consuming.** BullMQ emits
+  `ioredis:close` when it has *given up*; nothing recreated the worker. A blip
+  became a stalled queue.
+- **That process answered `/health/ready` with 200 throughout.** Both apps
+  hard-coded `{ queue: "healthy" }`. `QueuePort.health()` existed and nothing
+  called it.
+- **`health()` and `close()` both hung when Redis was gone.** The producer runs
+  `maxRetriesPerRequest: null` so an enqueue survives a blip — which means a
+  command issued during an outage *buffers* rather than rejecting. Unbounded,
+  that turns a readiness probe into a timeout, and turns a SIGTERM drain into a
+  SIGKILL that drops the telemetry explaining the outage.
 
 ---
 
 ## What this codebase has learned the hard way
 
-**Ten checks were found that could not fail.** Each was written to answer a
+**Eleven checks were found that could not fail.** Each was written to answer a
 question, passed immediately, and was never asked to fail again:
 
 - `test:architecture` never opened a source file — it tested hand-written strings.
@@ -95,6 +121,14 @@ A related trap, seen twice: a fixture whose values can collide by chance. A PII
 needle of `82000` matched a nanosecond timestamp and failed a run for a reason
 unrelated to redaction — a test that can fail for the wrong reason is only a
 little better than one that cannot fail at all.
+
+The eleventh was written *this week, by the author of this file*, while fixing
+the health probe — a test that a subscriber which has stopped consuming reports
+unavailable. It passed. It also passed with the consumer check replaced by
+`return { available: true }`, because closing the queue breaks the ping first
+and the run never reaches the line under test. It was deleted rather than kept,
+and `queue.ts` now says in place that the term is not independently falsifiable
+and why. Knowing the trap is not the same as being immune to it.
 
 Two authorisation holes were found the same way — an orphaned node dispatching
 an ungated effect, and a decision route that authenticated the caller but never

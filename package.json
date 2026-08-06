@@ -20,6 +20,7 @@
     "test:architecture": "vitest run tooling/architecture.test.ts",
     "test:coverage": "vitest run --coverage",
     "test:packaging": "tsx scripts/check-packaging.ts",
+    "test:resilience": "vitest run --config harness/vitest.config.ts",
     "test:security": "vitest run packages/composition/src/gate-bypass.test.ts",
     "typecheck": "turbo run typecheck"
   },

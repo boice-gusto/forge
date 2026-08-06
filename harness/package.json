@@ -1,0 +1,29 @@
+{
+  "name": "@forge/harness",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Load, chaos and disaster-recovery scenarios for Forge. Not part of the default test path.",
+  "scripts": {
+    "link": "node link-deps.mjs",
+    "load": "vitest run --config vitest.config.ts test/load.scenario.ts",
+    "chaos": "vitest run --config vitest.config.ts test/chaos.scenario.ts",
+    "dr": "vitest run --config vitest.config.ts test/disaster-recovery.scenario.ts",
+    "test:soak": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@forge/composition": "workspace:*",
+    "@forge/company": "workspace:*",
+    "@forge/observability-memory": "workspace:*",
+    "@forge/ports": "workspace:*",
+    "@forge/runtime": "workspace:*",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.1.0",
+    "@testcontainers/redis": "^12.1.0",
+    "@types/pg": "^8.20.4",
+    "testcontainers": "^12.1.0",
+    "tsx": "^4.23.4"
+  }
+}

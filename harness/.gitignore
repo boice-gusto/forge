@@ -1,0 +1,3 @@
+# Written by test/load.scenario.ts on every run. The numbers that are a claim
+# rather than an observation live in LOAD.md, by hand.
+load-report.json
