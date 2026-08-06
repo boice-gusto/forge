@@ -233,9 +233,15 @@ describe("a worker killed between the durable claim and the action", () => {
      * This assertion documents current behaviour, not desired behaviour. It is
      * written as a live assertion rather than a comment so that the day the
      * product closes the hole, this goes red and someone has to come and read
-     * the reasoning. See the report: the fix is an operator-visible signal for
-     * a claimed-but-unperformed effect, which `claimedButUnperformed()` here
-     * shows is a single query away.
+     * the reasoning.
+     *
+     * Half closed since it was written. The signal this asked for exists —
+     * `GET /v1/effects/unsettled` — and so does the recovery, a gated redrive,
+     * both exercised two tests below on this same lost effect. What is still
+     * true, and is why this stays red-in-waiting, is the part above: the run
+     * *reports* SUCCEEDED with `publish` in `performedEffects` while no sink
+     * was ever asked to act. An operator who reads the run and not the report
+     * still sees a lie.
      */
     const { backing, runId } = await killMidDispatch("gated");
 
@@ -250,6 +256,103 @@ describe("a worker killed between the durable claim and the action", () => {
     });
     // The signature is still there for anyone who looks.
     expect(await inspector.claimedButUnperformed()).toContain(runId);
+  });
+
+  test("the operator's report names the run, and the redrive gate asks before acting", async () => {
+    /**
+     * The recovery, end to end, on an effect that was genuinely lost — not one
+     * a test staged by writing a claim row. A worker was killed between the
+     * durable claim and the action; nothing else knows the difference between
+     * that and an action that landed and lost its acknowledgement, which is
+     * exactly why performing it again is a decision rather than a retry.
+     *
+     * Through the real routes, in a process that never saw the loss.
+     */
+    const { backing, runId } = await killMidDispatch("gated");
+    // Let the run finish as it would have. This is how a lost effect is
+    // actually met: not mid-flight, but afterwards, on a run that reported
+    // SUCCEEDED — which is exactly what makes it worth a report at all.
+    await resumeInProcess(backing, { runId, label: "finish" });
+    const operatorApi = await startApi(backing);
+
+    const unsettled = await call(
+      operatorApi,
+      "GET",
+      "/v1/effects/unsettled",
+      "marketing-lead",
+    );
+    expect(unsettled.status).toBe(200);
+    expect(
+      (unsettled.body.unsettled as { runId: string; nodeId: string }[]).filter(
+        (entry) => entry.runId === runId,
+      ),
+    ).toMatchObject([{ nodeId: "publish", effect: "slack.post" }]);
+
+    const requested = await call(
+      operatorApi,
+      "POST",
+      `/v1/runs/${runId}/effects/publish/redrive`,
+      "marketing-lead",
+    );
+    expect(`${requested.status} ${JSON.stringify(requested.body)}`).toContain(
+      "202",
+    );
+    expect(requested.body.status).toBe("AWAITING_APPROVAL");
+
+    // Asking is not doing: the action is still unaccounted for, and the
+    // ledger still holds exactly the one row the dead worker wrote.
+    expect(await inspector.unsettled()).toContain(runId);
+    expect(await inspector.effects(runId)).toHaveLength(1);
+  });
+
+  test("approving the redrive is accepted, and does not double-dispatch", async () => {
+    /**
+     * **Partly proven, and the gap is named rather than papered over.**
+     *
+     * What holds here: the decision is accepted, and the ledger still contains
+     * exactly one row for `publish`. Whatever else happens, the redrive has
+     * not become the double dispatch the claim exists to prevent — which is
+     * the property that would be a customer-visible failure.
+     *
+     * What is **not** proven here, and is proven in
+     * `packages/runtime/src/rehydration.test.ts` instead: that approving it
+     * runs the action through to settlement. Driven through real processes
+     * against Postgres, the run stays at `AWAITING_APPROVAL` with `redriving`
+     * still set and the claim still unsettled — the enqueued resume does not
+     * carry the gate. The same sequence in-process, including a second runtime
+     * calling `resume` after `recordDecision`, works and is sabotage-verified.
+     * The difference has not been characterised, so nothing is asserted about
+     * it: an assertion nobody can explain is worse than a gap somebody wrote
+     * down.
+     */
+    const { backing, runId } = await killMidDispatch("gated");
+    await resumeInProcess(backing, { runId, label: "finish" });
+    const operatorApi = await startApi(backing);
+
+    const requested = await call(
+      operatorApi,
+      "POST",
+      `/v1/runs/${runId}/effects/publish/redrive`,
+      "marketing-lead",
+    );
+    const approvalId = requested.body.pendingApprovalId as string;
+
+    const decided = await call(
+      operatorApi,
+      "POST",
+      `/v1/runs/${runId}/approvals/${approvalId}/decision`,
+      "marketing-lead",
+      { decision: "approve" },
+    );
+    expect(`${decided.status} ${JSON.stringify(decided.body)}`).toContain(
+      "202",
+    );
+
+    // One row, whatever else is true. Two would mean the recovery had become
+    // the failure it recovers from.
+    const effects = await inspector.effects(runId);
+    expect(`redriven: ${JSON.stringify(effects)}`).toContain("publish");
+    expect(effects).toHaveLength(1);
   });
 
   test("the queue will not deliver the resume again, so nothing redrives itself", async () => {

@@ -1,13 +1,13 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 72 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 73 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
 was checked against the repository.
 
 **Scale:** 41 packages, 3 apps, 1,350 unit tests (98.7% statements / 91.3%
-branches) plus 22 resilience scenarios against real containers. Ten CI steps —
+branches) plus 24 resilience scenarios against real containers. Ten CI steps —
 `lint`, `typecheck`, `test`, `test:coverage`, `test:packaging`,
 `test:architecture`, `test:security`, `security:secrets`, `security:licenses`,
 `measure:phase1` — and a separate `resilience` job, which costs minutes and
@@ -57,9 +57,27 @@ cannot drift apart without one of them failing.
 
 ## Next, in order
 
-1. **A transform table from the company package**, resolved the way adapters now are.
-2. **A redrive in the resilience harness** — the unit tests stage a lost effect by hand; the harness can lose one for real.
+1. **Characterise why an enqueued redrive decision does not carry.** See below — the
+   only thing here that is known-broken rather than merely unbuilt.
+2. **A transform table from the company package**, resolved the way adapters now are.
 3. **Phase 8.**
+
+### Known broken: a redrive decided through the queue
+
+In-process, a redrive works and is proven nine ways, including a second
+runtime calling `resume` after `recordDecision`, and it fails when any of its
+three guarantees is broken.
+
+Driven through real processes against Postgres it does not complete. The run
+stays at `AWAITING_APPROVAL` with `redriving` still set and the claim still
+unsettled: the enqueued resume does not carry the gate. The effect is not
+double-dispatched — that much the harness asserts — but the approved action
+does not happen either, so **a redrive requested through the API cannot
+currently be relied on**.
+
+The difference between the two paths has not been characterised. Rather than
+assert something nobody can explain, the harness asserts only what reproduces
+and names the gap in place.
 
 ### What Phase 7 and the work after it found
 

@@ -271,19 +271,6 @@ export interface RunStorePort {
    */
   settleEffect(runId: string, nodeId: string, at: string): Promise<void>;
   /**
-   * Gives up a claim so the action can be claimed, and performed, again.
-   *
-   * The one way an effect escapes exactly-once, and therefore narrow: a claim
-   * that was *settled* is refused, because that action is known to have
-   * completed and re-performing it is the failure this whole mechanism exists
-   * to prevent. Only the unexplained window is releasable.
-   *
-   * Being able to release is not permission to. Nothing in the runtime calls
-   * this except on the far side of a human decision bound to the exact action
-   * — see `Runtime.redrive`.
-   */
-  releaseClaim(runId: string, nodeId: string): Promise<void>;
-  /**
    * Every action claimed and never settled, oldest claim first.
    *
    * The estate-wide question, asked without knowing a run id, because nobody

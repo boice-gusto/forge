@@ -840,6 +840,67 @@ describe("an action nobody can account for is redriven only by a decision", () =
     expect(await forge.runs.listUnsettled()).toHaveLength(1);
   });
 
+  test("the decision carries even when another process is the one that resumes", async () => {
+    /**
+     * The path a deployment actually takes. `POST …/decision` records and
+     * enqueues; some worker picks the job up and calls `resume`. That process
+     * never saw the redrive requested, so everything it acts on has to be on
+     * the run record — which is exactly why `redriving` is stored there rather
+     * than held in the process that opened the gate.
+     */
+    const forge = world();
+    const { run } = await lost(forge);
+
+    const asking = forge.start();
+    const reopened = await asking.runtime.redrive(run.runId, "publish");
+    await asking.runtime.recordDecision(
+      reopened.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    const resuming = forge.start();
+    const finished = await resuming.runtime.resume(run.runId);
+
+    expect(resuming.acted).toEqual([DRAFT_ONE]);
+    expect(asking.acted).toEqual([]);
+    expect(finished?.status).toBe("SUCCEEDED");
+    expect(await forge.runs.listUnsettled()).toEqual([]);
+  });
+
+  test("an action that settles while the gate is open is not performed again", async () => {
+    /**
+     * The window the redrive itself opens.
+     *
+     * Between asking and being answered, the original action can be accounted
+     * for — the process that was thought dead reports in, or another operator
+     * gets there first. The check at request time is stale by then, so the
+     * claim is read again at the moment of dispatch. Approving a gate is not
+     * a promise that the world stood still while a human thought about it.
+     */
+    const forge = world();
+    const { run } = await lost(forge);
+
+    const asking = forge.start();
+    const reopened = await asking.runtime.redrive(run.runId, "publish");
+
+    // The lost process, reporting in late.
+    await forge.runs.settleEffect(
+      run.runId,
+      "publish",
+      "2026-08-04T00:05:00.000Z",
+    );
+
+    await expect(
+      asking.runtime.decide(
+        reopened.pendingApprovalId as string,
+        { kind: "approve" },
+        "marketing-lead",
+      ),
+    ).rejects.toThrow("FORGE_REDRIVE_STALE");
+    expect(asking.acted).toEqual([]);
+  });
+
   test("an action known to have completed cannot be redriven", async () => {
     /**
      * The refusal that keeps exactly-once meaning anything. A settled action

@@ -1053,26 +1053,61 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     /**
      * A redrive, if that is what this gate was.
      *
-     * The claim is given up here and nowhere earlier. Releasing it when the
-     * redrive was *requested* would leave a window in which the action is
-     * unclaimed and the decision has not been made — and any process resuming
-     * the run in that window would perform it with no authorisation at all,
-     * which is the one thing this system exists to prevent. So the release and
-     * the authorisation are the same step, on the far side of a human.
+     * Performed here, directly, and *not* by putting the node back in front of
+     * the walk. Two reasons, and the first was found the hard way.
      *
-     * The ledger entry goes with it. Without that, `perform` sees the node
-     * already dispatched and returns, and the decision reads as honoured while
-     * changing nothing.
+     * A run with a lost effect is usually terminal — that is what makes the
+     * loss so quiet — and re-entering a terminal run replays its pinned output
+     * and short-circuits to SUCCEEDED without reaching the node again. The
+     * first version of this released the claim and let the walk re-take it;
+     * on a terminal run the walk never got there, so the approved action did
+     * not happen *and* the released claim took the evidence with it. A
+     * recovery that silently loses the thing it was recovering, and erases the
+     * report that would have shown it, is worse than no recovery.
+     *
+     * The second reason is the better one. A redrive is not "run this workflow
+     * again": it is "perform this one action, which a human has just
+     * authorised, again". Dispatching exactly that node touches nothing else —
+     * no other node re-runs, no pinned value is disturbed, and the claim is
+     * never released, so exactly-once is never suspended even for an instant.
      */
     if (state.record.redriving === nodeId) {
-      await options.runs.releaseClaim(runId, nodeId);
-      const ledger = ledgers.get(runId);
-      const at = ledger?.indexOf(nodeId) ?? -1;
-      if (ledger !== undefined && at >= 0) ledger.splice(at, 1);
-      state.authorised.delete(nodeId);
+      const persisted = await options.runs.load(runId);
+      const claim = persisted?.effects.find(
+        (effect) => effect.nodeId === nodeId,
+      );
+      if (claim === undefined || claim.settledAt !== undefined) {
+        // Settled or gone since the gate opened — by another redrive, or by
+        // the original process finally reporting in. Either way the action is
+        // accounted for and doing it again is the failure, not the fix.
+        throw new Error(
+          `FORGE_REDRIVE_STALE: '${nodeId}' is no longer an unaccounted action.`,
+        );
+      }
+
+      const produced = await options.effects.perform(
+        runId,
+        nodeId,
+        claim.effect,
+        claim.input,
+      );
+      await options.runs.settleEffect(
+        runId,
+        nodeId,
+        options.clock.now().toISOString(),
+      );
+      /**
+       * And the value, because a lost dispatch never pinned one and whatever
+       * reads this node is still waiting for it. First write wins in the
+       * store, so this can only fill a gap — it cannot overwrite a value some
+       * earlier decision was made against.
+       */
+      const pinned = produced === undefined ? undefined : pin(nodeId, produced);
+      valueLedgers.get(runId)?.set(nodeId, pinned);
+      await options.runs.pinValue(runId, nodeId, pinned);
       observability.event(
         "forge.effect.redriven",
-        { runId, nodeId },
+        { runId, nodeId, effect: claim.effect },
         parentOf(state),
       );
     }

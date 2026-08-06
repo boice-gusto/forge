@@ -21,7 +21,12 @@ export async function call(
     method,
     headers: {
       authorization: `Bearer ${OPERATORS[role]}`,
-      "content-type": "application/json",
+      // Only when there is one. Announcing a JSON body and sending none is
+      // rejected by the server before any route sees it, so a POST that
+      // legitimately carries nothing — a redrive names its target in the path
+      // — would fail with a content-type error that says nothing about the
+      // thing being tested.
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });

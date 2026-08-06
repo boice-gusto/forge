@@ -144,6 +144,30 @@ export class Inspector {
    * see it has a run that will sit at RUNNING forever with a human's decision
    * spent on nothing.
    */
+  /**
+   * Runs holding an action claimed and never settled.
+   *
+   * The direct answer, from the column the product writes. Prefer it to
+   * {@link claimedButUnperformed}, which infers the same thing from a missing
+   * value row — a proxy that was the best available before effects recorded
+   * their own completion, and which now reports a false positive for any
+   * action that legitimately produces nothing.
+   */
+  async settlement(runId: string): Promise<unknown> {
+    const { rows } = await this.pool.query(
+      `select node_id, dispatched_at, settled_at from forge_run_effect where run_id = $1`,
+      [runId],
+    );
+    return rows;
+  }
+
+  async unsettled(): Promise<readonly string[]> {
+    const { rows } = await this.pool.query<{ run_id: string }>(
+      `select distinct run_id from forge_run_effect where settled_at is null`,
+    );
+    return rows.map((row) => row.run_id);
+  }
+
   async claimedButUnperformed(): Promise<readonly string[]> {
     const { rows } = await this.pool.query<{ run_id: string }>(
       `select distinct e.run_id
