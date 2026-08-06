@@ -26,6 +26,11 @@ create table if not exists forge_run (
   -- tie on a timestamp, and a tie is a run that moves between two reads.
   seq          bigint not null default nextval('forge_run_seq'),
   record       jsonb not null,
+  -- Bumped on every record write, and presented back by whoever writes. A
+  -- blind \`update ... where run_id = $1\` is a lost update, and what it loses
+  -- is \`status\` and \`pendingApprovalId\` — a run left waiting on an approval
+  -- nothing will look for.
+  revision     bigint not null default 1,
   artifact     jsonb not null,
   capabilities jsonb not null,
   changed_paths jsonb not null
@@ -36,6 +41,11 @@ create table if not exists forge_run (
 -- sharing one; the relative order of rows already there is whatever the rewrite
 -- reads them in, which is the best that can be said after the fact.
 alter table forge_run add column if not exists seq bigint not null default nextval('forge_run_seq');
+
+-- For a database created before optimistic concurrency existed. Every existing
+-- row starts at 1, which is correct: nothing has presented a revision for them
+-- yet, so nothing holds a stale one.
+alter table forge_run add column if not exists revision bigint not null default 1;
 
 create index if not exists forge_run_by_seq on forge_run (seq desc);
 

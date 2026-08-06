@@ -264,7 +264,10 @@ async function rewrite(
 ): Promise<void> {
   const persisted = await forge.runs.load(runId);
   if (persisted === undefined) throw new Error("nothing to rewrite");
-  await forge.runs.update({ ...persisted.record, ...patch } as never);
+  await forge.runs.update(
+    { ...persisted.record, ...patch } as never,
+    persisted.revision,
+  );
 }
 
 describe("a run is re-entered, not re-walked", () => {

@@ -21,6 +21,7 @@ import type {
 
 interface Stored {
   record: RunRecord;
+  revision: number;
   readonly created: Omit<RunCreateInput, "record">;
   readonly values: Map<string, JsonValue | undefined>;
   readonly routes: Map<string, string>;
@@ -49,6 +50,7 @@ export function createMemoryRunStore(): RunStorePort {
       }
       runs.set(input.record.runId, {
         record: detach(input.record),
+        revision: 1,
         created: detach({
           artifact: input.artifact,
           capabilities: input.capabilities,
@@ -76,6 +78,7 @@ export function createMemoryRunStore(): RunStorePort {
 
       const persisted: PersistedRun = {
         record: stored.record,
+        revision: stored.revision,
         ...stored.created,
         values,
         routes,
@@ -99,8 +102,19 @@ export function createMemoryRunStore(): RunStorePort {
       );
     },
 
-    async update(record) {
-      find(record.runId).record = detach(record);
+    async update(record, expectedRevision) {
+      const stored = find(record.runId);
+      // Refused, not merged. A caller holding a stale record cannot be told
+      // which of its fields are still current, so the only safe answer is to
+      // make it read again.
+      if (stored.revision !== expectedRevision) {
+        throw new Error(
+          `FORGE_RUN_CONFLICT: ${record.runId} is at revision ${stored.revision}, not ${expectedRevision}.`,
+        );
+      }
+      stored.record = detach(record);
+      stored.revision += 1;
+      return stored.revision;
     },
 
     async pinValue(runId, nodeId, value) {

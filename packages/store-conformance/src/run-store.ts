@@ -15,6 +15,8 @@ function describeIdentity(harness: RunStoreConformanceHarness): void {
 
       expect(await store.load(CONFORMANCE_RUN_ID)).toEqual({
         ...CONFORMANCE_RUN,
+        // A freshly created run has been written once and no more.
+        revision: 1,
         values: [],
         routes: [],
         effects: [],
@@ -100,11 +102,14 @@ function describeList(harness: RunStoreConformanceHarness): void {
     test("a listing reads the current record, not the one that was created", async () => {
       const handle = await harness.create();
       await handle.store.create(runFor("run_a"));
-      await handle.store.update({
-        ...runFor("run_a").record,
-        status: "AWAITING_APPROVAL",
-        pendingApprovalId: "approval_1",
-      });
+      await handle.store.update(
+        {
+          ...runFor("run_a").record,
+          status: "AWAITING_APPROVAL",
+          pendingApprovalId: "approval_1",
+        },
+        1,
+      );
 
       const peer = await handle.peer();
       expect((await peer.list())[0]).toMatchObject({
@@ -149,12 +154,15 @@ function describeRecord(harness: RunStoreConformanceHarness): void {
     test("an update is what a later load reads", async () => {
       const handle = await harness.create();
       await handle.store.create(CONFORMANCE_RUN);
-      await handle.store.update({
-        ...CONFORMANCE_RUN.record,
-        status: "AWAITING_APPROVAL",
-        pendingApprovalId: "approval_1",
-        performedEffects: ["publish"],
-      });
+      await handle.store.update(
+        {
+          ...CONFORMANCE_RUN.record,
+          status: "AWAITING_APPROVAL",
+          pendingApprovalId: "approval_1",
+          performedEffects: ["publish"],
+        },
+        1,
+      );
 
       const peer = await handle.peer();
       const loaded = await peer.load(CONFORMANCE_RUN_ID);
@@ -169,15 +177,18 @@ function describeRecord(harness: RunStoreConformanceHarness): void {
       // forever, and a rehydrated run would wait on it.
       const handle = await harness.create();
       await handle.store.create(CONFORMANCE_RUN);
-      await handle.store.update({
-        ...CONFORMANCE_RUN.record,
-        status: "AWAITING_APPROVAL",
-        pendingApprovalId: "approval_1",
-      });
-      await handle.store.update({
-        ...CONFORMANCE_RUN.record,
-        status: "RUNNING",
-      });
+      await handle.store.update(
+        {
+          ...CONFORMANCE_RUN.record,
+          status: "AWAITING_APPROVAL",
+          pendingApprovalId: "approval_1",
+        },
+        1,
+      );
+      await handle.store.update(
+        { ...CONFORMANCE_RUN.record, status: "RUNNING" },
+        2,
+      );
 
       const peer = await handle.peer();
       expect(
@@ -188,11 +199,10 @@ function describeRecord(harness: RunStoreConformanceHarness): void {
     test("a run result that is JSON null is a result, not an absence", async () => {
       const handle = await harness.create();
       await handle.store.create(CONFORMANCE_RUN);
-      await handle.store.update({
-        ...CONFORMANCE_RUN.record,
-        status: "SUCCEEDED",
-        result: null,
-      });
+      await handle.store.update(
+        { ...CONFORMANCE_RUN.record, status: "SUCCEEDED", result: null },
+        1,
+      );
 
       const peer = await handle.peer();
       const loaded = await peer.load(CONFORMANCE_RUN_ID);
@@ -209,8 +219,88 @@ function describeRecord(harness: RunStoreConformanceHarness): void {
       const { store } = await harness.create();
 
       await expect(
-        store.update({ ...CONFORMANCE_RUN.record, runId: "run_never_started" }),
-      ).rejects.toThrow();
+        store.update(
+          { ...CONFORMANCE_RUN.record, runId: "run_never_started" },
+          1,
+        ),
+      ).rejects.toThrow("FORGE_RUN_NOT_FOUND");
+    });
+  });
+
+  describe("a write from a stale read is refused, not applied", () => {
+    test("the revision moves on every write, and a load reports the current one", async () => {
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+      const created = await handle.store.load(CONFORMANCE_RUN_ID);
+
+      const next = await handle.store.update(
+        { ...CONFORMANCE_RUN.record, status: "RUNNING" },
+        created?.revision as number,
+      );
+
+      expect(next).toBeGreaterThan(created?.revision as number);
+      // Read through a second handle, so this is the store's answer rather
+      // than one process's memory of what it just wrote.
+      const peer = await handle.peer();
+      expect((await peer.load(CONFORMANCE_RUN_ID))?.revision).toBe(next);
+    });
+
+    test("the second of two writers loses, and the first's record survives", async () => {
+      /**
+       * The lost update, staged exactly as it happens: both read, both decide,
+       * both write. What makes it worth refusing rather than tolerating is
+       * *which* fields are lost. A run parked at a gate that is then
+       * overwritten with `RUNNING` is a run waiting on an approval nothing
+       * will ever look for — the human decides, and the decision reaches a
+       * gate the record no longer mentions.
+       */
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+
+      const first = await handle.store.load(CONFORMANCE_RUN_ID);
+      const second = await (await handle.peer()).load(CONFORMANCE_RUN_ID);
+      expect(first?.revision).toBe(second?.revision);
+
+      await handle.store.update(
+        {
+          ...CONFORMANCE_RUN.record,
+          status: "AWAITING_APPROVAL",
+          pendingApprovalId: "approval_1",
+        },
+        first?.revision as number,
+      );
+
+      await expect(
+        handle.store.update(
+          { ...CONFORMANCE_RUN.record, status: "RUNNING" },
+          second?.revision as number,
+        ),
+      ).rejects.toThrow("FORGE_RUN_CONFLICT");
+
+      const peer = await handle.peer();
+      const loaded = await peer.load(CONFORMANCE_RUN_ID);
+      expect(loaded?.record.status).toBe("AWAITING_APPROVAL");
+      expect(loaded?.record.pendingApprovalId).toBe("approval_1");
+    });
+
+    test("a refused write leaves the revision alone, so the retry after a reload works", async () => {
+      // A conflict that consumed a revision anyway would make the obvious
+      // recovery — read again, write again — fail a second time for a reason
+      // the caller cannot see.
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+
+      await expect(
+        handle.store.update({ ...CONFORMANCE_RUN.record }, 99),
+      ).rejects.toThrow("FORGE_RUN_CONFLICT");
+
+      const current = await handle.store.load(CONFORMANCE_RUN_ID);
+      await expect(
+        handle.store.update(
+          { ...CONFORMANCE_RUN.record, status: "SUCCEEDED" },
+          current?.revision as number,
+        ),
+      ).resolves.toBeGreaterThan(current?.revision as number);
     });
   });
 }

@@ -119,6 +119,15 @@ export interface DispatchedEffect {
 /** What a run is made of, read back whole. */
 export interface PersistedRun {
   readonly record: RunRecord;
+  /**
+   * Which version of the record this is, for {@link RunStorePort.update}.
+   *
+   * A counter, not a clock and not a hash: it has to be totally ordered and
+   * it has to change on every write, including a write that happens to store
+   * the same bytes. Whoever loaded a run presents this back when it writes,
+   * and a mismatch means somebody else wrote in between.
+   */
+  readonly revision: number;
   readonly artifact: StoredArtifact;
   readonly capabilities: readonly string[];
   readonly changedPaths: readonly string[];
@@ -170,11 +179,26 @@ export interface RunStorePort {
    */
   list(query?: RunListQuery): Promise<readonly RunRecord[]>;
   /**
-   * Replaces the mutable record. Written from the runtime's single transition
-   * point, so a status change cannot be persisted at eight call sites and
-   * missed at the ninth. A run that was never created is refused.
+   * Replaces the mutable record, if nobody else has. Returns the new revision.
+   *
+   * Written from the runtime's single transition point, so a status change
+   * cannot be persisted at eight call sites and missed at the ninth. A run
+   * that was never created is refused.
+   *
+   * `expectedRevision` is the one that came back with the load this record was
+   * derived from. If the stored revision has moved on, the write is refused
+   * with `FORGE_RUN_CONFLICT` rather than applied — because a blind write here
+   * is a lost update, and the fields it would lose are the ones that matter:
+   * `status`, and `pendingApprovalId`. Two processes both advancing a run,
+   * one parking it at a gate and the other overwriting that with `RUNNING`,
+   * produces a run waiting on an approval nothing will ever look for.
+   *
+   * That is already meant to be impossible — a run advances only from a queue
+   * job, and the queue delivers once. This is the store declining to depend on
+   * that, because "the layer above is careful" is not an invariant, it is an
+   * assumption about code somebody may reasonably change.
    */
-  update(record: RunRecord): Promise<void>;
+  update(record: RunRecord, expectedRevision: number): Promise<number>;
   /**
    * Pins a node's output. **First write wins** — a second pin for the same node
    * leaves the first in place, because a value a human approved must not be

@@ -11,6 +11,8 @@ import type { Pool } from "pg";
 
 interface RunRow {
   readonly record: RunRecord;
+  /** `bigint` arrives as a string from `pg`; narrowed at the boundary. */
+  readonly revision: string;
   readonly artifact: StoredArtifact;
   readonly capabilities: readonly string[];
   readonly changed_paths: readonly string[];
@@ -68,7 +70,7 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
 
     async load(runId) {
       const run = await pool.query<RunRow>(
-        `select record, artifact, capabilities, changed_paths
+        `select record, revision, artifact, capabilities, changed_paths
            from forge_run where run_id = $1`,
         [runId],
       );
@@ -95,6 +97,7 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
 
       return {
         record: found.record,
+        revision: Number(found.revision),
         artifact: found.artifact,
         capabilities: found.capabilities,
         changedPaths: found.changed_paths,
@@ -135,14 +138,36 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
       return rows.map((row) => row.record);
     },
 
-    async update(record) {
-      const { rowCount } = await pool.query(
-        `update forge_run set record = $2 where run_id = $1`,
-        [record.runId, JSON.stringify(record)],
+    async update(record, expectedRevision) {
+      /**
+       * One statement, so the compare and the write cannot be separated by
+       * another writer. Two queries with a check between them would be the bug
+       * this exists to prevent, wearing the costume of the fix.
+       */
+      const { rows } = await pool.query<{ revision: string }>(
+        `update forge_run
+            set record = $2, revision = revision + 1
+          where run_id = $1 and revision = $3
+      returning revision`,
+        [record.runId, JSON.stringify(record), expectedRevision],
       );
-      if (rowCount === 0) {
+      const updated = rows[0];
+      if (updated !== undefined) return Number(updated.revision);
+
+      // No row changed: either the run is not there, or it moved on. Reading
+      // afterwards to tell those apart is not a race — both answers are
+      // already final, and neither is the write succeeding.
+      const { rows: current } = await pool.query<{ revision: string }>(
+        `select revision from forge_run where run_id = $1`,
+        [record.runId],
+      );
+      const existing = current[0];
+      if (existing === undefined) {
         throw new Error(`FORGE_RUN_NOT_FOUND: ${record.runId}`);
       }
+      throw new Error(
+        `FORGE_RUN_CONFLICT: ${record.runId} is at revision ${existing.revision}, not ${expectedRevision}.`,
+      );
     },
 
     async pinValue(runId, nodeId, value) {

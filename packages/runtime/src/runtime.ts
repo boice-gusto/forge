@@ -374,6 +374,14 @@ interface RunState {
    * still one trace. A missing parent costs a trace edge, never a run.
    */
   span?: Span | undefined;
+  /**
+   * The store revision this state was read at, presented back on every write.
+   *
+   * Held on the state rather than passed around because it is a property of
+   * *this process's* view of the run, and it moves on every write — a copy
+   * taken anywhere else goes stale within one transition.
+   */
+  revision: number;
 }
 
 /**
@@ -418,6 +426,9 @@ export function createRuntime(options: RuntimeOptions): Runtime {
    */
   const valueLedgers = new Map<string, ValueLedger>();
 
+  /** What a run store raises when the record moved on under a writer. */
+  const CONFLICT = "FORGE_RUN_CONFLICT";
+
   /**
    * The single place a run's status changes, so the lifecycle transition
    * (006 §5) is reported from one choke point rather than at each of the nine
@@ -425,6 +436,14 @@ export function createRuntime(options: RuntimeOptions): Runtime {
    *
    * It is also the single place the record is persisted, for the same reason:
    * a status a second process cannot read is a status only this one believes.
+   *
+   * The revision travels with it. A `FORGE_RUN_CONFLICT` from here means
+   * another process wrote this run since it was read, which is not supposed to
+   * happen — a run advances only from a queue job and the queue delivers once
+   * — so it is left to propagate rather than retried. Retrying would re-walk a
+   * run whose state this process has already misread; failing the job leaves
+   * the effect ledger and the claims exactly as they are, which is the only
+   * position from which the next attempt can be correct.
    */
   const update = async (
     state: RunState,
@@ -432,7 +451,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   ): Promise<RunRecord> => {
     const from = state.record.status;
     state.record = { ...state.record, ...patch };
-    await options.runs.update(state.record);
+    state.revision = await options.runs.update(state.record, state.revision);
     if (patch.status !== undefined && patch.status !== from) {
       observability.event(
         "forge.run.transition",
@@ -505,6 +524,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       // reads. The plan and the roles come from the sealed artifact, which
       // cannot change for a run, so they are kept.
       known.record = persisted.record;
+      known.revision = persisted.revision;
       known.capabilities = persisted.capabilities;
       known.changedPaths = persisted.changedPaths;
       for (const effect of persisted.effects)
@@ -521,6 +541,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
     const state: RunState = {
       record: persisted.record,
+      revision: persisted.revision,
       capabilities: persisted.capabilities,
       /**
        * Derived from the effect ledger rather than stored. A node that already
@@ -1278,6 +1299,8 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       roles: input.artifact.ir.roles,
       changedPaths: input.changedPaths ?? [],
       retryBudget: retryBudgetFor(input.artifact.ir),
+      // Written once, by the `create` below, and not yet by anyone else.
+      revision: 1,
     };
     runs.set(runId, state);
     ledgers.set(runId, []);
@@ -1314,6 +1337,62 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     return state;
   }
 
+  /**
+   * Walks, and steps aside if another process got there first.
+   *
+   * A `FORGE_RUN_CONFLICT` means the store moved on since this walk read it —
+   * which can only be because another process advanced the same run. That
+   * makes *this* delivery the redundant one, and the right answer is to report
+   * where the run actually got to, not to fail.
+   *
+   * Not a retry: nothing is re-walked. Everything this process might have done
+   * is already idempotent by construction — effects are claimed before they
+   * are performed, values and routes are pinned first-write-wins — so the run
+   * needs nothing further from here. Failing instead would fail a queue job
+   * over a run that is perfectly healthy, and a job that fails on redelivery
+   * eventually dead-letters a run nobody needs to look at.
+   *
+   * The alternative, letting the write through, is the thing the revision
+   * exists to stop: the loser's `RUNNING` landing on top of the winner's
+   * `AWAITING_APPROVAL` leaves a human's gate attached to a record that no
+   * longer mentions it.
+   */
+  const ceding = async (
+    state: RunState,
+    walk: () => Promise<RunRecord>,
+  ): Promise<RunRecord> => {
+    try {
+      return await walk();
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith(CONFLICT)) {
+        throw error;
+      }
+      /**
+       * Read, do not rehydrate.
+       *
+       * `hydrate` refreshes the shared `RunState` in place, and the whole
+       * reason there is a conflict is that something else is walking this run
+       * — possibly in this very process, holding that same object. Refreshing
+       * it here would reach into a walk in flight and swap the record out from
+       * under it, which turns "somebody else got there first" into "and I
+       * broke them on the way past". The winner is the one process that must
+       * not be disturbed.
+       */
+      const persisted = await options.runs.load(state.record.runId);
+      const current = persisted === undefined ? state.record : persisted.record;
+      observability.event(
+        "forge.run.ceded",
+        {
+          runId: current.runId,
+          workflowId: current.workflowId,
+          status: current.status,
+        },
+        parentOf(state),
+      );
+      return current;
+    }
+  };
+
   return {
     async create(input) {
       const state = await place(input);
@@ -1348,20 +1427,22 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       if (state === undefined) return undefined;
 
       if (state.record.status === "AWAITING_APPROVAL") {
-        return reenterGate(state);
+        return ceding(state, () => reenterGate(state));
       }
       // A run the control plane created and never walked. It becomes RUNNING
       // here rather than at creation, because that is where the walk actually
       // begins — a run reported RUNNING while its job sat in a queue would
       // make PENDING mean nothing (006 §5).
       if (state.record.status === "PENDING") {
-        await update(state, { status: "RUNNING" });
-        return advance(state);
+        return ceding(state, async () => {
+          await update(state, { status: "RUNNING" });
+          return advance(state);
+        });
       }
       // A run that was mid-walk when its process ended. Re-entering replays
       // every ledger and invokes nothing that already answered.
       if (state.record.status === "RUNNING") {
-        return advance(state);
+        return ceding(state, () => advance(state));
       }
       // Terminal. There is nothing to continue, and nothing to redo.
       return state.record;
@@ -1373,9 +1454,9 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
     async decide(approvalId, decision, principal) {
       const decided = await record(approvalId, decision, principal);
-      return decided.authorises === undefined
-        ? decided.record
-        : carry(decided.state, decided.authorises);
+      if (decided.authorises === undefined) return decided.record;
+      const authorises = decided.authorises;
+      return ceding(decided.state, () => carry(decided.state, authorises));
     },
 
     async recordDecision(approvalId, decision, principal) {

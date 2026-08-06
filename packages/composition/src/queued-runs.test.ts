@@ -289,8 +289,23 @@ describe("a run consumed twice acts once", () => {
     // The second worker replays the draft from the value ledger rather than
     // asking a model of its own.
     expect(two.calls()).toBe(0);
-    expect([a?.status, b?.status]).toEqual(["SUCCEEDED", "SUCCEEDED"]);
+
+    /**
+     * Both return a record and neither throws. They do not have to agree on
+     * the status, and it would be a worse system if they did: the loser is a
+     * process that discovered mid-walk that another had already advanced the
+     * run, and the only honest thing it can report is where the run stood when
+     * it stepped aside. Waiting for the winner to finish so both could say
+     * `SUCCEEDED` would be a poll loop invented to make an assertion tidy.
+     *
+     * The properties that matter are below, and neither is about agreement:
+     * one dispatch, and a run that reaches its terminal state exactly once.
+     */
+    expect([a, b].every((record) => record !== undefined)).toBe(true);
+    expect([a?.status, b?.status]).toContain("SUCCEEDED");
+
     const stored = await sharedRuns.load(created.runId);
+    expect(stored?.record.status).toBe("SUCCEEDED");
     expect(stored?.effects.map((effect) => effect.nodeId)).toEqual(["act"]);
   });
 });

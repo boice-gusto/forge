@@ -145,6 +145,122 @@ function harness(
   };
 }
 
+describe("stepping aside is for a conflict and nothing else", () => {
+  /** A run store that fails one `update`, in a way the caller chooses. */
+  function failingOnce(inner: RunStorePort, error: Error): RunStorePort {
+    let armed = true;
+    return {
+      ...inner,
+      async update(record, expectedRevision) {
+        if (armed) {
+          armed = false;
+          throw error;
+        }
+        return inner.update(record, expectedRevision);
+      },
+    };
+  }
+
+  test("a store failure that is not a conflict reaches the caller", async () => {
+    /**
+     * The risk in ceding: a `catch` around a walk is a very good place to lose
+     * a real failure. A run store that is out of disk, or refusing
+     * connections, must not be read as "somebody else already did this" — that
+     * would report a run as advanced when nothing advanced it, and a control
+     * plane would go on to tell an operator their approval had been carried
+     * out.
+     */
+    const base = createMemoryRunStore();
+    const store = failingOnce(base, new Error("FORGE_STORE_UNAVAILABLE"));
+    const writer = harness(REQUIRE_APPROVAL, ["slack.write"]);
+    const created = await writer.runtime.create({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+
+    const reader = harness(
+      REQUIRE_APPROVAL,
+      ["slack.write"],
+      false,
+      undefined,
+      {
+        runs: store,
+        approvals: writer.approvals,
+        checkpoints: writer.checkpoints,
+        ids: writer.ids,
+      },
+    );
+    // The run has to exist in the store the second runtime reads.
+    await base.create({
+      record: created,
+      artifact: {
+        workflowId: created.workflowId,
+        fingerprint: created.fingerprint,
+        ir: artifact().ir as never,
+      },
+      capabilities: ["slack.write"],
+      changedPaths: [],
+    });
+
+    await expect(reader.runtime.resume(created.runId)).rejects.toThrow(
+      "FORGE_STORE_UNAVAILABLE",
+    );
+  });
+
+  test("ceding to a run the store can no longer produce reports what this process saw", async () => {
+    // The read after a conflict is a read, and a read can come back empty. It
+    // must not become a thrown error on top of a run that is, as far as anyone
+    // knows, fine — so the fallback is the last record this process held.
+    const base = createMemoryRunStore();
+    const writer = harness(REQUIRE_APPROVAL, ["slack.write"]);
+    const created = await writer.runtime.create({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    await base.create({
+      record: created,
+      artifact: {
+        workflowId: created.workflowId,
+        fingerprint: created.fingerprint,
+        ir: artifact().ir as never,
+      },
+      capabilities: ["slack.write"],
+      changedPaths: [],
+    });
+
+    let loads = 0;
+    const conflicting: RunStorePort = {
+      ...base,
+      async update() {
+        throw new Error("FORGE_RUN_CONFLICT: somebody else was here.");
+      },
+      async load(runId) {
+        // Readable for the hydrate that opens the walk, silent for the read
+        // that follows the conflict.
+        loads += 1;
+        return loads > 1 ? undefined : base.load(runId);
+      },
+    };
+
+    const reader = harness(
+      REQUIRE_APPROVAL,
+      ["slack.write"],
+      false,
+      undefined,
+      {
+        runs: conflicting,
+        approvals: writer.approvals,
+        checkpoints: writer.checkpoints,
+        ids: writer.ids,
+      },
+    );
+
+    expect((await reader.runtime.resume(created.runId))?.runId).toBe(
+      created.runId,
+    );
+  });
+});
+
 describe("run lifecycle", () => {
   test("a side effect parks the run at AWAITING_APPROVAL and dispatches nothing", async () => {
     const { runtime, dispatched } = harness();
