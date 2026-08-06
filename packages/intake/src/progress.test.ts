@@ -67,8 +67,9 @@ describe("a connector that cannot be reached costs a notification and nothing el
       },
     });
 
-    return announcer.announce(UPDATE).then(() => {
+    return announcer.announce(UPDATE).then((delivered) => {
       expect(seen).toEqual([UPDATE]);
+      expect(delivered).toBe(true);
     });
   });
 
@@ -88,8 +89,9 @@ describe("a connector that cannot be reached costs a notification and nothing el
       onFailure: (channel) => failures.push(channel),
     });
 
-    await expect(announcer.announce(UPDATE)).resolves.toBeUndefined();
-    // Swallowed, but not silently: an operator can count these.
+    // Swallowed rather than thrown — and reported as *not delivered*, which
+    // is what lets a caller retry rather than lose it.
+    await expect(announcer.announce(UPDATE)).resolves.toBe(false);
     expect(failures).toEqual(["slack"]);
   });
 
@@ -107,7 +109,9 @@ describe("a connector that cannot be reached costs a notification and nothing el
     });
 
     const started = Date.now();
-    await announcer.announce(UPDATE);
+    // A timeout is not a slow success. Whether it landed is unknowable, and
+    // the only safe reading of "we never heard" is that it did not.
+    await expect(announcer.announce(UPDATE)).resolves.toBe(false);
 
     expect(Date.now() - started).toBeLessThan(2_000);
   });
@@ -133,16 +137,20 @@ describe("a connector that cannot be reached costs a notification and nothing el
       onFailure: (channel) => failures.push(channel),
     });
 
-    await expect(announcer.announce(UPDATE)).resolves.toBeUndefined();
+    await expect(announcer.announce(UPDATE)).resolves.toBe(false);
     expect(failures).toEqual(["slack"]);
   });
 
-  test("a channel with no connector bound is silence, not an error", async () => {
-    // A run started at the API has nobody to tell. That is the ordinary case,
-    // not a misconfiguration.
+  test("a channel with no connector bound is delivered, not deferred", async () => {
+    /**
+     * A run started at the API has nobody to tell — the ordinary case, not a
+     * misconfiguration. Reported as delivered on purpose: there was nothing
+     * to deliver, and calling it a failure would put a retry on the queue
+     * that repeats forever over a channel nobody bound.
+     */
     const announcer = createProgressAnnouncer({ connectors: {} });
 
-    await expect(announcer.announce(UPDATE)).resolves.toBeUndefined();
+    await expect(announcer.announce(UPDATE)).resolves.toBe(true);
   });
 
   test("a connector that only receives is not asked to publish", async () => {
@@ -150,7 +158,7 @@ describe("a connector that cannot be reached costs a notification and nothing el
       connectors: { slack: connectorWith() },
     });
 
-    await expect(announcer.announce(UPDATE)).resolves.toBeUndefined();
+    await expect(announcer.announce(UPDATE)).resolves.toBe(true);
     expect(canPublish(connectorWith())).toBe(false);
   });
 });

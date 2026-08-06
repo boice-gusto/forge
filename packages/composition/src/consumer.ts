@@ -95,6 +95,26 @@ export interface RunConsumer {
 export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
   const handled: ForgeJob[] = [];
 
+  /**
+   * How many times a notification is worth trying, and how long between.
+   *
+   * Exponential from a second, so a brief blip is invisible and a real outage
+   * backs off to minutes rather than hammering a service that is already
+   * struggling. Six attempts is a little over an hour, which is long enough to
+   * cover an incident and short enough that a queue does not fill with news
+   * nobody wants any more.
+   */
+  const MAX_PUBLISH_ATTEMPTS = 6;
+  const backoffMs = (attempt: number): number => 1_000 * 2 ** (attempt - 1);
+
+  /**
+   * Declared here, above the `return`, and that placement is load-bearing.
+   * Function declarations below it are hoisted and run later; a `const` after
+   * the `return` is never initialised at all, so every publish job failed on
+   * the temporal dead zone. Caught by the retry tests and nothing else would
+   * have — the happy path never reads them.
+   */
+
   return {
     handled,
     async start() {
@@ -137,7 +157,45 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
     // A run with no origin came from the API, which already has its answer.
     if (record?.origin === undefined) return;
 
-    await progress.announcer.announce({
+    /**
+     * Enqueued rather than published here.
+     *
+     * A third-party API is the one dependency in this system that is expected
+     * to be down, and publishing inline means a Slack outage loses the
+     * notification outright. Putting it on the queue makes it work like every
+     * other piece of work: durable, retried, and visible in the depth an
+     * operator reads.
+     *
+     * It also keeps the walk's slot free. Waiting on Slack inside a job that
+     * has just finished a run is holding a worker for somebody else's latency.
+     */
+    await options.queue.enqueue({
+      type: "connector.publish",
+      runId: record.runId,
+      channel: record.origin.channel,
+      attempt: 1,
+    });
+  }
+
+  async function publish(
+    runId: string,
+    channel: string,
+    attempt: number,
+  ): Promise<void> {
+    const progress = options.progress;
+    if (progress === undefined) return;
+
+    const persisted = await progress.runs.load(runId);
+    const record = persisted?.record;
+    if (record?.origin === undefined) return;
+
+    /**
+     * Read again, at the moment of publishing rather than when the job was
+     * made. A retry an hour later should say where the run is *now* — a
+     * notification that arrives late saying "awaiting approval" about a run
+     * that was approved and finished is worse than one that never arrives.
+     */
+    const delivered = await progress.announcer.announce({
       origin: { ...record.origin, receivedAt: "" },
       runId: record.runId,
       status: record.status,
@@ -146,6 +204,31 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
         : { pendingApprovalId: record.pendingApprovalId }),
       runUrl: progress.runUrl(record.runId),
     });
+    if (delivered) return;
+
+    if (attempt >= MAX_PUBLISH_ATTEMPTS) {
+      /**
+       * Given up on, and said so. A notification quietly abandoned after an
+       * hour of failures is the kind of thing nobody discovers until somebody
+       * asks why they were never told.
+       */
+      options.observability.event("forge.connector.publish_abandoned", {
+        runId,
+        channel,
+        attempt,
+      });
+      return;
+    }
+
+    options.observability.event("forge.connector.publish_deferred", {
+      runId,
+      channel,
+      attempt,
+    });
+    await options.queue.enqueue(
+      { type: "connector.publish", runId, channel, attempt: attempt + 1 },
+      { delayMs: backoffMs(attempt) },
+    );
   }
 
   async function handle(job: ForgeJob): Promise<void> {
@@ -154,6 +237,11 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
       options.observability.event("forge.worker.cancelled", {
         runId: job.runId,
       });
+      return;
+    }
+
+    if (job.type === "connector.publish") {
+      await publish(job.runId, job.channel, job.attempt);
       return;
     }
 

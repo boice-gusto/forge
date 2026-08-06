@@ -110,12 +110,16 @@ export function createBullMqQueue(options: BullMqQueueOptions): QueuePort {
   }
 
   return {
-    async enqueue(job) {
+    async enqueue(job, options) {
       const key = operationKey(job);
       // Completed jobs are retained on purpose: the job record is the second
       // line of dedup, and removing it would free the id for a repeat.
       await queue.add(job.type, job, {
         jobId: jobIdFor(key),
+        // BullMQ's own delayed set holds it, so the wait survives this
+        // process exiting — which is the point of deferring in a queue rather
+        // than in a timer.
+        ...(options?.delayMs === undefined ? {} : { delay: options.delayMs }),
         removeOnComplete: false,
         removeOnFail: false,
       });

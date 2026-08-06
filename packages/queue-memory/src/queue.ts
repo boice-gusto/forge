@@ -21,10 +21,29 @@ export function createMemoryQueue(): QueuePort {
   }
 
   return {
-    async enqueue(job) {
+    async enqueue(job, options) {
       const key = operationKey(job);
       if (handled.has(key)) return key;
       if (pending.some((queued) => operationKey(queued) === key)) return key;
+
+      const delayMs = options?.delayMs ?? 0;
+      if (delayMs > 0) {
+        /**
+         * Held, not slept through. The caller gets its promise back
+         * immediately, as it would from a transport that can defer — a queue
+         * whose `enqueue` blocked for the delay would turn backpressure into
+         * a stalled request.
+         *
+         * `unref` so a pending retry cannot keep a process alive after its
+         * work is done, which is the same reason `close()` exists.
+         */
+        setTimeout(() => {
+          pending.push(job);
+          void pump();
+        }, delayMs).unref();
+        return key;
+      }
+
       pending.push(job);
       await pump();
       return key;

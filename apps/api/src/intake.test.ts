@@ -145,6 +145,31 @@ async function settle(
   throw new Error(`Run ${runId} never stopped.`);
 }
 
+/** What a connector was told, and a way to wait for it without a sleep. */
+function collector() {
+  const seen: unknown[] = [];
+  return {
+    seen,
+    async publish(update: unknown) {
+      seen.push(update);
+    },
+    /** Resolves once at least `count` updates have arrived. */
+    async reach(count: number) {
+      for (let attempt = 0; attempt < 2_000; attempt += 1) {
+        if (seen.length >= count) return;
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      throw new Error(`only ${seen.length} update(s) arrived, wanted ${count}`);
+    },
+    /** Enough turns of the loop that an update would have arrived by now. */
+    async quiet() {
+      for (let turn = 0; turn < 50; turn += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+    },
+  };
+}
+
 describe("a signed webhook starts a run and gets no further", () => {
   test("a valid delivery becomes a run, and the run stops at its gate", async () => {
     const server = app();
@@ -250,7 +275,7 @@ describe("a signed webhook starts a run and gets no further", () => {
      * Forge's own authentication — a Slack channel is not an access control
      * list.
      */
-    const told: unknown[] = [];
+    const told = collector();
     const publishing = {
       ...createSlackConnector({
         signingSecret: SECRET,
@@ -258,9 +283,7 @@ describe("a signed webhook starts a run and gets no further", () => {
         capabilities: { "acme.brief": fixture.capabilities },
         now: () => AT,
       }),
-      async publish(update: unknown) {
-        told.push(update);
-      },
+      publish: told.publish,
     };
 
     const server = createApiApp({
@@ -284,32 +307,37 @@ describe("a signed webhook starts a run and gets no further", () => {
     });
     const runId = started.json().runId as string;
     await settle(server, runId);
+    /**
+     * Waited for separately, because publishing is its own queue job now. A
+     * notification is not part of reaching the gate — it happens after, on the
+     * queue, so a third party being slow cannot hold a worker that has just
+     * finished a run.
+     */
+    await told.reach(1);
 
-    expect(`told: ${JSON.stringify(told)}`).toContain("AWAITING_APPROVAL");
-    expect(told[0]).toMatchObject({
+    expect(`told: ${JSON.stringify(told.seen)}`).toContain("AWAITING_APPROVAL");
+    expect(told.seen[0]).toMatchObject({
       runId,
       status: "AWAITING_APPROVAL",
       origin: { channel: "slack", externalId: "Ev0TOLD" },
       runUrl: `https://forge.internal/v1/runs/${runId}`,
     });
     // Nothing about what the run is doing, only where to look.
-    expect(JSON.stringify(told)).not.toContain("the copy");
+    expect(JSON.stringify(told.seen)).not.toContain("the copy");
   });
 
   test("a run the API started tells nobody, because nobody asked through a channel", async () => {
     // Guards the test above: an announcer that published everything would
     // pass it and would post a Slack message for every operator's `POST
     // /v1/runs`, including runs from a completely different team.
-    const told: unknown[] = [];
+    const told = collector();
     const publishing = {
       ...createSlackConnector({
         signingSecret: SECRET,
         workflows: { "acme.brief": fixture.workflow },
         now: () => AT,
       }),
-      async publish(update: unknown) {
-        told.push(update);
-      },
+      publish: told.publish,
     };
 
     const server = createApiApp({
@@ -336,7 +364,9 @@ describe("a signed webhook starts a run and gets no further", () => {
     });
     await settle(server, started.json().runId as string);
 
-    expect(told).toEqual([]);
+    // Given every chance to have been told, and still nothing.
+    await told.quiet();
+    expect(told.seen).toEqual([]);
   });
 
   test("a forged delivery is a bare 401 and starts nothing", async () => {

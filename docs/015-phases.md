@@ -410,7 +410,11 @@ Scenario-to-phase mapping: [016-demo-scenarios](./016-demo-scenarios.md) § “P
 
 ## Phase 8 — Connector Extensions
 
-> **Status: begun.** `@forge/intake` defines the canonical `WorkflowRequest`,
+> **Status: deliverables met.** Buzz is deliberately not built — see
+> `STATUS.md` under *Possible future work*; the connector contract is what
+> would make it cheap.
+>
+> **Originally:** `@forge/intake` defines the canonical `WorkflowRequest`,
 > the connector contract, and the conformance suite; `@forge/connector-slack`
 > implements it and passes. The architecture check now refuses a connector
 > import from anywhere but a composition root, which is this phase's second

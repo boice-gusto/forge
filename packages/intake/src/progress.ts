@@ -52,8 +52,15 @@ export const canPublish = (
 const PUBLISH_TIMEOUT_MS = 5_000;
 
 export interface ProgressAnnouncer {
-  /** Never throws, never rejects, and never takes longer than its deadline. */
-  announce(update: ProgressUpdate): Promise<void>;
+  /**
+   * Never throws, never rejects, and never takes longer than its deadline.
+   *
+   * Returns whether the update actually landed. Swallowing a failure and
+   * saying nothing was enough while nothing could act on it; now that a
+   * retry exists, "it did not get there" is the one fact the caller needs and
+   * the only one it cannot work out for itself.
+   */
+  announce(update: ProgressUpdate): Promise<boolean>;
 }
 
 /**
@@ -90,20 +97,29 @@ export function createProgressAnnouncer(options: {
   return {
     async announce(update) {
       const connector = options.connectors[update.origin.channel];
-      // A run started at the API has no connector to tell, and that is the
-      // ordinary case rather than a misconfiguration.
-      if (connector === undefined || !canPublish(connector)) return;
+      /**
+       * A run started at the API has no connector to tell, and that is the
+       * ordinary case rather than a misconfiguration. Reported as *delivered*
+       * on purpose: there was nothing to deliver, and a retry would be a
+       * queue job repeating forever over a channel nobody bound.
+       */
+      if (connector === undefined || !canPublish(connector)) return true;
 
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await Promise.race([
-          connector.publish(update),
-          new Promise<void>((settle) => {
-            timer = setTimeout(settle, timeoutMs);
+        // A timeout is a failure, not a success that was slow: the update may
+        // or may not have landed, and the only safe reading of "we never
+        // heard" is that it did not.
+        const delivered = await Promise.race([
+          connector.publish(update).then(() => true),
+          new Promise<boolean>((settle) => {
+            timer = setTimeout(() => settle(false), timeoutMs);
           }),
         ]);
+        return delivered;
       } catch (error) {
         options.onFailure?.(update.origin.channel, error);
+        return false;
       } finally {
         if (timer !== undefined) clearTimeout(timer);
       }

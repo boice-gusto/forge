@@ -1,6 +1,6 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 82 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 83 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
@@ -38,7 +38,7 @@ needs Docker, so it fails on its own terms rather than inside `verify`.
 | **Identity** | `IdentityPort` with a development binding, real role membership, and authority checked on the decision itself |
 | **Observability** | 011 taxonomy, OTLP export, one trace per run, redaction proved against the exporter |
 | **Extension** | Plugin SDK, company loader, packed public surface proven from outside the workspace |
-| **Intake (Phase 8, begun)** | `@forge/intake` — one canonical `WorkflowRequest` every channel produces, a connector contract that puts verification before deduplication before normalisation, and two conformance suites: one a connector proves itself against, one a ledger does. `@forge/connector-slack` and `@forge/connector-jira` implement the first — two schemes that resemble each other in nothing but the shape they produce — and `@forge/intake-postgres` the second, so a fleet deduplicates rather than each process deduplicating for itself. `POST /v1/intake/:channel` turns a signed delivery into a run that stops at its gate like any other, and a `ProgressUpdate` has nowhere to put a payload, so a connector cannot say more back than a status and a link. The run remembers where it was asked for, so the worker that reaches its gate can tell the thread that asked |
+| **Intake (Phase 8, begun)** | `@forge/intake` — one canonical `WorkflowRequest` every channel produces, a connector contract that puts verification before deduplication before normalisation, and two conformance suites: one a connector proves itself against, one a ledger does. `@forge/connector-slack` and `@forge/connector-jira` implement the first — two schemes that resemble each other in nothing but the shape they produce — and `@forge/intake-postgres` the second, so a fleet deduplicates rather than each process deduplicating for itself. `POST /v1/intake/:channel` turns a signed delivery into a run that stops at its gate like any other, and a `ProgressUpdate` has nowhere to put a payload, so a connector cannot say more back than a status and a link. The run remembers where it was asked for, so the worker that reaches its gate can tell the thread that asked — through the queue, with exponential backoff and a stated give-up point, because somebody else's API is the one dependency here that is expected to be down |
 | **Company packages** | `examples/acme`; `forge.gusto` G1–G5 on packed artifacts with no core source |
 
 Seven conformance suites — provider, store, queue, sandbox, policy,
@@ -57,10 +57,23 @@ cannot drift apart without one of them failing.
 
 ## Next, in order
 
-1. **A retry queue for publications worth retrying.** The announcer fails open
-   and does not retry, which is honest but means a Slack outage loses a
-   notification rather than deferring it.
-2. **Buzz**, deliberately out of scope for now.
+Phase 8's deliverables are met. What follows is not a queue of unfinished
+work; it is what somebody would do next if they wanted more.
+
+### Possible future work
+
+- **A Buzz connector.** Deliberately not built. The contract is what makes a
+  third connector cheap — Jira proved that by resembling Slack in nothing but
+  the shape it produces — so this is a day's work against
+  `describeConnectorConformance` whenever there is a reason for it.
+- **Publication ordering.** Retries are independent jobs, so a deferred
+  "awaiting approval" and a fresh "succeeded" can arrive out of order. Each
+  reads the run at publish time, so the *content* is never stale, but a
+  thread could show the older status last. A per-run publication sequence
+  would fix it and is not obviously worth the machinery yet.
+- **A dead-letter view for abandoned publications.**
+  `forge.connector.publish_abandoned` is an event an operator can count; there
+  is no page listing them.
 2. **A third cause for the `queue-bullmq` flake.** "Subscribing twice is
    refused" has now gone red three times. Two causes are found and fixed — a
    test budget shorter than the adapter's close budget, and a suite that
