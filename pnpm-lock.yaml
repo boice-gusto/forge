@@ -90,6 +90,9 @@ importers:
       '@forge/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../../packages/ports
       '@forge/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk

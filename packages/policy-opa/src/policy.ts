@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-
 import type { PolicyDecision, PolicyPort, PolicyRequest } from "@forge/ports";
+import { FORGE_POLICY_IDS } from "@forge/ports";
 import { loadPolicy } from "@open-policy-agent/opa-wasm";
 
 /**
@@ -49,7 +49,7 @@ const DEFAULT_WASM = new URL("../policy/forge.wasm", import.meta.url);
 const EVALUATOR_ERROR: PolicyDecision = {
   kind: "deny",
   reason: "Policy evaluation failed; failing closed.",
-  policyId: "forge.policy.evaluator-error",
+  policyId: FORGE_POLICY_IDS.evaluatorError,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {

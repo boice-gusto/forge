@@ -7,6 +7,16 @@ import {
   type RunStoreConformanceHarness,
 } from "./harness.js";
 
+/**
+ * Anchored, because `toThrow("CODE")` is a *substring* match.
+ *
+ * A rename that appends — a suffix, a namespace — passes a bare-string
+ * assertion silently, which makes these literals a weaker specification than
+ * they look. These codes are control flow across three packages, so the
+ * tripwire has to catch a rename in either direction.
+ */
+const raises = (code: string): RegExp => new RegExp(`^${code}: `);
+
 function describeIdentity(harness: RunStoreConformanceHarness): void {
   describe("a run is readable by the id it was created under", () => {
     test("load returns the record, artifact and start inputs verbatim", async () => {
@@ -223,7 +233,7 @@ function describeRecord(harness: RunStoreConformanceHarness): void {
           { ...CONFORMANCE_RUN.record, runId: "run_never_started" },
           1,
         ),
-      ).rejects.toThrow("FORGE_RUN_NOT_FOUND");
+      ).rejects.toThrow(raises("FORGE_RUN_NOT_FOUND"));
     });
   });
 
@@ -275,7 +285,7 @@ function describeRecord(harness: RunStoreConformanceHarness): void {
           { ...CONFORMANCE_RUN.record, status: "RUNNING" },
           second?.revision as number,
         ),
-      ).rejects.toThrow("FORGE_RUN_CONFLICT");
+      ).rejects.toThrow(raises("FORGE_RUN_CONFLICT"));
 
       const peer = await handle.peer();
       const loaded = await peer.load(CONFORMANCE_RUN_ID);
@@ -292,7 +302,7 @@ function describeRecord(harness: RunStoreConformanceHarness): void {
 
       await expect(
         handle.store.update({ ...CONFORMANCE_RUN.record }, 99),
-      ).rejects.toThrow("FORGE_RUN_CONFLICT");
+      ).rejects.toThrow(raises("FORGE_RUN_CONFLICT"));
 
       const current = await handle.store.load(CONFORMANCE_RUN_ID);
       await expect(
@@ -636,7 +646,7 @@ function describeSettlement(harness: RunStoreConformanceHarness): void {
           "publish",
           "2026-08-04T00:00:02.000Z",
         ),
-      ).rejects.toThrow("FORGE_EFFECT_NOT_CLAIMED");
+      ).rejects.toThrow(raises("FORGE_EFFECT_NOT_CLAIMED"));
     });
 
     test("the bound keeps the oldest, because those are the least explained", async () => {

@@ -1,10 +1,12 @@
 import type { ProgressAnnouncer } from "@forge/intake";
-import type {
-  ForgeJob,
-  ObservabilityPort,
-  QueuePort,
-  RunStatus,
-  RunStorePort,
+import { FORGE_EVENTS } from "@forge/observability";
+import {
+  FORGE_JOB_TYPES,
+  type ForgeJob,
+  type ObservabilityPort,
+  type QueuePort,
+  type RunStatus,
+  type RunStorePort,
 } from "@forge/ports";
 import type { Runtime } from "@forge/runtime";
 
@@ -113,27 +115,25 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
    *
    * Exponential from a second, so a brief blip is invisible and a real outage
    * backs off to minutes rather than hammering a service that is already
-   * struggling. Six attempts is a little over an hour, which is long enough to
-   * cover an incident and short enough that a queue does not fill with news
-   * nobody wants any more.
+   * struggling. Six attempts is a little over an hour: long enough to cover an
+   * incident, short enough that a queue does not fill with news nobody wants
+   * any more.
+   *
+   * Declared *above* the `return`, and that placement is load-bearing. The
+   * handlers below are function declarations, so they hoist and run later; a
+   * `const` written after the `return` is never initialised at all, and every
+   * publish job died on the temporal dead zone. The retry tests caught it and
+   * nothing else would have — the happy path never reads these.
    */
   const MAX_PUBLISH_ATTEMPTS = 6;
   const backoffMs = (attempt: number): number => 1_000 * 2 ** (attempt - 1);
-
-  /**
-   * Declared here, above the `return`, and that placement is load-bearing.
-   * Function declarations below it are hoisted and run later; a `const` after
-   * the `return` is never initialised at all, so every publish job failed on
-   * the temporal dead zone. Caught by the retry tests and nothing else would
-   * have — the happy path never reads them.
-   */
 
   return {
     handled,
     async start() {
       await options.queue.subscribe(async (job) => {
         handled.push(job);
-        options.observability.event("forge.worker.job", {
+        options.observability.event(FORGE_EVENTS.workerJob, {
           type: job.type,
           runId: job.runId,
         });
@@ -142,7 +142,7 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
         try {
           await handle(job);
         } catch (error) {
-          options.observability.event("forge.worker.job_failed", {
+          options.observability.event(FORGE_EVENTS.workerJobFailed, {
             type: job.type,
             runId: job.runId,
             reason: error instanceof Error ? error.message : String(error),
@@ -183,7 +183,7 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
      * has just finished a run is holding a worker for somebody else's latency.
      */
     await options.queue.enqueue({
-      type: "connector.publish",
+      type: FORGE_JOB_TYPES.publish,
       runId: record.runId,
       channel: record.origin.channel,
       attempt: 1,
@@ -225,7 +225,7 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
        * hour of failures is the kind of thing nobody discovers until somebody
        * asks why they were never told.
        */
-      options.observability.event("forge.connector.publish_abandoned", {
+      options.observability.event(FORGE_EVENTS.connectorPublishAbandoned, {
         runId,
         channel,
         attempt,
@@ -233,13 +233,13 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
       return;
     }
 
-    options.observability.event("forge.connector.publish_deferred", {
+    options.observability.event(FORGE_EVENTS.connectorPublishDeferred, {
       runId,
       channel,
       attempt,
     });
     await options.queue.enqueue(
-      { type: "connector.publish", runId, channel, attempt: attempt + 1 },
+      { type: FORGE_JOB_TYPES.publish, runId, channel, attempt: attempt + 1 },
       { delayMs: backoffMs(attempt) },
     );
   }
@@ -247,7 +247,7 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
   async function handle(job: ForgeJob): Promise<void> {
     if (job.type === "workflow.cancel") {
       await options.host.cancel(job.runId);
-      options.observability.event("forge.worker.cancelled", {
+      options.observability.event(FORGE_EVENTS.workerCancelled, {
         runId: job.runId,
       });
       return;
@@ -260,7 +260,7 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
 
     if (job.type === "workflow.resume") {
       const status = await options.host.resume(job.runId, job.approvalId);
-      options.observability.event("forge.worker.resumed", {
+      options.observability.event(FORGE_EVENTS.workerResumed, {
         runId: job.runId,
         approvalId: job.approvalId,
         status,
@@ -274,7 +274,7 @@ export function createRunConsumer(options: RunConsumerOptions): RunConsumer {
       job.workflowVersionId,
       job.attempt,
     );
-    options.observability.event("forge.worker.executed", {
+    options.observability.event(FORGE_EVENTS.workerExecuted, {
       runId: job.runId,
       status,
       // Proof the slot is not held across a gate.

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { ForgeIr } from "@forge/ir";
-import { failOpen } from "@forge/observability";
+import { FORGE_EVENTS, failOpen } from "@forge/observability";
 import {
   composePanel,
   type PanelDefinition,
@@ -31,7 +31,11 @@ import type {
   Span,
   SpanParent,
 } from "@forge/ports";
-import { RUN_STORE_ERRORS } from "@forge/ports";
+import {
+  FORGE_POLICY_IDS,
+  RUN_STORE_ERRORS,
+  RUNTIME_ERRORS,
+} from "@forge/ports";
 import type { Role } from "@forge/types";
 
 /**
@@ -473,7 +477,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     state.revision = await options.runs.update(state.record, state.revision);
     if (patch.status !== undefined && patch.status !== from) {
       observability.event(
-        "forge.run.transition",
+        FORGE_EVENTS.runTransition,
         {
           runId: state.record.runId,
           workflowId: state.record.workflowId,
@@ -647,7 +651,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
         invokeAgent: async (nodeId, promptRef, role) => {
           const span = observability.startSpan(
-            "forge.node.agent",
+            FORGE_EVENTS.nodeAgent,
             {
               runId: state.record.runId,
               nodeId,
@@ -707,7 +711,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
         judge: async (nodeId, judgeRef, fromState): Promise<JudgeVerdict> => {
           const span = observability.startSpan(
-            "forge.node.judge",
+            FORGE_EVENTS.nodeJudge,
             {
               runId: state.record.runId,
               nodeId,
@@ -767,7 +771,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
           }
           await pinRoute(nodeId, chosen);
           observability.event(
-            "forge.node.branch",
+            FORGE_EVENTS.nodeBranch,
             {
               runId: state.record.runId,
               nodeId,
@@ -793,7 +797,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
               async (lease) => {
                 acquired = true;
                 observability.event(
-                  "forge.node.sandbox",
+                  FORGE_EVENTS.nodeSandbox,
                   {
                     runId: state.record.runId,
                     nodeId,
@@ -818,7 +822,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
             // a backend says about its socket, what the run must report is that
             // the isolation it declared did not happen and it stopped there.
             observability.event(
-              "forge.node.sandbox",
+              FORGE_EVENTS.nodeSandbox,
               {
                 runId: state.record.runId,
                 nodeId,
@@ -901,7 +905,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
             produced === undefined ? undefined : pin(nodeId, produced),
           );
           observability.event(
-            "forge.effect.dispatched",
+            FORGE_EVENTS.effectDispatched,
             {
               runId,
               nodeId,
@@ -920,7 +924,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       // Retry is an attempt, not a state (006 §7): the run stays RUNNING.
       if (result.retryable && state.record.attempt < state.retryBudget) {
         observability.event(
-          "forge.run.retry",
+          FORGE_EVENTS.runRetry,
           {
             runId: state.record.runId,
             nodeId: result.nodeId,
@@ -932,7 +936,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         return advance(state);
       }
       observability.event(
-        "forge.run.failed",
+        FORGE_EVENTS.runFailed,
         {
           runId: state.record.runId,
           nodeId: result.nodeId,
@@ -948,7 +952,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
     if (result.kind === "succeeded") {
       observability.event(
-        "forge.run.succeeded",
+        FORGE_EVENTS.runSucceeded,
         {
           runId: state.record.runId,
           effects: ledger.length,
@@ -964,7 +968,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
     // An unauthorised side effect. Ask policy before asking a human.
     const policySpan = observability.startSpan(
-      "forge.policy.decide",
+      FORGE_EVENTS.policyDecide,
       {
         runId: state.record.runId,
         nodeId: result.nodeId,
@@ -1032,7 +1036,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     // Approvers are counted rather than named: who may decide is on the durable
     // record, and how many is what a dashboard needs.
     observability.event(
-      "forge.approval.requested",
+      FORGE_EVENTS.approvalRequested,
       {
         runId: state.record.runId,
         nodeId: result.nodeId,
@@ -1088,7 +1092,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         // the original process finally reporting in. Either way the action is
         // accounted for and doing it again is the failure, not the fix.
         throw new Error(
-          `FORGE_REDRIVE_STALE: '${nodeId}' is no longer an unaccounted action.`,
+          `${RUNTIME_ERRORS.redriveStale}: '${nodeId}' is no longer an unaccounted action.`,
         );
       }
 
@@ -1113,7 +1117,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       valueLedgers.get(runId)?.set(nodeId, pinned);
       await options.runs.pinValue(runId, nodeId, pinned);
       observability.event(
-        "forge.effect.redriven",
+        FORGE_EVENTS.effectRedriven,
         { runId, nodeId, effect: claim.effect },
         parentOf(state),
       );
@@ -1172,7 +1176,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       approval.decidedAt > approval.expiresAt
     ) {
       observability.event(
-        "forge.approval.expired",
+        FORGE_EVENTS.approvalExpired,
         {
           runId: state.record.runId,
           nodeId: approval.nodeId,
@@ -1188,7 +1192,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     }
 
     observability.event(
-      "forge.run.resumed",
+      FORGE_EVENTS.runResumed,
       {
         runId: state.record.runId,
         nodeId: approval.nodeId,
@@ -1254,7 +1258,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         principal,
       );
       observability.event(
-        "forge.approval.expired",
+        FORGE_EVENTS.approvalExpired,
         {
           runId: approval.runId,
           nodeId: approval.nodeId,
@@ -1278,7 +1282,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
     await options.approvals.decide(approvalId, decision, principal);
     observability.event(
-      "forge.approval.decided",
+      FORGE_EVENTS.approvalDecided,
       {
         runId: approval.runId,
         nodeId: approval.nodeId,
@@ -1326,7 +1330,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         expiresAt: expiry(),
       });
       observability.event(
-        "forge.approval.edited",
+        FORGE_EVENTS.approvalEdited,
         {
           runId: approval.runId,
           nodeId: approval.nodeId,
@@ -1373,7 +1377,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
      * same `create()` as the rest is what makes it true for every run rather
      * than for runs whose second write happened to land.
      */
-    const span = observability.startSpan("forge.run.start", {
+    const span = observability.startSpan(FORGE_EVENTS.runStart, {
       runId,
       workflowId: input.artifact.workflowId,
       fingerprint: input.artifact.fingerprint,
@@ -1481,7 +1485,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       const persisted = await options.runs.load(state.record.runId);
       const current = persisted === undefined ? state.record : persisted.record;
       observability.event(
-        "forge.run.ceded",
+        FORGE_EVENTS.runCeded,
         {
           runId: current.runId,
           workflowId: current.workflowId,
@@ -1611,7 +1615,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       }
       if (state.record.pendingApprovalId !== undefined) {
         throw new Error(
-          `FORGE_RUN_AWAITING_APPROVAL: run ${runId} is already waiting on ${state.record.pendingApprovalId}.`,
+          `${RUNTIME_ERRORS.awaitingApproval}: run ${runId} is already waiting on ${state.record.pendingApprovalId}.`,
         );
       }
       /**
@@ -1626,7 +1630,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
        */
       if (state.record.status === "CANCELLED") {
         throw new Error(
-          `FORGE_RUN_NOT_REDRIVABLE: run ${runId} was cancelled; redriving it would reverse that.`,
+          `${RUNTIME_ERRORS.notRedrivable}: run ${runId} was cancelled; redriving it would reverse that.`,
         );
       }
 
@@ -1662,7 +1666,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
         effectHash: binding,
         policyId:
           decision.kind === "allow"
-            ? "forge.policy.redrive"
+            ? FORGE_POLICY_IDS.redrive
             : decision.policyId,
         /**
          * An `allow` rule does not make a redrive unattended. The original
@@ -1676,7 +1680,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       });
 
       observability.event(
-        "forge.effect.redrive-requested",
+        FORGE_EVENTS.effectRedriveRequested,
         {
           runId,
           nodeId,

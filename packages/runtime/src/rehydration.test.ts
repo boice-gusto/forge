@@ -280,6 +280,16 @@ async function rewrite(
   );
 }
 
+/**
+ * Anchored, because `toThrow("CODE")` is a *substring* match.
+ *
+ * A rename that appends — a suffix, a namespace — passes a bare-string
+ * assertion silently, which makes these literals a weaker specification than
+ * they look. These codes are control flow across three packages, so the
+ * tripwire has to catch a rename in either direction.
+ */
+const raises = (code: string): RegExp => new RegExp(`^${code}: `);
+
 describe("a run is re-entered, not re-walked", () => {
   test("a second runtime decides the gate without asking the model again", async () => {
     const forge = world();
@@ -897,7 +907,7 @@ describe("an action nobody can account for is redriven only by a decision", () =
         { kind: "approve" },
         "marketing-lead",
       ),
-    ).rejects.toThrow("FORGE_REDRIVE_STALE");
+    ).rejects.toThrow(raises("FORGE_REDRIVE_STALE"));
     expect(asking.acted).toEqual([]);
   });
 
@@ -927,7 +937,7 @@ describe("an action nobody can account for is redriven only by a decision", () =
 
     await expect(
       stopping.runtime.redrive(run.runId, "publish"),
-    ).rejects.toThrow("FORGE_RUN_NOT_REDRIVABLE");
+    ).rejects.toThrow(raises("FORGE_RUN_NOT_REDRIVABLE"));
     expect(stopping.acted).toEqual([]);
     expect((await forge.runs.load(run.runId))?.record.status).toBe("CANCELLED");
   });
@@ -990,7 +1000,7 @@ describe("an action nobody can account for is redriven only by a decision", () =
 
     await expect(
       forge.start().runtime.redrive(run.runId, "publish"),
-    ).rejects.toThrow("FORGE_EFFECT_NOT_CLAIMED");
+    ).rejects.toThrow(raises("FORGE_EFFECT_NOT_CLAIMED"));
   });
 
   test("a run that does not exist cannot be redriven", async () => {

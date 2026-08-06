@@ -1,4 +1,5 @@
 import type { CheckpointRecord, CheckpointStorePort } from "@forge/ports";
+import { CHECKPOINT_ERRORS } from "@forge/ports";
 import type { Pool } from "pg";
 
 interface CheckpointRow {
@@ -60,7 +61,7 @@ export function createPostgresCheckpointStore(pool: Pool): CheckpointStorePort {
 
       const saved = rows[0];
       if (saved === undefined) {
-        throw new Error("FORGE_CHECKPOINT_NOT_WRITTEN");
+        throw new Error(CHECKPOINT_ERRORS.notWritten);
       }
       return toRecord(saved);
     },

@@ -1,4 +1,9 @@
-import type { PolicyDecision, PolicyPort, PolicyRequest } from "@forge/ports";
+import {
+  FORGE_POLICY_IDS,
+  type PolicyDecision,
+  type PolicyPort,
+  type PolicyRequest,
+} from "@forge/ports";
 
 /**
  * In-memory policy evaluator.
@@ -38,13 +43,13 @@ export interface MemoryPolicyOptions {
 const DENY_BY_DEFAULT: PolicyDecision = {
   kind: "deny",
   reason: "No rule permits this action; policy denies by default.",
-  policyId: "forge.policy.default-deny",
+  policyId: FORGE_POLICY_IDS.defaultDeny,
 };
 
 const EVALUATOR_ERROR: PolicyDecision = {
   kind: "deny",
   reason: "Policy evaluation failed; failing closed.",
-  policyId: "forge.policy.evaluator-error",
+  policyId: FORGE_POLICY_IDS.evaluatorError,
 };
 
 export function createMemoryPolicy(options: MemoryPolicyOptions): PolicyPort {
@@ -66,7 +71,7 @@ export function createMemoryPolicy(options: MemoryPolicyOptions): PolicyPort {
       return {
         kind: "deny",
         reason: `Capabilities outside the granted closure: ${ungranted.join(", ")}.`,
-        policyId: "forge.policy.capability-closure",
+        policyId: FORGE_POLICY_IDS.capabilityClosure,
       };
     }
 

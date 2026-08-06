@@ -6,7 +6,7 @@ import type {
   ClockPort,
   IdPort,
 } from "@forge/ports";
-import { ANY_ROLE } from "@forge/ports";
+import { ANY_ROLE, APPROVAL_ERRORS } from "@forge/ports";
 import type { Pool } from "pg";
 
 const TERMINAL: Record<ApprovalDecision["kind"], ApprovalStatus> = {
@@ -120,7 +120,7 @@ export function createPostgresApprovalStore(
 
       const opened = rows[0];
       if (opened === undefined) {
-        throw new Error("FORGE_APPROVAL_NOT_OPENED");
+        throw new Error(APPROVAL_ERRORS.notOpened);
       }
       return toRecord(opened);
     },
