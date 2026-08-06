@@ -1031,6 +1031,114 @@ describe("an action claimed and never carried out is not left for nobody to find
     expect(response.json().unsettled).toEqual([]);
   });
 
+  test("a redrive opens a gate rather than performing the action", async () => {
+    /**
+     * The recovery, and the shape of it is the whole point. An operator can
+     * ask for a lost action to be performed again; they cannot cause it. What
+     * comes back is a run waiting on a new approval, and the action happens
+     * only when somebody who may decide it does.
+     */
+    const stack = acmeStack();
+    const server = app(stack);
+    const started = await startRun(server);
+    await stack.runs.claimEffect({
+      runId: started.runId,
+      nodeId: "publish",
+      effect: "slack.post",
+      at: "2026-08-04T00:00:01.000Z",
+    });
+    await server.inject({
+      method: "POST",
+      url: `/v1/runs/${started.runId}/approvals/${started.pendingApprovalId}/decision`,
+      headers: AUTH,
+      payload: { decision: "reject", reason: "superseded" },
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/v1/runs/${started.runId}/effects/publish/redrive`,
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json().status).toBe("AWAITING_APPROVAL");
+    expect(response.json().pendingApprovalId).toBeDefined();
+    // Still unaccounted for: asking is not doing.
+    expect(await stack.runs.listUnsettled()).toHaveLength(1);
+  });
+
+  test("redriving an action that completed is refused, not offered for approval", async () => {
+    // A settled action is one this system watched come back. Offering a gate
+    // for it would be asking a human to authorise the double dispatch the
+    // claim exists to prevent.
+    const stack = acmeStack();
+    const server = app(stack);
+    const started = await startRun(server);
+    const run = await decideRun(server, started, { decision: "approve" });
+    expect(run.performedEffects).toEqual(["publish"]);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/v1/runs/${started.runId}/effects/publish/redrive`,
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe("FORGE_EFFECT_SETTLED");
+  });
+
+  test("redriving a run that does not exist is a 404, not a 409", async () => {
+    // The distinction matters to whoever is reading: 409 says "this run is not
+    // in a state where that is a recovery", and saying that about a run that
+    // does not exist sends an operator looking for a state it never had.
+    const response = await app().inject({
+      method: "POST",
+      url: "/v1/runs/run_never_existed/effects/publish/redrive",
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  test("a failure the route does not recognise is not dressed up as a conflict", async () => {
+    /**
+     * The `catch` around a redrive is a very good place to lose a real
+     * failure. A store that is unreachable, a policy that will not evaluate —
+     * neither is "this run is not in a state where that is a recovery", and
+     * answering 409 would tell an operator the run is fine and their request
+     * was the problem. Unrecognised failures propagate.
+     */
+    const stack = acmeStack();
+    const server = app({
+      ...stack,
+      runtime: {
+        ...stack.runtime,
+        async redrive() {
+          throw new Error("FORGE_STORE_UNAVAILABLE");
+        },
+      },
+    } as unknown as LocalStack);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/runs/run_1/effects/publish/redrive",
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(500);
+  });
+
+  test("a redrive refuses an unauthenticated caller", async () => {
+    // It is a request to have a side effect performed. Being unable to grant
+    // that itself is not a reason to let anyone ask.
+    const response = await app().inject({
+      method: "POST",
+      url: "/v1/runs/run_1/effects/publish/redrive",
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
   test("the report refuses an unauthenticated caller", async () => {
     // It names effects and the runs they belong to, which is the same reason
     // the run record is behind a credential.

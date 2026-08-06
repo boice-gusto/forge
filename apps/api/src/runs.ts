@@ -346,6 +346,49 @@ export function registerRunRoutes(
     return reply.send({ unsettled: await stack.runs.listUnsettled() });
   });
 
+  /**
+   * Ask for an action nobody can account for to be performed again.
+   *
+   * Opens a gate; it does not pass through one. The response is the run
+   * waiting on a new approval, and the action happens only when a human who
+   * may decide it does — through the ordinary decision route, checked the
+   * ordinary way. A redrive that acted here would be an operator endpoint that
+   * performs a side effect on a caller's say-so, which is the exact shape this
+   * system exists to make impossible.
+   *
+   * 409 rather than 400 on a refusal: nothing is wrong with the request, the
+   * run is in a state where this is not a recovery — the action already
+   * completed, or was never claimed, or the run is already at a gate.
+   */
+  app.post<{ Params: { runId: string; nodeId: string } }>(
+    "/v1/runs/:runId/effects/:nodeId/redrive",
+    async (request, reply) => {
+      const principal = await options.authenticate(request);
+      if (principal === undefined)
+        return reply.code(401).send({ status: "unauthorized" });
+
+      try {
+        const run = await stack.runtime.redrive(
+          request.params.runId,
+          request.params.nodeId,
+        );
+        return reply.code(202).send(run);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith("Unknown run")) {
+          return reply.code(404).send({ status: "not_found" });
+        }
+        const code = [
+          "FORGE_EFFECT_SETTLED",
+          "FORGE_EFFECT_NOT_CLAIMED",
+          "FORGE_RUN_AWAITING_APPROVAL",
+        ].find((known) => message.startsWith(known));
+        if (code === undefined) throw error;
+        return reply.code(409).send({ status: "conflict", code, message });
+      }
+    },
+  );
+
   app.get<{ Params: { runId: string } }>(
     "/v1/runs/:runId",
     async (request, reply) => {

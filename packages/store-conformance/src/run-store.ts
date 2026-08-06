@@ -639,6 +639,68 @@ function describeSettlement(harness: RunStoreConformanceHarness): void {
       ).rejects.toThrow("FORGE_EFFECT_NOT_CLAIMED");
     });
 
+    test("an unsettled claim can be given up, so the action can be claimed again", async () => {
+      /**
+       * The only way out of exactly-once, and it is narrow on purpose. A claim
+       * with no settlement is an action nobody can account for; releasing it
+       * is what lets a human decide to perform it again. Everything about that
+       * decision lives above this layer — the store's job is to make the
+       * release possible and to make it impossible for the wrong row.
+       */
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+      await claim(handle.store, "publish", "2026-08-04T00:00:01.000Z");
+
+      await handle.store.releaseClaim(CONFORMANCE_RUN_ID, "publish");
+
+      const peer = await handle.peer();
+      expect(await peer.listUnsettled()).toEqual([]);
+      expect((await peer.load(CONFORMANCE_RUN_ID))?.effects).toEqual([]);
+      // And the point of releasing: it can be taken again.
+      expect(
+        await peer.claimEffect({
+          runId: CONFORMANCE_RUN_ID,
+          nodeId: "publish",
+          effect: "prod.write",
+          at: "2026-08-04T00:01:00.000Z",
+        }),
+      ).toBe(true);
+    });
+
+    test("a settled action cannot be given up, whatever asks", async () => {
+      /**
+       * The refusal that makes the release safe to have at all. A settled
+       * action is one this system watched complete; performing it again is the
+       * exact failure the claim exists to prevent, and "recoverable" was never
+       * a claim about actions that already happened.
+       */
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+      await claim(handle.store, "publish", "2026-08-04T00:00:01.000Z");
+      await handle.store.settleEffect(
+        CONFORMANCE_RUN_ID,
+        "publish",
+        "2026-08-04T00:00:02.000Z",
+      );
+
+      await expect(
+        handle.store.releaseClaim(CONFORMANCE_RUN_ID, "publish"),
+      ).rejects.toThrow("FORGE_EFFECT_SETTLED");
+
+      // And it is still there, so the refusal did not half-happen.
+      const peer = await handle.peer();
+      expect((await peer.load(CONFORMANCE_RUN_ID))?.effects).toHaveLength(1);
+    });
+
+    test("releasing something never claimed is refused rather than ignored", async () => {
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+
+      await expect(
+        handle.store.releaseClaim(CONFORMANCE_RUN_ID, "publish"),
+      ).rejects.toThrow("FORGE_EFFECT_NOT_CLAIMED");
+    });
+
     test("a store with nothing outstanding reports nothing", async () => {
       // Guards the four above: a list that always came back empty would pass
       // "drops off the list" and prove nothing.

@@ -1,6 +1,6 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 71 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 72 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
@@ -29,7 +29,7 @@ needs Docker, so it fails on its own terms rather than inside `verify`.
 | **`apps/api` refuses to be mistaken for production** | Its guard was `NODE_ENV === "production"` — opt-in, so an unset value sailed past. The allowance is the opt-in now, and it announces what it simulates |
 | **One trace per run, across processes** | The run record carries a W3C `traceparent`, so the process that creates a run, the worker that walks it and whoever resumes it after a decision all record in one trace. Sampling travels with it |
 | **Optimistic concurrency** | `RunStorePort.update()` presents the revision it read. A stale write is refused rather than applied, and the runtime cedes to whoever got there first instead of failing a job |
-| **Lost effects are findable** | An action claimed and never seen to finish is reported at `GET /v1/effects/unsettled`. A report, not a button — see below |
+| **Lost effects are findable, and recoverable** | An action claimed and never seen to finish is reported at `GET /v1/effects/unsettled`, and `POST /v1/runs/:runId/effects/:nodeId/redrive` opens a *gate* on performing it again — it never performs it |
 | **A worker binds real things, or refuses to start** | The company's effect sink, a Docker sandbox for the profiles it declares, and a real model. Each was a stand-in wired into the production composition root |
 | **Adapters resolve at boot** | A company's adapter modules are imported when the deployment starts, not at the first gated action |
 | **Policy** | OPA Wasm behind `PolicyPort` (ADR-007), Rego compiled ahead of time and committed. Policy resolves from the deployment's company package, never from a request |
@@ -49,7 +49,6 @@ cannot drift apart without one of them failing.
 | Gap | Why |
 |---|---|
 | **No LangGraph engine** | ADR-002, deliberately amended rather than left open. The engine carries Forge's own semantics — sandbox scoping, arm pruning, the data plane's short-circuit — and moving those into a vendor's execution model would put the invariants beyond this repository's tests |
-| **No redrive for a lost effect** | Deliberate, not pending. Nobody can tell from the record whether the action failed to happen or happened and the process died before saying so. Re-running it under that uncertainty is a decision to perform a side effect, which in this system means a human bound to that exact action — so it belongs behind a gate, not behind an operator endpoint that quietly re-sends |
 | **Two concurrent walks in one process still share a `RunState`** | The queue delivers once, so this needs a redelivery *and* a coincidence. Reads no longer touch it, which was the reachable half |
 | **No deadline on enqueue** | A job that is never taken is indistinguishable from one taken slowly |
 | **No transform table from the company package** | `createDurableStack` takes one; nothing resolves one from an adapter binding |
@@ -58,8 +57,8 @@ cannot drift apart without one of them failing.
 
 ## Next, in order
 
-1. **A gated redrive**, so a lost effect can be re-performed by a human decision rather than not at all.
-2. **A transform table from the company package**, resolved the way adapters now are.
+1. **A transform table from the company package**, resolved the way adapters now are.
+2. **A redrive in the resilience harness** — the unit tests stage a lost effect by hand; the harness can lose one for real.
 3. **Phase 8.**
 
 ### What Phase 7 and the work after it found

@@ -18,7 +18,12 @@ import { createMemoryRunStore } from "@forge/run-store-memory";
 import { createMemorySandbox } from "@forge/sandbox";
 import { describe, expect, test } from "vitest";
 
-import { createRuntime, type Runtime, type SealedArtifact } from "./runtime.js";
+import {
+  createRuntime,
+  effectHash,
+  type Runtime,
+  type SealedArtifact,
+} from "./runtime.js";
 
 /**
  * Rehydration: a run re-entered by a runtime that did not start it.
@@ -180,6 +185,8 @@ interface ProcessOptions {
   /** Swapped in to prove a refusal; defaults to the shared store. */
   readonly runs?: RunStorePort;
   readonly approvals?: ApprovalPort;
+  /** A deployment whose rules have changed since the run started. */
+  readonly rules?: readonly PolicyRule[];
 }
 
 interface Process {
@@ -208,7 +215,10 @@ function world() {
     const observability = createMemoryObservability();
     const runtime = createRuntime({
       engine: createMemoryGraphEngine(),
-      policy: createMemoryPolicy({ rules: RULES, grants: ["slack.write"] }),
+      policy: createMemoryPolicy({
+        rules: options.rules ?? RULES,
+        grants: ["slack.write"],
+      }),
       approvals: options.approvals ?? approvals,
       provider: agent.provider,
       sandbox: createMemorySandbox({ profiles: ["docker"], available: true }),
@@ -690,5 +700,227 @@ describe("two workers racing one dispatch", () => {
     expect(finished).toMatchObject({ status: "SUCCEEDED", result: RECEIPT });
     expect(second.acted).toEqual([]);
     expect(second.runtime.ledger(run.runId)).toEqual(["publish"]);
+  });
+});
+
+/* ========================================================================== */
+
+describe("an action nobody can account for is redriven only by a decision", () => {
+  /**
+   * The gap the claim-before-action ordering leaves on purpose: a process that
+   * dies between the two leaves an action a human approved, that the ledger
+   * believes was dispatched, and that never happened. Recovering it means
+   * performing it again — and nothing can tell that case from one where the
+   * action landed and the acknowledgement was lost.
+   *
+   * So a redrive is not a retry and not a button. It is the same kind of thing
+   * as the original dispatch: a human, bound to the exact action.
+   */
+
+  /** A run parked at its gate, approved, and then killed mid-dispatch. */
+  async function lost(forge: ReturnType<typeof world>) {
+    const { run } = await parked(forge);
+    await forge.runs.claimEffect({
+      runId: run.runId,
+      nodeId: "publish",
+      effect: "slack.post",
+      input: DRAFT_ONE,
+      at: "2026-08-04T00:00:00.000Z",
+    });
+    await forge.approvals.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+    // No settlement and no pinned value: the process never came back.
+    const second = forge.start();
+    const finished = await second.runtime.resume(run.runId);
+    expect(second.acted).toEqual([]);
+    return { run, forge, finished };
+  }
+
+  test("the run is stuck and the action is missing, with nothing said about why", async () => {
+    /**
+     * Not the fix — the reason one is needed.
+     *
+     * This workflow's output node reads what `publish` produced, so the lost
+     * dispatch surfaces as a run that fails on a value that is not there. That
+     * is the *lucky* shape: a workflow whose later nodes do not read the
+     * effect's output reports SUCCEEDED instead, which the resilience harness
+     * proves separately. Either way the action never happened, and neither
+     * outcome says so.
+     */
+    const forge = world();
+    const { run, finished } = await lost(forge);
+
+    expect(finished?.status).toBe("FAILED");
+    expect(await forge.runs.listUnsettled()).toEqual([
+      {
+        runId: run.runId,
+        nodeId: "publish",
+        effect: "slack.post",
+        claimedAt: "2026-08-04T00:00:00.000Z",
+      },
+    ]);
+  });
+
+  test("a redrive opens a gate rather than performing anything", async () => {
+    const forge = world();
+    const { run } = await lost(forge);
+
+    const third = forge.start();
+    const parkedAgain = await third.runtime.redrive(run.runId, "publish");
+
+    expect(parkedAgain.status).toBe("AWAITING_APPROVAL");
+    expect(parkedAgain.pendingApprovalId).toBeDefined();
+    // Nothing has been performed, and the claim is still exactly where it was.
+    expect(third.acted).toEqual([]);
+    expect(await forge.runs.listUnsettled()).toHaveLength(1);
+  });
+
+  test("the new gate binds the same action, so it cannot authorise another", async () => {
+    const forge = world();
+    const { run } = await lost(forge);
+
+    const third = forge.start();
+    const reopened = await third.runtime.redrive(run.runId, "publish");
+    const approval = await third.runtime.getApproval(
+      reopened.pendingApprovalId as string,
+    );
+
+    expect(approval).toMatchObject({
+      runId: run.runId,
+      nodeId: "publish",
+      effect: "slack.post",
+    });
+    expect(approval?.effectHash).toBe(
+      effectHash({
+        runId: run.runId,
+        nodeId: "publish",
+        effect: "slack.post",
+        fingerprint: reopened.fingerprint,
+      }),
+    );
+  });
+
+  test("approving it performs the action once, and settles it", async () => {
+    const forge = world();
+    const { run } = await lost(forge);
+
+    const third = forge.start();
+    const reopened = await third.runtime.redrive(run.runId, "publish");
+    const finished = await third.runtime.decide(
+      reopened.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    expect(finished.status).toBe("SUCCEEDED");
+    expect(third.acted).toEqual([DRAFT_ONE]);
+    // Accounted for now, and only once.
+    expect(await forge.runs.listUnsettled()).toEqual([]);
+    expect((await forge.runs.load(run.runId))?.effects).toHaveLength(1);
+  });
+
+  test("rejecting it performs nothing, and the gap stays visible", async () => {
+    // A decision either way is a decision. What must not happen is the action
+    // going out because somebody was asked and said no.
+    const forge = world();
+    const { run } = await lost(forge);
+
+    const third = forge.start();
+    const reopened = await third.runtime.redrive(run.runId, "publish");
+    await third.runtime.decide(
+      reopened.pendingApprovalId as string,
+      { kind: "reject", reason: "the recipient confirmed they got it" },
+      "marketing-lead",
+    );
+
+    expect(third.acted).toEqual([]);
+    expect(await forge.runs.listUnsettled()).toHaveLength(1);
+  });
+
+  test("an action known to have completed cannot be redriven", async () => {
+    /**
+     * The refusal that keeps exactly-once meaning anything. A settled action
+     * is one this system watched come back; performing it again is not a
+     * recovery, it is the failure the claim exists to prevent, and no
+     * approval should be offered for it.
+     */
+    const forge = world();
+    const { run } = await parked(forge);
+    const second = forge.start();
+    await forge.approvals.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+    const done = await second.runtime.resume(run.runId);
+    expect(done?.status).toBe("SUCCEEDED");
+    expect(second.acted).toEqual([DRAFT_ONE]);
+
+    const third = forge.start();
+    await expect(third.runtime.redrive(run.runId, "publish")).rejects.toThrow(
+      "FORGE_EFFECT_SETTLED",
+    );
+    expect(third.acted).toEqual([]);
+  });
+
+  test("a node that never claimed anything cannot be redriven into existence", async () => {
+    // Otherwise a redrive is a way to dispatch an effect that was never
+    // authorised, gated by an approval this call itself asked for.
+    const forge = world();
+    const { run } = await parked(forge);
+
+    await expect(
+      forge.start().runtime.redrive(run.runId, "publish"),
+    ).rejects.toThrow("FORGE_EFFECT_NOT_CLAIMED");
+  });
+
+  test("a run that does not exist cannot be redriven", async () => {
+    await expect(
+      world().start().runtime.redrive("run_never_existed", "publish"),
+    ).rejects.toThrow("Unknown run");
+  });
+
+  test("policy still decides, so a rule that now denies stops the redrive", async () => {
+    /**
+     * The gate is reopened against *current* policy, not against the decision
+     * that let the action through the first time. A rule tightened since —
+     * which is one of the likelier reasons somebody is looking at a lost
+     * effect at all — must stop it, and stop it before a human is asked to
+     * approve something the deployment no longer permits.
+     */
+    const forge = world();
+    const { run } = await lost(forge);
+
+    const denying = forge.start({
+      rules: [
+        {
+          id: "acme.marketing.external-publish",
+          action: "slack.post",
+          decision: "deny" as const,
+          reason: "publishing is suspended",
+        },
+      ],
+    });
+
+    await expect(denying.runtime.redrive(run.runId, "publish")).rejects.toThrow(
+      "publishing is suspended",
+    );
+    expect(denying.acted).toEqual([]);
+  });
+
+  test("a run already waiting on a gate is not given a second one", async () => {
+    // Two pending approvals on one run is the state that voided an operator's
+    // decision once already; a redrive must not be a way back into it.
+    const forge = world();
+    const { run } = await lost(forge);
+    const third = forge.start();
+    await third.runtime.redrive(run.runId, "publish");
+
+    await expect(third.runtime.redrive(run.runId, "publish")).rejects.toThrow(
+      "FORGE_RUN_AWAITING_APPROVAL",
+    );
   });
 });

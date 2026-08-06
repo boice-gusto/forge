@@ -161,6 +161,21 @@ export function createMemoryRunStore(): RunStorePort {
       claimed.settledAt ??= at;
     },
 
+    async releaseClaim(runId, nodeId) {
+      const stored = find(runId);
+      const at = stored.effects.findIndex((effect) => effect.nodeId === nodeId);
+      const claimed = stored.effects[at] as { settledAt?: string } | undefined;
+      if (claimed === undefined) {
+        throw new Error(`FORGE_EFFECT_NOT_CLAIMED: ${runId}/${nodeId}`);
+      }
+      if (claimed.settledAt !== undefined) {
+        throw new Error(
+          `FORGE_EFFECT_SETTLED: ${runId}/${nodeId} completed at ${claimed.settledAt}; it cannot be redriven.`,
+        );
+      }
+      stored.effects.splice(at, 1);
+    },
+
     async listUnsettled() {
       return [...runs.entries()]
         .flatMap(([runId, stored]) =>

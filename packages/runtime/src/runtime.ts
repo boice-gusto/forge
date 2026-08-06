@@ -341,6 +341,18 @@ export interface Runtime {
     decision: ApprovalDecision,
     principal: string,
   ): Promise<RunRecord>;
+  /**
+   * Asks a human whether an action nobody can account for should be performed
+   * again.
+   *
+   * Not a retry, and deliberately not a button an operator presses to make
+   * something happen. Between the claim and the settlement nothing can tell a
+   * failed dispatch from one that landed and lost its acknowledgement, so
+   * performing it again is a decision to act under that uncertainty — and in
+   * this system a decision to act is a human bound to the exact action. This
+   * opens that gate; it does not pass through it.
+   */
+  redrive(runId: string, nodeId: string): Promise<RunRecord>;
   cancel(runId: string): Promise<RunRecord>;
   /** What this process knows, without going to the store. */
   getRun(runId: string): RunRecord | undefined;
@@ -1036,11 +1048,42 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
   /** Leaves the gate on an approval, authorising exactly the node it named. */
   async function carry(state: RunState, nodeId: string): Promise<RunRecord> {
+    const runId = state.record.runId;
+
+    /**
+     * A redrive, if that is what this gate was.
+     *
+     * The claim is given up here and nowhere earlier. Releasing it when the
+     * redrive was *requested* would leave a window in which the action is
+     * unclaimed and the decision has not been made — and any process resuming
+     * the run in that window would perform it with no authorisation at all,
+     * which is the one thing this system exists to prevent. So the release and
+     * the authorisation are the same step, on the far side of a human.
+     *
+     * The ledger entry goes with it. Without that, `perform` sees the node
+     * already dispatched and returns, and the decision reads as honoured while
+     * changing nothing.
+     */
+    if (state.record.redriving === nodeId) {
+      await options.runs.releaseClaim(runId, nodeId);
+      const ledger = ledgers.get(runId);
+      const at = ledger?.indexOf(nodeId) ?? -1;
+      if (ledger !== undefined && at >= 0) ledger.splice(at, 1);
+      state.authorised.delete(nodeId);
+      observability.event(
+        "forge.effect.redriven",
+        { runId, nodeId },
+        parentOf(state),
+      );
+    }
+
     state.authorised.add(nodeId);
     await update(state, {
       status: "RUNNING",
       attempt: state.record.attempt + 1,
       pendingApprovalId: undefined,
+      redriving: undefined,
+      performedEffects: [...(ledgers.get(runId) ?? [])],
     });
     return advance(state);
   }
@@ -1490,6 +1533,107 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
     async recordDecision(approvalId, decision, principal) {
       return (await record(approvalId, decision, principal)).record;
+    },
+
+    async redrive(runId, nodeId) {
+      const state = await hydrate(runId);
+      if (state === undefined) throw new Error(`Unknown run: ${runId}.`);
+
+      /**
+       * Only an action nobody can account for.
+       *
+       * A claim with no settlement is the window between "we said we would do
+       * this" and "we saw it come back" — the one thing the claim-before-action
+       * ordering deliberately leaves behind, and the only thing a redrive is
+       * for. Anything else is either an action known to have completed, or an
+       * action never authorised in the first place.
+       *
+       * The store refuses a settled claim too. Checked here as well because
+       * the message an operator reads should say why, and because this is
+       * where the run's own state is available to say it.
+       */
+      const persisted = await options.runs.load(runId);
+      const claimed = persisted?.effects.find(
+        (effect) => effect.nodeId === nodeId,
+      );
+      if (claimed === undefined) {
+        throw new Error(
+          `FORGE_EFFECT_NOT_CLAIMED: run ${runId} never claimed '${nodeId}'; there is nothing to redrive.`,
+        );
+      }
+      if (claimed.settledAt !== undefined) {
+        throw new Error(
+          `FORGE_EFFECT_SETTLED: '${nodeId}' completed at ${claimed.settledAt}; performing it again is not a recovery.`,
+        );
+      }
+      if (state.record.pendingApprovalId !== undefined) {
+        throw new Error(
+          `FORGE_RUN_AWAITING_APPROVAL: run ${runId} is already waiting on ${state.record.pendingApprovalId}.`,
+        );
+      }
+
+      /**
+       * A new gate, bound exactly as the original was.
+       *
+       * Same run, same node, same effect, same artifact fingerprint — so the
+       * binding check on the way out is the same check, and a redrive cannot
+       * become authorisation for a different action. Approvers come from
+       * policy, not from the caller and not from the old approval: who may
+       * decide this is the deployment's rule, and asking again is the point.
+       */
+      const decision = await options.policy.decide({
+        actor: options.actor,
+        action: claimed.effect,
+        environment: options.environment,
+        capabilities: state.capabilities,
+      });
+      if (decision.kind === "deny") {
+        throw new Error(`${decision.policyId}: ${decision.reason}`);
+      }
+
+      const binding = effectHash({
+        runId,
+        nodeId,
+        effect: claimed.effect,
+        fingerprint: state.record.fingerprint,
+      });
+      const approval = await options.approvals.request({
+        runId,
+        nodeId,
+        effect: claimed.effect,
+        effectHash: binding,
+        policyId:
+          decision.kind === "allow"
+            ? "forge.policy.redrive"
+            : decision.policyId,
+        /**
+         * An `allow` rule does not make a redrive unattended. The original
+         * dispatch was allowed too, and the thing being decided now is not
+         * "may this action happen" but "did it already, and is doing it again
+         * acceptable" — which no policy in this system has an opinion about
+         * and no rule should be able to answer with silence.
+         */
+        approvers: decision.kind === "allow" ? [] : decision.approvers,
+        expiresAt: expiry(),
+      });
+
+      observability.event(
+        "forge.effect.redrive-requested",
+        {
+          runId,
+          nodeId,
+          effect: claimed.effect,
+          approvalId: approval.approvalId,
+          claimedAt: claimed.dispatchedAt,
+        },
+        parentOf(state),
+      );
+
+      return update(state, {
+        status: "AWAITING_APPROVAL",
+        pendingApprovalId: approval.approvalId,
+        redriving: nodeId,
+      });
     },
 
     async cancel(runId) {

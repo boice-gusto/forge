@@ -232,6 +232,31 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
       }
     },
 
+    async releaseClaim(runId, nodeId) {
+      // One statement, and `settled_at is null` in the predicate: the check
+      // and the delete cannot be separated by the settlement arriving between
+      // them, which is exactly when releasing would be wrong.
+      const { rowCount } = await pool.query(
+        `delete from forge_run_effect
+          where run_id = $1 and node_id = $2 and settled_at is null`,
+        [runId, nodeId],
+      );
+      if (rowCount === 1) return;
+
+      const { rows } = await pool.query<{ settled_at: string | null }>(
+        `select settled_at from forge_run_effect
+          where run_id = $1 and node_id = $2`,
+        [runId, nodeId],
+      );
+      const found = rows[0];
+      if (found === undefined) {
+        throw new Error(`FORGE_EFFECT_NOT_CLAIMED: ${runId}/${nodeId}`);
+      }
+      throw new Error(
+        `FORGE_EFFECT_SETTLED: ${runId}/${nodeId} completed at ${found.settled_at}; it cannot be redriven.`,
+      );
+    },
+
     async listUnsettled() {
       const { rows } = await pool.query<{
         run_id: string;

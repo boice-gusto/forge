@@ -63,6 +63,17 @@ export interface RunRecord {
    * costs a trace, never a run.
    */
   readonly traceparent?: string | undefined;
+  /**
+   * The node whose pending approval is a *redrive* rather than a first
+   * authorisation.
+   *
+   * On the record because the decision may be processed by a process that
+   * never saw the request. Without it, a resuming worker would carry the gate
+   * as an ordinary one, find the node already in the effect ledger, and skip
+   * the very action the human just authorised — a decision that reads as
+   * honoured and changes nothing.
+   */
+  readonly redriving?: string | undefined;
 }
 
 /**
@@ -259,6 +270,19 @@ export interface RunStorePort {
    * completion, which is the guarantee this system cannot offer.
    */
   settleEffect(runId: string, nodeId: string, at: string): Promise<void>;
+  /**
+   * Gives up a claim so the action can be claimed, and performed, again.
+   *
+   * The one way an effect escapes exactly-once, and therefore narrow: a claim
+   * that was *settled* is refused, because that action is known to have
+   * completed and re-performing it is the failure this whole mechanism exists
+   * to prevent. Only the unexplained window is releasable.
+   *
+   * Being able to release is not permission to. Nothing in the runtime calls
+   * this except on the far side of a human decision bound to the exact action
+   * — see `Runtime.redrive`.
+   */
+  releaseClaim(runId: string, nodeId: string): Promise<void>;
   /**
    * Every action claimed and never settled, oldest claim first.
    *
