@@ -198,6 +198,9 @@ importers:
         specifier: ^8.22.0
         version: 8.22.0
     devDependencies:
+      '@forge/sandbox-docker':
+        specifier: workspace:*
+        version: link:../packages/sandbox-docker
       '@testcontainers/postgresql':
         specifier: ^12.1.0
         version: 12.1.0

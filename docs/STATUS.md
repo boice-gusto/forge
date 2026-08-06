@@ -1,13 +1,13 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 69 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 71 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
 was checked against the repository.
 
 **Scale:** 41 packages, 3 apps, 1,350 unit tests (98.7% statements / 91.3%
-branches) plus 18 resilience scenarios against real containers. Ten CI steps —
+branches) plus 22 resilience scenarios against real containers. Ten CI steps —
 `lint`, `typecheck`, `test`, `test:coverage`, `test:packaging`,
 `test:architecture`, `test:security`, `security:secrets`, `security:licenses`,
 `measure:phase1` — and a separate `resilience` job, which costs minutes and
@@ -25,7 +25,8 @@ needs Docker, so it fails on its own terms rather than inside `verify`.
 | **Durability** | Postgres run store, checkpoints, approvals and run events; BullMQ queue. A run survives the process that started it, including one with an `agent` before its gate, and **survives an API restart** |
 | **Async start** | `POST /v1/runs` persists and enqueues, 202 + `Location`. `POST …/decision` does the same, so no route walks a graph inside a request. The consumer is bound in both persistence modes, so both routes are one code path |
 | **Live events** | `GET /v1/runs/:runId/events` streams SSE off the durable history, resumable by `Last-Event-ID`. The tail re-authenticates each pass, because a stream outlives the credential that opened it |
-| **Resilience** | `harness/` — load, chaos and disaster recovery against real Postgres and Redis, killing them mid-run on purpose |
+| **Resilience** | `harness/` — load, chaos and disaster recovery against real Postgres and Redis, killing them mid-run on purpose, and a sandbox container destroyed under a live lease |
+| **`apps/api` refuses to be mistaken for production** | Its guard was `NODE_ENV === "production"` — opt-in, so an unset value sailed past. The allowance is the opt-in now, and it announces what it simulates |
 | **One trace per run, across processes** | The run record carries a W3C `traceparent`, so the process that creates a run, the worker that walks it and whoever resumes it after a decision all record in one trace. Sampling travels with it |
 | **Optimistic concurrency** | `RunStorePort.update()` presents the revision it read. A stale write is refused rather than applied, and the runtime cedes to whoever got there first instead of failing a job |
 | **Lost effects are findable** | An action claimed and never seen to finish is reported at `GET /v1/effects/unsettled`. A report, not a button — see below |
@@ -51,8 +52,6 @@ cannot drift apart without one of them failing.
 | **No redrive for a lost effect** | Deliberate, not pending. Nobody can tell from the record whether the action failed to happen or happened and the process died before saying so. Re-running it under that uncertainty is a decision to perform a side effect, which in this system means a human bound to that exact action — so it belongs behind a gate, not behind an operator endpoint that quietly re-sends |
 | **Two concurrent walks in one process still share a `RunState`** | The queue delivers once, so this needs a redelivery *and* a coincidence. Reads no longer touch it, which was the reachable half |
 | **No deadline on enqueue** | A job that is never taken is indistinguishable from one taken slowly |
-| **No sandbox chaos scenario** | The harness kills Postgres and Redis; it does not kill a container mid-lease |
-| **`apps/api` still composes stand-ins** | It is not the process that acts, so a no-op sink is defensible there — but it binds the simulated sandbox and the mock provider too, and neither is defensible for a control plane that walks a run in memory mode |
 | **No transform table from the company package** | `createDurableStack` takes one; nothing resolves one from an adapter binding |
 | **Four `forge.gusto` scenarios are `todo`** | Held open by a test that goes red the day the API stops ignoring `environment`, so they cannot rot quietly |
 | **Phase 8 not started** | Phase 7 is done and found four production defects; 8 is next |
@@ -60,9 +59,8 @@ cannot drift apart without one of them failing.
 ## Next, in order
 
 1. **A gated redrive**, so a lost effect can be re-performed by a human decision rather than not at all.
-2. **The same refusals for `apps/api`**, or a stated reason it is different.
-3. **A sandbox chaos scenario** — kill the container mid-lease.
-4. **Phase 8.**
+2. **A transform table from the company package**, resolved the way adapters now are.
+3. **Phase 8.**
 
 ### What Phase 7 and the work after it found
 

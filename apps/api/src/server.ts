@@ -29,13 +29,29 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
 /**
  * This binary ships one identity provider and it is the development one, so it
  * refuses to be the thing it is not. A production deployment binds a real IdP
- * to `IdentityPort` and starts from its own entry point; until then, running
- * this with `NODE_ENV=production` would be a control plane whose authentication
- * is a list of preshared strings in an environment variable.
+ * to `IdentityPort` and starts from its own entry point; running this in its
+ * place is a control plane whose authentication is a list of preshared strings
+ * in an environment variable.
+ *
+ * The refusal used to be `NODE_ENV === "production"`, which is the wrong way
+ * round: it fires only when somebody remembers to say the dangerous thing, and
+ * an unset `NODE_ENV` — the state of any container nobody configured — sailed
+ * straight past it. A guard that depends on being told it is needed is a guard
+ * that is absent exactly when it matters.
+ *
+ * So the allowance is the opt-in now, and it is narrow.
  */
-if (process.env.NODE_ENV === "production") {
+const DEVELOPMENT_ENVIRONMENTS = new Set(["development", "test"]);
+if (!DEVELOPMENT_ENVIRONMENTS.has(process.env.NODE_ENV ?? "")) {
   throw new Error(
-    "apps/api ships only the development identity provider. Bind a real IdP to IdentityPort before running in production.",
+    "apps/api ships only the development identity provider, and its stack " +
+      "binds a simulated sandbox and a stand-in model. It starts only with " +
+      `NODE_ENV set to development or test; it is currently ${
+        process.env.NODE_ENV === undefined
+          ? "unset"
+          : `"${process.env.NODE_ENV}"`
+      }. Bind a real IdP to IdentityPort and compose your own entry point for ` +
+      "anything else.",
   );
 }
 
@@ -153,6 +169,22 @@ async function stack(rules: DeploymentPolicy): Promise<ControlPlaneStack> {
   }
   return createDurableStack(shared);
 }
+
+/**
+ * What this binary is, stated at boot rather than left to be discovered.
+ *
+ * Its sibling `apps/worker` refuses to start on any of these, because a worker
+ * is the process that acts and a stand-in there is a gated action performed
+ * nowhere, or a model nobody consulted shown to a human as their decision. A
+ * control plane is not that process, and in memory mode it is a development
+ * tool that has just refused to run anywhere else — so here the same facts are
+ * a notice rather than a refusal. Silence was the only option that was wrong.
+ */
+process.stderr.write(
+  "[forge-api] Development control plane: preshared-credential identity, a " +
+    "simulated sandbox, and a stand-in model. Nothing here provides " +
+    "isolation or talks to a real provider.\n",
+);
 
 const resolved = await policy();
 
