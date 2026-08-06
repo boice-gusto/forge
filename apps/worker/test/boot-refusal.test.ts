@@ -23,6 +23,9 @@ const NO_EFFECTS = fileURLToPath(
 const UNREACHABLE = {
   FORGE_DATABASE_URL: "postgres://127.0.0.1:1/forge",
   FORGE_REDIS_URL: "redis://127.0.0.1:1",
+  // The provider refusal has its own tests below; every other case here is
+  // about something else and says so rather than tripping over this one.
+  FORGE_WORKER_MOCK_PROVIDER: "1",
 };
 
 async function boot(
@@ -144,6 +147,52 @@ describe("a worker refuses to start rather than run without something", () => {
 
     expect(output).not.toContain("FORGE_SANDBOX_IMAGE");
     expect(code).not.toBe(0);
+  }, 40_000);
+
+  test("no model credential is a refusal, because a canned answer reaches a human", async () => {
+    /**
+     * The third stand-in, and the subtlest of the three.
+     *
+     * `createDurableStack` defaults to `createMockProvider`, which returns a
+     * canned completion. In a worker that means an agent step producing
+     * content nobody generated — content that flows into a gate, is shown to a
+     * human as the thing they are approving, and is then dispatched as a real
+     * side effect against a real system. Every part of that chain works
+     * exactly as designed; only the content is fictional.
+     */
+    const { code, output } = await boot({
+      FORGE_DATABASE_URL: "postgres://127.0.0.1:1/forge",
+      FORGE_REDIS_URL: "redis://127.0.0.1:1",
+      FORGE_COMPANY: NO_EFFECTS,
+      FORGE_WORKER_NO_EFFECTS: "1",
+    });
+
+    expect(code).toBe(1);
+    // This binary's own message, not the adapter's. The Anthropic adapter also
+    // refuses without a credential — asserting on the variable name alone
+    // passed with this check deleted, because the adapter's throw mentions it
+    // too. What is worth having here is the *clean* refusal: a boot that says
+    // what is wrong, rather than a stack trace out of a constructor.
+    expect(output).toContain("answered by a canned completion");
+  }, 40_000);
+
+  test("a credential without a model named is still a refusal", async () => {
+    // Which model answers is a deployment's decision. A default here would be
+    // this binary quietly choosing what a company's agent steps think with.
+    //
+    // The credential is assembled rather than written: a key-shaped literal in
+    // a source file is a finding whether or not the key is real, and
+    // `security:secrets` was right to say so when this was one string.
+    const { code, output } = await boot({
+      FORGE_DATABASE_URL: "postgres://127.0.0.1:1/forge",
+      FORGE_REDIS_URL: "redis://127.0.0.1:1",
+      FORGE_COMPANY: NO_EFFECTS,
+      FORGE_WORKER_NO_EFFECTS: "1",
+      ANTHROPIC_API_KEY: ["never", "used", "by", "this", "test"].join("-"),
+    });
+
+    expect(code).toBe(1);
+    expect(output).toContain("FORGE_MODEL is required");
   }, 40_000);
 
   test("a deployment that really is not meant to act can say so", async () => {

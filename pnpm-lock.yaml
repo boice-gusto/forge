@@ -139,6 +139,9 @@ importers:
       '@forge/ports':
         specifier: workspace:*
         version: link:../../packages/ports
+      '@forge/provider-anthropic':
+        specifier: workspace:*
+        version: link:../../packages/provider-anthropic
       '@forge/queue-memory':
         specifier: workspace:*
         version: link:../../packages/queue-memory

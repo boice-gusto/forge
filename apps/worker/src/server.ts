@@ -4,6 +4,7 @@ import {
   createDurableStack,
   type EffectSink,
 } from "@forge/composition/durable";
+import { createAnthropicProvider } from "@forge/provider-anthropic";
 import { createDockerSandbox } from "@forge/sandbox-docker";
 
 import { startWorker } from "./main.js";
@@ -191,7 +192,51 @@ if (realSandbox !== undefined && !(await realSandbox.health()).available) {
   process.exit(1);
 }
 
+/**
+ * Which model a workflow's `agent` node actually talks to.
+ *
+ * `createDurableStack` defaults to `createMockProvider`, which returns a
+ * canned completion. Correct for a test, and in a worker it means an agent
+ * step producing content nobody generated — content that then flows into a
+ * gate, is shown to a human as the thing they are approving, and is dispatched
+ * as a real side effect. The third stand-in wired into a process that meant
+ * it, after the effect sink and the sandbox.
+ *
+ * The adapter refuses to construct without a credential, so this only decides
+ * *which* adapter. The model is the deployment's choice, like the sandbox
+ * images: an author writes a prompt, never a model name.
+ */
+const mockProvider = process.env.FORGE_WORKER_MOCK_PROVIDER === "1";
+if (!mockProvider && process.env.ANTHROPIC_API_KEY === undefined) {
+  process.stderr.write(
+    "[forge-worker] No ANTHROPIC_API_KEY, so every agent step would be " +
+      "answered by a canned completion and then shown to a human as the " +
+      "thing they are approving. Set it, or set FORGE_WORKER_MOCK_PROVIDER=1 " +
+      "if a stand-in model is really what this deployment wants.\n",
+  );
+  process.exit(1);
+}
+if (!mockProvider && process.env.FORGE_MODEL === undefined) {
+  process.stderr.write(
+    "[forge-worker] FORGE_MODEL is required: which model answers an agent " +
+      "step is a deployment's decision, not a default this binary picks.\n",
+  );
+  process.exit(1);
+}
+
+const provider = mockProvider
+  ? undefined
+  : createAnthropicProvider({
+      model: process.env.FORGE_MODEL as string,
+      ...(process.env.FORGE_MODEL_MAX_TOKENS === undefined
+        ? {}
+        : {
+            maxTokens: Number.parseInt(process.env.FORGE_MODEL_MAX_TOKENS, 10),
+          }),
+    });
+
 const stack = await createDurableStack({
+  ...(provider === undefined ? {} : { provider }),
   rules: deployment.rules,
   grants: deployment.grants,
   ...(realSandbox === undefined ? {} : { sandbox: realSandbox }),

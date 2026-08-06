@@ -160,6 +160,17 @@ export async function startWorker(backing: Backing): Promise<Process> {
         FORGE_QUEUE_NAME: backing.queueName,
         FORGE_COMPANY: ACME,
         FORGE_HOST_CAPABILITIES: HOST_CAPABILITIES,
+        /**
+         * Said out loud, because the worker now refuses to start otherwise.
+         *
+         * These scenarios kill Postgres and Redis to see what a run survives;
+         * what a model would have answered is not the subject and a real one
+         * would make the outcomes non-deterministic. The refusal exists so
+         * that a *deployment* cannot use a stand-in without meaning to — and
+         * it caught this harness doing exactly that, silently, which is the
+         * point of it. Meaning it and saying so is the difference.
+         */
+        FORGE_WORKER_MOCK_PROVIDER: "1",
       },
     },
   );

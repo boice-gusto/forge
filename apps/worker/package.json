@@ -15,7 +15,8 @@
     "@forge/ports": "workspace:*",
     "@forge/queue-memory": "workspace:*",
     "@forge/company": "workspace:*",
-    "@forge/sandbox-docker": "workspace:*"
+    "@forge/sandbox-docker": "workspace:*",
+    "@forge/provider-anthropic": "workspace:*"
   },
   "devDependencies": {
     "@forge/store-conformance": "workspace:*",

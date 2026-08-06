@@ -1,6 +1,6 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 66 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 69 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
@@ -29,6 +29,8 @@ needs Docker, so it fails on its own terms rather than inside `verify`.
 | **One trace per run, across processes** | The run record carries a W3C `traceparent`, so the process that creates a run, the worker that walks it and whoever resumes it after a decision all record in one trace. Sampling travels with it |
 | **Optimistic concurrency** | `RunStorePort.update()` presents the revision it read. A stale write is refused rather than applied, and the runtime cedes to whoever got there first instead of failing a job |
 | **Lost effects are findable** | An action claimed and never seen to finish is reported at `GET /v1/effects/unsettled`. A report, not a button — see below |
+| **A worker binds real things, or refuses to start** | The company's effect sink, a Docker sandbox for the profiles it declares, and a real model. Each was a stand-in wired into the production composition root |
+| **Adapters resolve at boot** | A company's adapter modules are imported when the deployment starts, not at the first gated action |
 | **Policy** | OPA Wasm behind `PolicyPort` (ADR-007), Rego compiled ahead of time and committed. Policy resolves from the deployment's company package, never from a request |
 | **Provider** | `@forge/provider-anthropic` on the real SDK with an injectable transport; retryable classification is table-driven |
 | **Sandbox** | A scope the work runs inside, with a Docker adapter: no host mounts, zero capabilities, non-root, read-only rootfs |
@@ -49,15 +51,16 @@ cannot drift apart without one of them failing.
 | **No redrive for a lost effect** | Deliberate, not pending. Nobody can tell from the record whether the action failed to happen or happened and the process died before saying so. Re-running it under that uncertainty is a decision to perform a side effect, which in this system means a human bound to that exact action — so it belongs behind a gate, not behind an operator endpoint that quietly re-sends |
 | **Two concurrent walks in one process still share a `RunState`** | The queue delivers once, so this needs a redelivery *and* a coincidence. Reads no longer touch it, which was the reachable half |
 | **No deadline on enqueue** | A job that is never taken is indistinguishable from one taken slowly |
-| **`apps/worker` has no injectable effect sink** | It builds its own, so a deployment cannot bind a transform table without editing the binary |
 | **No sandbox chaos scenario** | The harness kills Postgres and Redis; it does not kill a container mid-lease |
+| **`apps/api` still composes stand-ins** | It is not the process that acts, so a no-op sink is defensible there — but it binds the simulated sandbox and the mock provider too, and neither is defensible for a control plane that walks a run in memory mode |
+| **No transform table from the company package** | `createDurableStack` takes one; nothing resolves one from an adapter binding |
 | **Four `forge.gusto` scenarios are `todo`** | Held open by a test that goes red the day the API stops ignoring `environment`, so they cannot rot quietly |
 | **Phase 8 not started** | Phase 7 is done and found four production defects; 8 is next |
 
 ## Next, in order
 
 1. **A gated redrive**, so a lost effect can be re-performed by a human decision rather than not at all.
-2. **An injectable effect sink for `apps/worker`.**
+2. **The same refusals for `apps/api`**, or a stated reason it is different.
 3. **A sandbox chaos scenario** — kill the container mid-lease.
 4. **Phase 8.**
 
@@ -83,6 +86,30 @@ suite:
   command issued during an outage *buffers* rather than rejecting. Unbounded,
   that turns a readiness probe into a timeout, and turns a SIGTERM drain into a
   SIGKILL that drops the telemetry explaining the outage.
+
+### Three stand-ins in the production composition root
+
+Found one after another, each while fixing the last, and all the same shape:
+a development default wired into `createDurableStack`, which is what
+`apps/worker` runs.
+
+- **The effect sink did nothing.** `async perform() { return undefined }`. The
+  worker walked every run, passed every gate, recorded every effect as
+  dispatched, and performed none of them. A human approves, the audit log says
+  the action went out, and nothing went anywhere.
+- **The sandbox was the in-memory one.** A step declaring `forge.node-ts` —
+  declaring it in the compiled artifact, which is the entire basis on which a
+  workflow may handle untrusted content — ran against a `Map`, in the worker's
+  own process, with the worker's filesystem and the worker's network.
+- **The provider was the mock.** An agent step produced a canned completion,
+  which flowed into a gate, was shown to a human as the thing they were
+  approving, and was dispatched as a real side effect. Every part of that chain
+  worked as designed; only the content was fictional.
+
+A worker now binds each for real or refuses to start, with a named environment
+variable for a deployment that genuinely wants a stand-in. The refusal
+immediately caught the resilience harness using the mock provider without
+saying so — which is what it is for.
 
 And one more, found by adding optimistic concurrency and watching a durable
 restart go intermittently red:
