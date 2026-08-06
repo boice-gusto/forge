@@ -2,7 +2,7 @@ import { describeQueueConformance } from "@forge/queue-conformance";
 import { containerRuntimeAvailable } from "@forge/store-conformance";
 import type { StartedRedisContainer } from "@testcontainers/redis";
 import { RedisContainer } from "@testcontainers/redis";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 
 import { createBullMqQueue } from "./queue.js";
 
@@ -15,6 +15,22 @@ const CONTAINER_START_TIMEOUT_MS = 240_000;
 const dockerAvailable = await containerRuntimeAvailable("queue-bullmq");
 
 describe.skipIf(!dockerAvailable)("queue-bullmq", () => {
+  /**
+   * Above the adapter's own close budget, for every test in this file.
+   *
+   * Closing a subscribed queue closes a BullMQ worker, and the adapter gives a
+   * graceful close five seconds before tearing the connections down — on
+   * purpose, so a worker draining on SIGTERM against a dead Redis returns
+   * rather than being SIGKILLed mid-flush. Vitest's default budget is also
+   * five seconds, so on a slow machine a test can time out inside teardown
+   * with everything it asserts already proven. That failure teaches nothing
+   * and gets rerun rather than read, which is how a real one goes unnoticed.
+   *
+   * Set here rather than per test because the exposure is not specific to any
+   * of them: it belongs to anything that subscribes.
+   */
+  vi.setConfig({ testTimeout: 20_000 });
+
   let container: StartedRedisContainer;
   let queues = 0;
 
@@ -30,6 +46,17 @@ describe.skipIf(!dockerAvailable)("queue-bullmq", () => {
     test("subscribing twice is refused rather than silently replacing", async () => {
       // Two handlers on one adapter would mean whichever registered last
       // silently owned every job, and the first would never fire again.
+      /**
+       * Twenty seconds, not the default five.
+       *
+       * Closing a *subscribed* queue means closing a BullMQ worker, and the
+       * adapter gives a graceful close five seconds before tearing the
+       * connections down — deliberately, because a worker draining on SIGTERM
+       * against a dead Redis must return rather than be SIGKILLed mid-flush.
+       * A test whose own budget is also five seconds can therefore time out on
+       * a slow machine while everything it asserts has already passed, which
+       * is a failure that teaches nothing and gets rerun rather than read.
+       */
       const queue = createBullMqQueue({
         url: container.getConnectionUrl(),
         name: "forge-edges-subscribe",
@@ -40,7 +67,7 @@ describe.skipIf(!dockerAvailable)("queue-bullmq", () => {
         "FORGE_QUEUE_ALREADY_SUBSCRIBED",
       );
       await queue.close();
-    });
+    }, 20_000);
 
     test("a closed transport reports itself unavailable", async () => {
       // Health is a report, and reporting "available" from a client that can
