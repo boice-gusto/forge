@@ -14,7 +14,8 @@
     "@forge/observability-memory": "workspace:*",
     "@forge/ports": "workspace:*",
     "@forge/queue-memory": "workspace:*",
-    "@forge/company": "workspace:*"
+    "@forge/company": "workspace:*",
+    "@forge/sandbox-docker": "workspace:*"
   },
   "devDependencies": {
     "@forge/store-conformance": "workspace:*",

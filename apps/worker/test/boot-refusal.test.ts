@@ -91,6 +91,61 @@ describe("a worker refuses to start rather than run without something", () => {
     expect(output).toContain('binds no "effects" adapter');
   }, 40_000);
 
+  test("declaring sandbox profiles with nothing to provision them is a refusal", async () => {
+    /**
+     * The isolation half, and the same failure wearing different clothes.
+     *
+     * `createDurableStack` defaults to the in-memory sandbox, which simulates
+     * a filesystem and an exec. A step that declared `forge.node-ts` declared,
+     * in the compiled artifact, that it runs somewhere it cannot reach the
+     * host — and it was running against a Map, in the worker's own process,
+     * with the worker's filesystem and the worker's network. That declaration
+     * is the entire basis on which a workflow may handle untrusted content,
+     * and nothing said it was not being honoured.
+     */
+    const { code, output } = await boot({
+      ...UNREACHABLE,
+      FORGE_COMPANY: NO_EFFECTS,
+      FORGE_WORKER_NO_EFFECTS: "1",
+      FORGE_SANDBOX_PROFILES: "forge.node-ts",
+    });
+
+    expect(code).toBe(1);
+    expect(output).toContain("FORGE_SANDBOX_IMAGE");
+  }, 40_000);
+
+  test("a nonsense memory ceiling is a refusal rather than a NaN", async () => {
+    // It reaches Docker as a byte count. `Number.parseInt("plenty")` is NaN,
+    // and a NaN memory limit is a container the daemon rejects at the first
+    // sandboxed step rather than a worker that refuses at boot.
+    const { code, output } = await boot({
+      ...UNREACHABLE,
+      FORGE_COMPANY: NO_EFFECTS,
+      FORGE_WORKER_NO_EFFECTS: "1",
+      FORGE_SANDBOX_PROFILES: "forge.node-ts",
+      FORGE_SANDBOX_IMAGE: "alpine:3",
+      FORGE_SANDBOX_MEMORY_MB: "plenty",
+    });
+
+    expect(code).toBe(1);
+    expect(output).toContain("FORGE_SANDBOX_MEMORY_MB");
+  }, 40_000);
+
+  test("simulated isolation is available to a deployment that asks for it by name", async () => {
+    // Guards the two above. A refusal with no way past it makes every harness
+    // unstartable, and the pressure then goes on deleting the check.
+    const { code, output } = await boot({
+      ...UNREACHABLE,
+      FORGE_COMPANY: NO_EFFECTS,
+      FORGE_WORKER_NO_EFFECTS: "1",
+      FORGE_SANDBOX_PROFILES: "forge.node-ts",
+      FORGE_WORKER_MOCK_SANDBOX: "1",
+    });
+
+    expect(output).not.toContain("FORGE_SANDBOX_IMAGE");
+    expect(code).not.toBe(0);
+  }, 40_000);
+
   test("a deployment that really is not meant to act can say so", async () => {
     // Guards the test above: a refusal with no way past it would make every
     // worker in every test harness unstartable, and the pressure would be to

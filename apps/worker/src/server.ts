@@ -4,6 +4,7 @@ import {
   createDurableStack,
   type EffectSink,
 } from "@forge/composition/durable";
+import { createDockerSandbox } from "@forge/sandbox-docker";
 
 import { startWorker } from "./main.js";
 
@@ -120,9 +121,80 @@ if (boundEffects === undefined && process.env.FORGE_WORKER_NO_EFFECTS !== "1") {
   process.exit(1);
 }
 
+/**
+ * The isolation a `sandbox` node actually gets.
+ *
+ * `createDurableStack` defaults to the in-memory adapter, which simulates a
+ * filesystem and an exec. In a test that is the point; in a worker it means a
+ * step that declared `forge.node-ts` — declared, in the compiled artifact,
+ * that it runs somewhere it cannot reach the host — runs against a Map, in
+ * this process, with this process's filesystem and this process's network. The
+ * declaration is the whole basis on which a workflow is allowed to run
+ * untrusted content, and nothing anywhere said it was not being honoured.
+ *
+ * So a worker serving a company that declares profiles provisions them for
+ * real, and refuses if it cannot. Profiles come from the deployment operator,
+ * as the sandbox images do: an author names an alias, never an image.
+ */
+const sandboxProfiles = csv(process.env.FORGE_SANDBOX_PROFILES ?? "");
+const sandboxImage = process.env.FORGE_SANDBOX_IMAGE;
+const sandboxMemoryMb = Number.parseInt(
+  process.env.FORGE_SANDBOX_MEMORY_MB ?? "512",
+  10,
+);
+
+if (
+  sandboxProfiles.length > 0 &&
+  process.env.FORGE_WORKER_MOCK_SANDBOX !== "1"
+) {
+  if (sandboxImage === undefined) {
+    process.stderr.write(
+      "[forge-worker] FORGE_SANDBOX_PROFILES names profiles but " +
+        "FORGE_SANDBOX_IMAGE does not say what to provision them with, so " +
+        "every sandboxed step would run in a simulated environment inside " +
+        "this process. Set FORGE_SANDBOX_IMAGE, or set " +
+        "FORGE_WORKER_MOCK_SANDBOX=1 if simulated isolation is really what " +
+        "this deployment wants.\n",
+    );
+    process.exit(1);
+  }
+  if (!Number.isInteger(sandboxMemoryMb) || sandboxMemoryMb <= 0) {
+    process.stderr.write(
+      `[forge-worker] FORGE_SANDBOX_MEMORY_MB must be a positive integer; got ${process.env.FORGE_SANDBOX_MEMORY_MB}.\n`,
+    );
+    process.exit(1);
+  }
+}
+
+const realSandbox =
+  sandboxProfiles.length > 0 &&
+  sandboxImage !== undefined &&
+  process.env.FORGE_WORKER_MOCK_SANDBOX !== "1"
+    ? createDockerSandbox({
+        profiles: Object.fromEntries(
+          sandboxProfiles.map((profile) => [
+            profile,
+            { image: sandboxImage, memoryMb: sandboxMemoryMb },
+          ]),
+        ),
+      })
+    : undefined;
+
+if (realSandbox !== undefined && !(await realSandbox.health()).available) {
+  // Checked at boot, not at the first sandboxed step. A worker that cannot
+  // provision isolation is a worker that will fail every run needing it, and
+  // discovering that behind an approval gate is discovering it too late.
+  process.stderr.write(
+    "[forge-worker] The container runtime is unreachable, so the profiles " +
+      "this deployment declares cannot be provisioned.\n",
+  );
+  process.exit(1);
+}
+
 const stack = await createDurableStack({
   rules: deployment.rules,
   grants: deployment.grants,
+  ...(realSandbox === undefined ? {} : { sandbox: realSandbox }),
   environment: "production",
   ...(boundEffects === undefined
     ? {}

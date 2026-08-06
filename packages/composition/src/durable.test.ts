@@ -184,6 +184,47 @@ describe.skipIf(!dockerAvailable)(
       expect(run.status).toBe("AWAITING_APPROVAL");
     }, 60_000);
 
+    test("an injected sandbox is the one a run gets, not the simulated default", async () => {
+      /**
+       * This stack defaulted to `createMemorySandbox` with no way past it, and
+       * `apps/worker` used this stack. So a step that declared
+       * `forge.node-ts` — declared, in the compiled artifact, that it runs
+       * somewhere it cannot reach the host — ran against a Map, in the
+       * worker's own process, with the worker's filesystem and network. That
+       * declaration is the whole basis on which a workflow may handle
+       * untrusted content, and nothing anywhere said it was not honoured.
+       *
+       * Proven by injecting one that refuses. With the default still in place
+       * the run reaches its gate, as the test above shows; the only way to see
+       * this failure is for the injected adapter to be the one asked.
+       */
+      const asked: string[] = [];
+      const stack = await durable({
+        sandboxProfiles: ["docker", "gusto-research"],
+        sandbox: {
+          profiles: ["docker", "gusto-research"],
+          async health() {
+            return { available: true };
+          },
+          async withSandbox(request) {
+            asked.push(request.profile);
+            throw new Error(
+              "FORGE_TEST_SANDBOX: this adapter provisions nothing.",
+            );
+          },
+        },
+      });
+
+      const run = await stack.runtime.start({
+        artifact: artifactOf(GATED),
+        payload: { body: "the copy" },
+      });
+
+      expect(asked).toEqual(["gusto-research"]);
+      expect(run.status).toBe("FAILED");
+      expect(await stack.dispatched(run.runId)).toEqual([]);
+    }, 60_000);
+
     test("a run's events are written to the store, not only to a trace", async () => {
       const stack = await durable({
         sandboxProfiles: ["docker", "gusto-research"],

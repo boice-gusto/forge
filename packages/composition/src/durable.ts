@@ -28,6 +28,7 @@ import type {
   ProviderPort,
   QueuePort,
   RunStorePort,
+  SandboxPort,
 } from "@forge/ports";
 import { createMockProvider } from "@forge/provider-mock";
 import { createBullMqQueue } from "@forge/queue-bullmq";
@@ -127,6 +128,17 @@ export interface DurableStackOptions {
    * because a run must not become less isolated by being made durable.
    */
   readonly sandboxProfiles?: readonly string[];
+  /**
+   * The isolation a `sandbox` node actually gets.
+   *
+   * Defaults to the in-memory adapter, which simulates. That is right for a
+   * test and for local development and wrong for a deployment: a workflow
+   * naming `forge.node-ts` is declaring that the step runs somewhere it cannot
+   * reach the host, and the memory adapter gives it a Map. A composition root
+   * that means it binds a real one — and `apps/worker` refuses to start with
+   * the stand-in when a company declares profiles.
+   */
+  readonly sandbox?: SandboxPort;
 }
 
 export interface DurableStack extends ControlPlaneStack {
@@ -234,10 +246,12 @@ export async function createDurableStack(
         providerId: "mock",
         events: [{ type: "completed" }],
       }),
-    sandbox: createMemorySandbox({
-      profiles: options.sandboxProfiles ?? ["docker"],
-      available: true,
-    }),
+    sandbox:
+      options.sandbox ??
+      createMemorySandbox({
+        profiles: options.sandboxProfiles ?? ["docker"],
+        available: true,
+      }),
     observability: runEventRecorder,
     panel: options.panel ?? { standing: [], summonable: [], quorum: 0.5 },
     ...(options.votesFor === undefined ? {} : { votesFor: options.votesFor }),
