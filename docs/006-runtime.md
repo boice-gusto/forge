@@ -295,7 +295,7 @@ sequenceDiagram
   RT->>RT: create Run (PENDING→RUNNING)
   RT->>Q: enqueue workflow.execute
   RT->>Obs: span run.started
-  API-->>SDK: { runId, status: RUNNING }
+  API-->>SDK: 202 + Location, { runId, status: AWAITING_APPROVAL }
   SDK-->>Client: RunHandle
 
   Q-->>W: deliver ForgeJob
@@ -355,7 +355,7 @@ sequenceDiagram
   RT->>RT: validate ResumePayload (Zod)
   RT->>RT: mark ApprovalRecord DECIDED
   RT->>Q: enqueue workflow.resume
-  API-->>SDK: { runId, status: RUNNING }
+  API-->>SDK: 202 + Location, { runId, status: AWAITING_APPROVAL }
 
   Q-->>W: workflow.resume
   W->>RT: executeTick(resume)

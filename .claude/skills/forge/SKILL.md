@@ -82,19 +82,29 @@ POST /v1/runs                                               → 202 + Location; 
 GET  /v1/runs                                               → every run, newest first
 GET  /v1/runs/:runId                                        → run record
 GET  /v1/runs/:runId/approvals                              → { pending, approvals } incl. history
-GET  /v1/runs/:runId/events                                 → the run's durable timeline
+GET  /v1/runs/:runId/events                                 → durable timeline; live tail under
+                                                              Accept: text/event-stream, resumable by Last-Event-ID
 GET  /v1/approvals                                          → the global inbox, scoped to the caller
-POST /v1/runs/:runId/approvals/:approvalId/decision         → approve | reject | edit | timeout
+POST /v1/runs/:runId/approvals/:approvalId/decision         → 202 + Location; the run has not advanced
 POST /v1/auth/session                                       → establish a cookie session (UI)
 GET  /v1/auth/session                                       → who am I
 DELETE /v1/auth/session                                     → sign out
 ```
 
-**A run does not execute inside the request that started it.** `POST /v1/runs`
-persists the run and enqueues it, and the reply is a `PENDING` record with a
-`Location`. Use `ForgeClient.waitForRun` to wait for it to settle — which means
-reaching a gate or finishing, *not* reaching a terminal state. A helper that
-waited for terminal would make every gate assertion unfalsifiable.
+**No route executes a run inside the request.** `POST /v1/runs` persists and
+enqueues; `POST …/decision` records the decision durably and enqueues a resume.
+Both reply 202 with a `Location`, and in both the run has not advanced yet.
+
+Waiting for it is where the traps are. `ForgeClient.waitForRun` settles on
+"reached a gate or finished", **not** on a terminal state — a terminal default
+would make every gate assertion unfalsifiable. After a *decision* even that is
+not enough: the reply leaves the run at `AWAITING_APPROVAL`, so a plain settle
+returns instantly having observed nothing. Wait for the run to stop naming the
+gate you decided.
+
+**A stream outlives the credential that opened it.** The tail re-authenticates
+on every pass, so a signed-out session stops receiving. The snapshot never had
+to think about this because it answered and was gone.
 
 **Policy is the deployment's, not the request's.** It resolves from the company
 package named by `FORGE_COMPANY`. A body cannot carry `policy`, `panel`,

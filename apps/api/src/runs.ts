@@ -1,3 +1,5 @@
+import { Readable } from "node:stream";
+
 import { type ControlPlaneStack, compileToArtifact } from "@forge/composition";
 import type { ApprovalDecision, JsonValue, RunStatus } from "@forge/ports";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -107,6 +109,64 @@ interface RunEventView {
   readonly kind: "run" | "node" | "policy" | "approval" | "effect" | "other";
   readonly name: string;
   readonly attributes: Readonly<Record<string, string | number | boolean>>;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Streaming the timeline                                                     */
+/* -------------------------------------------------------------------------- */
+
+const EVENT_STREAM = "text/event-stream";
+
+/**
+ * How often an open stream asks the store what it has not yet delivered.
+ *
+ * The tail is a poll of the **durable** timeline, not a subscription to this
+ * process's recorder, and that is deliberate. The control plane usually does
+ * not walk the run — a worker does, possibly on another host — so an in-process
+ * event bus would tail beautifully in the local stack and never emit a thing in
+ * a real deployment: a stream that silently stops tailing is worse than no
+ * stream. Postgres `LISTEN/NOTIFY` would be the push version, but it lives
+ * inside one store adapter, has no in-memory counterpart, and would put the
+ * two composition roots on different semantics.
+ *
+ * So the polling moved from every client to one place, and the wire became a
+ * push. 250ms because a gate appearing within a quarter of a second is
+ * indistinguishable from instant to a human, and because a control plane
+ * holding a run inspector open should not be a quarter of the database's load.
+ */
+const TAIL_INTERVAL_MS = 250;
+
+/**
+ * Whether the caller asked for the stream rather than the snapshot.
+ *
+ * Content negotiation, not a second route. The snapshot and the stream are the
+ * same collection in two representations — same run, same records, same order
+ * — and `Accept` is the header that exists to choose between representations
+ * of one resource. It also means the authentication, the 404 and the
+ * classification below are literally the same lines for both: a separate
+ * `/events/stream` route would have been a second copy of all three, and the
+ * copy that drifts is the one nobody is looking at.
+ *
+ * `EventSource` sends this header on its own, so a browser needs no query
+ * parameter to opt in — and anything asking for `*​/*` still gets JSON, which
+ * keeps the existing route's behaviour exactly as it was.
+ */
+const wantsStream = (accept: string | undefined): boolean =>
+  accept?.includes(EVENT_STREAM) === true;
+
+/**
+ * One SSE frame. `id:` is the store's sequence, which is what makes
+ * `Last-Event-ID` on reconnect mean "everything after this record" rather than
+ * "everything again" — the sequence is a fact about the row, so it survives the
+ * process that wrote it.
+ */
+const frame = (event: RunEventView): string =>
+  `id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`;
+
+/** Where a reconnecting client left off. Anything unparseable starts over. */
+function resumeFrom(header: string | string[] | undefined): number {
+  const seq = Number.parseInt(Array.isArray(header) ? "" : (header ?? ""), 10);
+  return Number.isInteger(seq) && seq > 0 ? seq : 0;
 }
 
 export function registerRunRoutes(
@@ -310,16 +370,67 @@ export function registerRunRoutes(
       // Ordered by the store's sequence, so two events in the same millisecond
       // cannot tie and swap between reads. Attributes were redacted before the
       // row was written, which is what makes them safe to serve.
-      const events: RunEventView[] = (
-        await stack.runEvents.list(request.params.runId)
-      ).map((entry) => ({
-        seq: entry.seq,
-        at: entry.at,
-        kind: eventKind(entry.name),
-        name: entry.name,
-        attributes: entry.attributes,
-      }));
-      return reply.send({ events });
+      const timeline = async (): Promise<RunEventView[]> =>
+        (await stack.runEvents.list(request.params.runId)).map((entry) => ({
+          seq: entry.seq,
+          at: entry.at,
+          kind: eventKind(entry.name),
+          name: entry.name,
+          attributes: entry.attributes,
+        }));
+
+      if (!wantsStream(request.headers.accept)) {
+        return reply.send({ events: await timeline() });
+      }
+
+      const stream = new Readable({ read() {} });
+      let open = true;
+      // The socket, not the reply. This is what fires when the operator closes
+      // the tab, and it is the only thing that stops the loop below — a stream
+      // whose reader has gone away and whose poll has not is a leak per tab.
+      request.raw.on("close", () => {
+        open = false;
+      });
+
+      let cursor = resumeFrom(request.headers["last-event-id"]);
+
+      void (async () => {
+        try {
+          while (open) {
+            /**
+             * Re-authenticated every pass, which the snapshot never had to
+             * think about because it answered and was gone. A stream outlives
+             * the credential that opened it: a session revoked, signed out or
+             * expired an hour ago would otherwise keep delivering a run's
+             * timeline to whoever still held the socket. The check is the same
+             * one the route opened with — nothing here is a second, weaker
+             * copy of it.
+             */
+            if ((await options.authenticate(request)) === undefined) break;
+            for (const event of await timeline()) {
+              if (event.seq <= cursor) continue;
+              cursor = event.seq;
+              stream.push(frame(event));
+            }
+            await new Promise((settle) => setTimeout(settle, TAIL_INTERVAL_MS));
+          }
+        } catch {
+          // Telemetry fails open, and a timeline is telemetry. A store that
+          // went away ends this stream and nothing else: no run is walking on
+          // this stack, and the operator's next read is a fresh connection.
+        }
+        stream.push(null);
+      })();
+
+      return (
+        reply
+          .header("content-type", EVENT_STREAM)
+          // An intermediary that buffered this would turn a tail into a snapshot
+          // delivered late, which looks exactly like a stream that does not work.
+          .header("cache-control", "no-store")
+          .header("x-accel-buffering", "no")
+          .send(stream)
+      );
     },
   );
 
@@ -367,12 +478,57 @@ export function registerRunRoutes(
       }
 
       try {
-        const run = await stack.runtime.decide(
+        /**
+         * Mark the decision durably, enqueue the resume, reply (006 §10.3).
+         *
+         * The same shape as `POST /v1/runs`, and for the same reason: this
+         * route used to walk the graph inside the request, which held it open
+         * across every node after the gate — the sandbox lease, the model
+         * call, the dispatch itself. An operator's click is not the place to
+         * discover that a downstream agent takes four minutes.
+         *
+         * `recordDecision` runs the gate's own checks — bound, unexpired,
+         * still pending — and stops. It does not advance the run, so an
+         * approve leaves the record exactly where it parked, and the walk
+         * happens on whichever process consumes the job. That process calls
+         * `resume`, which re-checks the binding and the deadline where the
+         * dispatch is actually authorised.
+         *
+         * Order, as on the start route: a job for a decision that is not
+         * durable would authorise nothing when it arrived, whereas a decision
+         * with no job is a run an operator can see and re-drive.
+         */
+        const run = await stack.runtime.recordDecision(
           request.params.approvalId,
           decision,
           principal.subject,
         );
-        return reply.send(run);
+
+        // Every decision, not only an approve. Whether a decision advances a
+        // run is the runtime's to know: a route that enqueued for `approve`
+        // alone would be a second, quietly diverging copy of that rule, and
+        // `resume` is total — a rejected run is terminal and it does nothing.
+        // The operation key is `resume:<run>:<approval>`, so a redelivered or
+        // repeated decision is one resume.
+        await stack.queue.enqueue({
+          type: "workflow.resume",
+          runId: request.params.runId,
+          approvalId: request.params.approvalId,
+          attempt: run.attempt,
+        });
+
+        /**
+         * **202, not 200.** The decision is recorded — that part is done and
+         * durable — but what the operator asked for, the effect reaching the
+         * outside world, has not happened yet. A 200 carrying a run still at
+         * `AWAITING_APPROVAL` would read as a failure to anyone who had been
+         * getting `SUCCEEDED` here, and that is precisely who needs to notice.
+         * `Location` says where the answer will appear.
+         */
+        return reply
+          .code(202)
+          .header("location", `/v1/runs/${request.params.runId}`)
+          .send(run);
       } catch (error) {
         return reply.code(409).send({
           status: "conflict",

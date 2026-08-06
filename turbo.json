@@ -20,5 +20,11 @@
       "cache": false,
       "persistent": true
     }
-  }
+  },
+  "globalEnv": [
+    "DOCKER_HOST",
+    "FORGE_REQUIRE_STORES",
+    "FORGE_SCAN_ROOTS",
+    "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE"
+  ]
 }

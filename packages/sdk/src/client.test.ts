@@ -498,3 +498,181 @@ describe("establishing a session", () => {
     expect(result.ok).toBe(true);
   });
 });
+
+/**
+ * Tailing a run's timeline. Against a fetch double rather than a server: the
+ * API's own suite holds a real socket open and watches a record arrive on it,
+ * which is the thing a stub cannot show. What a stub *can* show is the half
+ * this file owns — what the client sends, and how it decodes what comes back.
+ */
+describe("streaming a run's events", () => {
+  /** A body that hands out exactly these chunks, then ends. */
+  function streaming(chunks: readonly string[], status = 200, body?: unknown) {
+    const calls: { url: string; init: RequestInit }[] = [];
+    let released: (() => void) | undefined;
+    const fetchLike = (async (
+      input: string | URL | Request,
+      init: RequestInit = {},
+    ) => {
+      calls.push({ url: String(input), init });
+      if (status !== 200) {
+        return new Response(JSON.stringify(body), { status });
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const encoder = new TextEncoder();
+          for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+          // Held open, so the reader is genuinely tailing rather than reading
+          // a body that had already ended before the first frame was parsed.
+          released = () => controller.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    return {
+      forge: createForgeClient({
+        baseUrl: "http://localhost:3100",
+        token: "local-test",
+        fetch: fetchLike,
+      }),
+      calls,
+      end: () => released?.(),
+    };
+  }
+
+  const event = (seq: number, name: string) =>
+    `id: ${seq}\ndata: ${JSON.stringify({
+      seq,
+      at: "2026-01-01T00:00:00.000Z",
+      kind: "approval",
+      name,
+      attributes: { runId: "run_1" },
+    })}\n\n`;
+
+  async function settleTurns() {
+    for (let turn = 0; turn < 10; turn += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  test("asks for the stream and carries the bearer credential", async () => {
+    // `EventSource` cannot set either header, which is exactly why this is
+    // `fetch`: the alternative was a credential in the query string.
+    const { forge, calls } = streaming([]);
+    await forge.streamRunEvents("run_1", { onEvent: () => {} });
+
+    expect(calls[0]?.url).toBe("http://localhost:3100/v1/runs/run_1/events");
+    expect(calls[0]?.init.headers).toMatchObject({
+      accept: "text/event-stream",
+      authorization: "Bearer local-test",
+    });
+    expect(calls[0]?.init.headers).not.toHaveProperty("last-event-id");
+  });
+
+  test("a resume point is sent as Last-Event-ID", async () => {
+    const { forge, calls } = streaming([]);
+    await forge.streamRunEvents("run_1", { onEvent: () => {}, lastEventId: 7 });
+
+    expect(calls[0]?.init.headers).toMatchObject({ "last-event-id": "7" });
+  });
+
+  test("frames are delivered in order, even split across chunks", async () => {
+    // A socket does not respect frame boundaries. A decoder that assumed one
+    // chunk was one frame would drop the second half of every long record.
+    const first = event(1, "forge.approval.requested");
+    const { forge, end } = streaming([
+      first.slice(0, 20),
+      first.slice(20),
+      event(2, "forge.approval.decided"),
+    ]);
+
+    const seen: string[] = [];
+    const result = await forge.streamRunEvents("run_1", {
+      onEvent: (received) => seen.push(received.name),
+    });
+    expect(result.ok).toBe(true);
+    await settleTurns();
+    end();
+
+    expect(seen).toEqual([
+      "forge.approval.requested",
+      "forge.approval.decided",
+    ]);
+  });
+
+  test("a comment frame is not an event", async () => {
+    // Keep-alives carry no `data:`. Parsing one as a record would put an
+    // empty entry in an operator's timeline.
+    const { forge, end } = streaming([": keep-alive\n\n", event(1, "forge.x")]);
+
+    const seen: string[] = [];
+    await forge.streamRunEvents("run_1", {
+      onEvent: (received) => seen.push(received.name),
+    });
+    await settleTurns();
+    end();
+
+    expect(seen).toEqual(["forge.x"]);
+  });
+
+  test("a frame that will not parse ends the tail instead of throwing", async () => {
+    // The read happens off the caller's stack, so a rejection there has
+    // nobody to catch it — an unhandled one would take down whatever process
+    // was watching a run. It costs the stream and nothing else.
+    const { forge, end } = streaming([
+      event(1, "forge.x"),
+      "data: {not json\n\n",
+      event(2, "forge.y"),
+    ]);
+
+    const seen: string[] = [];
+    const result = await forge.streamRunEvents("run_1", {
+      onEvent: (received) => seen.push(received.name),
+    });
+    expect(result.ok).toBe(true);
+    await settleTurns();
+    end();
+
+    // Everything up to the bad frame arrived; nothing after it did, and no
+    // rejection escaped.
+    expect(seen).toEqual(["forge.x"]);
+  });
+
+  test("a refusal is a result naming the control plane's code", async () => {
+    const { forge } = streaming([], 404, { status: "not_found" });
+    const result = await forge.streamRunEvents("run_1", { onEvent: () => {} });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.status).toBe(404);
+    expect(result.code).toBe("not_found");
+  });
+
+  test("an unreachable control plane is a result, not a thrown error", async () => {
+    const forge = createForgeClient({
+      baseUrl: "http://localhost:3100",
+      fetch: (async () => {
+        throw new Error("ECONNREFUSED");
+      }) as unknown as typeof globalThis.fetch,
+    });
+    const result = await forge.streamRunEvents("run_1", { onEvent: () => {} });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.code).toBe("FORGE_UNREACHABLE");
+  });
+
+  test("closing aborts the request rather than leaving it open", async () => {
+    const { forge, calls } = streaming([event(1, "forge.x")]);
+    const result = await forge.streamRunEvents("run_1", { onEvent: () => {} });
+    if (!result.ok) throw new Error("unreachable");
+
+    expect(calls[0]?.init.signal?.aborted).toBe(false);
+    result.value.close();
+    expect(calls[0]?.init.signal?.aborted).toBe(true);
+  });
+});

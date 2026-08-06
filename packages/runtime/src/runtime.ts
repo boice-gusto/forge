@@ -312,6 +312,33 @@ export interface Runtime {
     decision: ApprovalDecision,
     principal: string,
   ): Promise<RunRecord>;
+  /**
+   * Records a decision durably and stops, without walking the graph.
+   *
+   * The control plane's half of 006 §10.3: mark the `ApprovalRecord`, then
+   * enqueue `workflow.resume` and reply. Whoever consumes that job calls
+   * `resume(runId)`, which re-enters the gate and carries the run forward — so
+   * a decision, like a start, does not execute inside the request that made it.
+   *
+   * It is a *sibling* of {@link decide} rather than a reimplementation of it:
+   * both run the same checks, in the same order, from the same code. The three
+   * that authorise the dispatch — the approval is still PENDING, its binding
+   * still recomputes to the same run/node/effect/fingerprint, and its deadline
+   * had not passed — are not properties of the transport, and writing a second
+   * copy of them beside this one is how they would come to disagree.
+   *
+   * On an approve the run is left exactly where it parked: `AWAITING_APPROVAL`,
+   * still naming the gate. `resume()` re-checks the binding and the deadline
+   * where the dispatch is actually authorised, so nothing is taken on trust
+   * from the process that recorded the decision. A reject, a timeout or an edit
+   * needs no walk at all — those move the run to its own conclusion here,
+   * because there is no graph to advance into.
+   */
+  recordDecision(
+    approvalId: string,
+    decision: ApprovalDecision,
+    principal: string,
+  ): Promise<RunRecord>;
   cancel(runId: string): Promise<RunRecord>;
   /** What this process knows, without going to the store. */
   getRun(runId: string): RunRecord | undefined;
@@ -1007,6 +1034,158 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   }
 
   /**
+   * What a recorded decision leaves behind: the run as it now stands, and —
+   * only when the decision authorises a dispatch — the node it authorises.
+   *
+   * Splitting the walk off the record is the whole point. Everything above the
+   * `authorises` field is the decision itself: single-use, bound, in time,
+   * durable. Advancing is a separate act, performed here by `decide` and by a
+   * queue consumer for the control plane, and neither can perform it without
+   * the checks below having run first.
+   */
+  interface Recorded {
+    readonly state: RunState;
+    readonly record: RunRecord;
+    readonly authorises?: string;
+  }
+
+  /**
+   * Marks a decision on its approval, and nothing further.
+   *
+   * The single implementation of the gate's guarantees. It throws for the
+   * cases a caller got wrong — no such approval, no such run, a cancelled run,
+   * a stale binding — and returns for the cases the *gate* decided: an expiry,
+   * a refusal, an amendment.
+   */
+  async function record(
+    approvalId: string,
+    decision: ApprovalDecision,
+    principal: string,
+  ): Promise<Recorded> {
+    const approval = await options.approvals.get(approvalId);
+    if (approval === undefined) throw new Error("Unknown approval.");
+    const state = await hydrate(approval.runId);
+    if (state === undefined) throw new Error("Unknown run.");
+
+    if (state.record.status === "CANCELLED")
+      throw new Error("Run is cancelled.");
+
+    // Single-use, enforced by the port. A repeat delivery is a no-op.
+    if (approval.status !== "PENDING") return { state, record: state.record };
+
+    // The decision authorises one action under one compiled version, so a
+    // binding that no longer recomputes is stale and must not be honoured.
+    if (!bindsTo(state, approval)) {
+      throw new Error("Approval no longer matches the action it was bound to.");
+    }
+
+    // An expired gate is not a slow yes; it times out (006 §9).
+    if (options.clock.now() > new Date(approval.expiresAt)) {
+      await options.approvals.decide(
+        approvalId,
+        { kind: "timeout" },
+        principal,
+      );
+      observability.event(
+        "forge.approval.expired",
+        {
+          runId: approval.runId,
+          nodeId: approval.nodeId,
+          approvalId,
+          effect: approval.effect,
+          expiresAt: approval.expiresAt,
+          // The decision the clock refused.
+          attempted: decision.kind,
+        },
+        state.span,
+      );
+      return {
+        state,
+        record: await update(state, {
+          status: "FAILED",
+          error: `Approval ${approvalId} expired before a decision was recorded.`,
+          pendingApprovalId: undefined,
+        }),
+      };
+    }
+
+    await options.approvals.decide(approvalId, decision, principal);
+    observability.event(
+      "forge.approval.decided",
+      {
+        runId: approval.runId,
+        nodeId: approval.nodeId,
+        approvalId,
+        effect: approval.effect,
+        effectHash: approval.effectHash,
+        decision: decision.kind,
+        principalHash: principalTag(principal),
+      },
+      state.span,
+    );
+
+    if (decision.kind === "reject") {
+      return {
+        state,
+        record: await update(state, {
+          status: "FAILED",
+          error: `Rejected by ${principal}: ${decision.reason}`,
+          pendingApprovalId: undefined,
+        }),
+      };
+    }
+
+    if (decision.kind === "timeout") {
+      return {
+        state,
+        record: await update(state, {
+          status: "FAILED",
+          error: `Approval ${approvalId} timed out.`,
+          pendingApprovalId: undefined,
+        }),
+      };
+    }
+
+    if (decision.kind === "edit") {
+      // An edit authorises nothing: amending the action makes the original
+      // binding no longer describe it, so it asks for a fresh decision.
+      const reissued = await options.approvals.request({
+        runId: approval.runId,
+        nodeId: approval.nodeId,
+        effect: approval.effect,
+        effectHash: approval.effectHash,
+        policyId: approval.policyId,
+        approvers: approval.approvers,
+        expiresAt: expiry(),
+      });
+      observability.event(
+        "forge.approval.edited",
+        {
+          runId: approval.runId,
+          nodeId: approval.nodeId,
+          approvalId,
+          effect: approval.effect,
+          // Names the successor, so the audit shows which gate authorised
+          // the amended action.
+          reissuedAs: reissued.approvalId,
+        },
+        state.span,
+      );
+      return {
+        state,
+        record: await update(state, {
+          status: "AWAITING_APPROVAL",
+          pendingApprovalId: reissued.approvalId,
+        }),
+      };
+    }
+
+    // The approval authorises exactly the node it was bound to — and nothing
+    // here acts on that. Whoever advances the run does.
+    return { state, record: state.record, authorises: approval.nodeId };
+  }
+
+  /**
    * A run, brought into existence and no further.
    *
    * Everything here is durable before it returns — the record at `PENDING`,
@@ -1125,116 +1304,14 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     },
 
     async decide(approvalId, decision, principal) {
-      const approval = await options.approvals.get(approvalId);
-      if (approval === undefined) throw new Error("Unknown approval.");
-      const state = await hydrate(approval.runId);
-      if (state === undefined) throw new Error("Unknown run.");
+      const decided = await record(approvalId, decision, principal);
+      return decided.authorises === undefined
+        ? decided.record
+        : carry(decided.state, decided.authorises);
+    },
 
-      if (state.record.status === "CANCELLED")
-        throw new Error("Run is cancelled.");
-
-      // Single-use, enforced by the port. A repeat delivery is a no-op.
-      if (approval.status !== "PENDING") return state.record;
-
-      // The decision authorises one action under one compiled version, so a
-      // binding that no longer recomputes is stale and must not be honoured.
-      if (!bindsTo(state, approval)) {
-        throw new Error(
-          "Approval no longer matches the action it was bound to.",
-        );
-      }
-
-      // An expired gate is not a slow yes; it times out (006 §9).
-      if (options.clock.now() > new Date(approval.expiresAt)) {
-        await options.approvals.decide(
-          approvalId,
-          { kind: "timeout" },
-          principal,
-        );
-        observability.event(
-          "forge.approval.expired",
-          {
-            runId: approval.runId,
-            nodeId: approval.nodeId,
-            approvalId,
-            effect: approval.effect,
-            expiresAt: approval.expiresAt,
-            // The decision the clock refused.
-            attempted: decision.kind,
-          },
-          state.span,
-        );
-        return update(state, {
-          status: "FAILED",
-          error: `Approval ${approvalId} expired before a decision was recorded.`,
-          pendingApprovalId: undefined,
-        });
-      }
-
-      await options.approvals.decide(approvalId, decision, principal);
-      observability.event(
-        "forge.approval.decided",
-        {
-          runId: approval.runId,
-          nodeId: approval.nodeId,
-          approvalId,
-          effect: approval.effect,
-          effectHash: approval.effectHash,
-          decision: decision.kind,
-          principalHash: principalTag(principal),
-        },
-        state.span,
-      );
-
-      if (decision.kind === "reject") {
-        return update(state, {
-          status: "FAILED",
-          error: `Rejected by ${principal}: ${decision.reason}`,
-          pendingApprovalId: undefined,
-        });
-      }
-
-      if (decision.kind === "timeout") {
-        return update(state, {
-          status: "FAILED",
-          error: `Approval ${approvalId} timed out.`,
-          pendingApprovalId: undefined,
-        });
-      }
-
-      if (decision.kind === "edit") {
-        // An edit authorises nothing: amending the action makes the original
-        // binding no longer describe it, so it asks for a fresh decision.
-        const reissued = await options.approvals.request({
-          runId: approval.runId,
-          nodeId: approval.nodeId,
-          effect: approval.effect,
-          effectHash: approval.effectHash,
-          policyId: approval.policyId,
-          approvers: approval.approvers,
-          expiresAt: expiry(),
-        });
-        observability.event(
-          "forge.approval.edited",
-          {
-            runId: approval.runId,
-            nodeId: approval.nodeId,
-            approvalId,
-            effect: approval.effect,
-            // Names the successor, so the audit shows which gate authorised
-            // the amended action.
-            reissuedAs: reissued.approvalId,
-          },
-          state.span,
-        );
-        return update(state, {
-          status: "AWAITING_APPROVAL",
-          pendingApprovalId: reissued.approvalId,
-        });
-      }
-
-      // The approval authorises exactly the node it was bound to.
-      return carry(state, approval.nodeId);
+    async recordDecision(approvalId, decision, principal) {
+      return (await record(approvalId, decision, principal)).record;
     },
 
     async cancel(runId) {

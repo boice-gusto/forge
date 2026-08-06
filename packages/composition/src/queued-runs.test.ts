@@ -389,3 +389,39 @@ describe("the consumer reports what it did with a job", () => {
     );
   });
 });
+
+/**
+ * A stack given no `startedAt` runs on the real clock.
+ *
+ * The default used to be a literal instant in the past, so every gate the
+ * running product issued was created *and* expired before a browser could
+ * render it — the UI drew no approve control, and `pnpm dev` could not approve
+ * anything at all. A frozen clock is a test affordance; it had become the
+ * production default, and `apps/api` passes no `startedAt`.
+ */
+describe("the default clock is the real one", () => {
+  test("a gate issued with no startedAt expires in the future", async () => {
+    const stack = deployment({ approvalTtlMs: 60_000 });
+    const before = Date.now();
+    const run = await stack.runtime.start({ artifact: artifact() });
+    const gate = (await stack.approvals.getPending(run.runId))[0];
+
+    expect(run.status).toBe("AWAITING_APPROVAL");
+    expect(gate).toBeDefined();
+    // Both ends: created no earlier than this test started, and still open.
+    expect(Date.parse(gate?.createdAt as string)).toBeGreaterThanOrEqual(
+      before,
+    );
+    expect(Date.parse(gate?.expiresAt as string)).toBeGreaterThan(Date.now());
+  });
+
+  test("a stack that asked to be frozen still is, and still advances", async () => {
+    // The affordance is kept, because determinism is what a suite about
+    // expiry needs — it just has to be asked for.
+    const stack = deployment({ startedAt: "2030-06-01T00:00:00.000Z" });
+    expect(stack.clock.now().toISOString()).toBe("2030-06-01T00:00:00.000Z");
+
+    stack.advanceClock(3_600_000);
+    expect(stack.clock.now().toISOString()).toBe("2030-06-01T01:00:00.000Z");
+  });
+});

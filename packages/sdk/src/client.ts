@@ -262,6 +262,22 @@ export interface WaitForRunOptions {
   readonly intervalMs?: number;
 }
 
+export interface StreamRunEventsOptions {
+  /** Called once per record, in the order the store assigned. */
+  readonly onEvent: (event: RunEventView) => void;
+  /**
+   * Where to resume from — the `seq` of the last record already held. The
+   * server replays only what follows, which is what lets a caller read the
+   * snapshot first and then tail without seeing its own history twice.
+   */
+  readonly lastEventId?: number;
+}
+
+export interface RunEventStream {
+  /** Stops the tail and releases the connection. Safe to call twice. */
+  close(): void;
+}
+
 export interface ForgeClient {
   compile(workflow: unknown): Promise<ForgeResult<CompiledView>>;
   /**
@@ -297,6 +313,28 @@ export interface ForgeClient {
   /** Every gate this run opened, decided ones included. */
   approvals(runId: string): Promise<ForgeResult<readonly ApprovalView[]>>;
   runEvents(runId: string): Promise<ForgeResult<readonly RunEventView[]>>;
+  /**
+   * The same timeline, tailed instead of sampled: every record already stored
+   * arrives first, then each new one as the control plane writes it.
+   *
+   * Over `fetch` rather than `EventSource`, deliberately. `EventSource` cannot
+   * set a request header, so a programmatic caller could only present its
+   * bearer credential in the query string — and a credential in a URL is a
+   * credential in an access log, a proxy trace and a `Referer`. `fetch` carries
+   * `Authorization` for a token client and the session cookie for a
+   * same-origin browser one, so both transports authenticate exactly as they
+   * do on every other route rather than through a second, weaker path. The
+   * wire is still plain SSE, so an `EventSource` a cookie already authenticates
+   * works against it unchanged.
+   *
+   * The result resolves once the control plane has accepted the connection, so
+   * a 401, a 403 or a 404 is an ordinary failed result. Records arrive after
+   * that, on `onEvent`, until the caller closes the stream.
+   */
+  streamRunEvents(
+    runId: string,
+    options: StreamRunEventsOptions,
+  ): Promise<ForgeResult<RunEventStream>>;
   decide(
     runId: string,
     approvalId: string,
@@ -350,6 +388,94 @@ export function createForgeClient(options: ForgeClientOptions): ForgeClient {
     }
   }
 
+  /**
+   * SSE, decoded. Frames are separated by a blank line and the only field this
+   * client reads is `data:` — `id:` is echoed back by the *server's* notion of
+   * resumption, not tracked here, because a caller that wants to resume already
+   * holds the `seq` of the last record it saw.
+   */
+  async function pump(
+    body: ReadableStream<Uint8Array>,
+    onEvent: (event: RunEventView) => void,
+  ): Promise<void> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buffered += decoder.decode(value, { stream: true });
+      let boundary = buffered.indexOf("\n\n");
+      for (; boundary !== -1; boundary = buffered.indexOf("\n\n")) {
+        const payload = buffered
+          .slice(0, boundary)
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice("data:".length).trim())
+          .join("\n");
+        buffered = buffered.slice(boundary + 2);
+        // A comment or a keep-alive frame carries no data and is not an event.
+        if (payload !== "") onEvent(JSON.parse(payload) as RunEventView);
+      }
+    }
+  }
+
+  async function streamRunEvents(
+    runId: string,
+    streamOptions: StreamRunEventsOptions,
+  ): Promise<ForgeResult<RunEventStream>> {
+    const doFetch = options.fetch ?? globalThis.fetch;
+    const controller = new AbortController();
+
+    let response: Response;
+    try {
+      response = await doFetch(
+        `${options.baseUrl.replace(/\/$/, "")}/v1/runs/${runId}/events`,
+        {
+          method: "GET",
+          headers: {
+            accept: "text/event-stream",
+            ...(options.token === undefined
+              ? {}
+              : { authorization: `Bearer ${options.token}` }),
+            ...(streamOptions.lastEventId === undefined
+              ? {}
+              : { "last-event-id": String(streamOptions.lastEventId) }),
+          },
+          signal: controller.signal,
+        },
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        status: 0,
+        code: "FORGE_UNREACHABLE",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+
+    if (!response.ok || response.body === null) {
+      const text = await response.text();
+      const shape = (text === "" ? {} : JSON.parse(text)) as {
+        code?: string;
+        message?: string;
+        status?: string;
+      };
+      return {
+        ok: false,
+        status: response.status,
+        code: shape.code ?? shape.status ?? "FORGE_ERROR",
+        message: shape.message ?? `Stream refused with ${response.status}.`,
+      };
+    }
+
+    // Read on its own, off the caller's stack. An abort surfaces here as a
+    // rejection and means the caller closed the stream, which is not an error.
+    void pump(response.body, streamOptions.onEvent).catch(() => {});
+
+    return { ok: true, value: { close: () => controller.abort() } };
+  }
+
   return {
     compile: (workflow) =>
       call<CompiledView>("POST", "/v1/workflows/compile", { workflow }),
@@ -371,6 +497,7 @@ export function createForgeClient(options: ForgeClientOptions): ForgeClient {
       ),
     runEvents: (runId) =>
       collection<RunEventView, "events">(`/v1/runs/${runId}/events`, "events"),
+    streamRunEvents,
     decide: (runId, approvalId, decision) =>
       call<RunView>(
         "POST",

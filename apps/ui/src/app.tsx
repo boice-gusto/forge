@@ -1,10 +1,17 @@
 import type {
   ApprovalView,
   ForgeClient,
+  RunEventStream,
   RunEventView,
   RunView,
 } from "@forge/sdk";
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   ApprovalInbox,
@@ -79,6 +86,16 @@ export function ForgeApp({ dependencies, client, now }: ForgeAppProps) {
     void loadInbox();
   }, [loadInbox]);
 
+  /**
+   * The highest sequence the screen already holds.
+   *
+   * It does two jobs, and they are the same job from two sides: the tail opens
+   * from it, so history the snapshot already returned is not replayed; and a
+   * record at or below it is dropped rather than appended, which is what keeps
+   * a reload underneath an open stream from listing the same event twice.
+   */
+  const cursor = useRef(0);
+
   const load = async (runId: string): Promise<void> => {
     setState({ kind: "loading" });
 
@@ -106,6 +123,10 @@ export function ForgeApp({ dependencies, client, now }: ForgeAppProps) {
       return;
     }
 
+    cursor.current = events.value.reduce(
+      (highest, event) => Math.max(highest, event.seq),
+      0,
+    );
     setState({
       kind: "loaded",
       run: run.value,
@@ -113,6 +134,81 @@ export function ForgeApp({ dependencies, client, now }: ForgeAppProps) {
       events: events.value,
     });
   };
+
+  /**
+   * The run record and its gates, re-read without touching the timeline.
+   *
+   * The timeline has exactly one writer once a run is open — the tail — so a
+   * refresh must not replace it with a second snapshot: the two would overlap
+   * on everything the tail had already delivered.
+   */
+  const refresh = useCallback(
+    async (runId: string): Promise<void> => {
+      const run = await client.getRun(runId);
+      const approvals = await client.approvals(runId);
+      if (!run.ok || !approvals.ok) return;
+      setState((current) =>
+        current.kind === "loaded" && current.run.runId === runId
+          ? { ...current, run: run.value, approvals: approvals.value }
+          : current,
+      );
+    },
+    [client],
+  );
+
+  const openRunId = state.kind === "loaded" ? state.run.runId : undefined;
+
+  /**
+   * Tail the open run.
+   *
+   * Two things make this necessary rather than pleasant. A decision now
+   * returns *before* the run advances — the control plane records it, enqueues
+   * the resume and replies — so a screen that re-read once after deciding
+   * would show the operator a run still sitting at the gate they just cleared.
+   * And a run walks in another process entirely, so there is no local event to
+   * wait on. The stream is how the screen finds out.
+   *
+   * A record arriving does not update the run *record*, only the timeline, so
+   * anything about the run itself or its gates is re-read from the control
+   * plane rather than inferred from an event. The screen reports what the
+   * control plane says; the stream only tells it when to ask.
+   */
+  useEffect(() => {
+    if (openRunId === undefined) return;
+
+    let live = true;
+    let stream: RunEventStream | undefined;
+
+    void client
+      .streamRunEvents(openRunId, {
+        lastEventId: cursor.current,
+        onEvent: (event) => {
+          if (event.seq <= cursor.current) return;
+          cursor.current = event.seq;
+          setState((current) =>
+            current.kind === "loaded" && current.run.runId === openRunId
+              ? { ...current, events: [...current.events, event] }
+              : current,
+          );
+          if (event.kind === "run" || event.kind === "approval") {
+            void refresh(openRunId);
+          }
+        },
+      })
+      .then((result) => {
+        // A stream the control plane refused leaves the run readable and the
+        // timeline as loaded. It is not turned into an error banner over a
+        // screen that is otherwise correct.
+        if (!result.ok) return;
+        if (live) stream = result.value;
+        else result.value.close();
+      });
+
+    return () => {
+      live = false;
+      stream?.close();
+    };
+  }, [openRunId, client, refresh]);
 
   const decide = async (
     runId: string,
@@ -123,11 +219,14 @@ export function ForgeApp({ dependencies, client, now }: ForgeAppProps) {
     if (!result.ok)
       return { ok: false, message: `${result.code}: ${result.message}` };
 
-    // The queue, the gate list and the effect ledger have all moved. Re-read
-    // rather than patch local state, so the screen reflects the control plane
-    // and not a guess about what the decision did.
+    // The gate is decided, so it has left the inbox. What the *run* does next
+    // happens on a worker, so the record is re-read here for what is already
+    // true and the tail reports the rest as it happens — rather than a reload
+    // that would photograph the run a moment before it moved.
     await loadInbox();
-    if (state.kind === "loaded" && state.run.runId === runId) await load(runId);
+    if (state.kind === "loaded" && state.run.runId === runId) {
+      await refresh(runId);
+    }
     return { ok: true };
   };
 

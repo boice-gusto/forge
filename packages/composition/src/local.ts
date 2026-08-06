@@ -49,6 +49,17 @@ export interface LocalStackOptions {
   readonly actor?: string;
   readonly environment?: string;
   readonly approvalTtlMs?: number;
+  /**
+   * Freezes the clock at this instant, for a suite that needs one.
+   *
+   * **Absent means the real clock**, and that distinction is load-bearing: it
+   * used to default to a literal in the past, so every gate `pnpm dev` issued
+   * was created and expired in 2026-01-01's week — already over against a
+   * browser's clock. The UI read them as expired and drew no approve control,
+   * which made the running product unable to approve anything at all. A test
+   * affordance had become the production default, and the only thing that
+   * would have caught it is an assertion about a stack given no `startedAt`.
+   */
   readonly startedAt?: string;
   /** Where dispatched effects land. Defaults to an in-memory recorder. */
   readonly effects?: EffectSink;
@@ -131,8 +142,17 @@ export interface LocalStack extends ControlPlaneStack {
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
-  let instant = new Date(options.startedAt ?? "2026-01-01T00:00:00.000Z");
-  const clock: ClockPort = { now: () => new Date(instant) };
+  // Frozen only when a caller asked for it. `advanceClock` is a skew rather
+  // than an assignment, so it moves both kinds — a suite can still age a gate
+  // out of a stack running on the wall clock.
+  const frozenAt =
+    options.startedAt === undefined
+      ? undefined
+      : new Date(options.startedAt).getTime();
+  let skewMs = 0;
+  const clock: ClockPort = {
+    now: () => new Date((frozenAt ?? Date.now()) + skewMs),
+  };
 
   const counters = new Map<string, number>();
   const ids: IdPort = options.ids ?? {
@@ -257,7 +277,7 @@ export function createLocalStack(options: LocalStackOptions = {}): LocalStack {
       while (inFlight.size > 0) await Promise.all([...inFlight]);
     },
     advanceClock(ms) {
-      instant = new Date(instant.getTime() + ms);
+      skewMs += ms;
     },
   };
 }

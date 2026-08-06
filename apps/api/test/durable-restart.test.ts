@@ -233,11 +233,15 @@ describe.skipIf(!dockerAvailable)(
     };
 
     /**
-     * `POST /v1/runs` accepts and enqueues, so the reply is a run at PENDING.
-     * This is the loop a client writes, against the same process — which also
+     * `POST /v1/runs` accepts and enqueues, so the reply is a run at PENDING,
+     * and `POST …/decision` does the same with a run still at its gate. This
+     * is the loop a client writes, against the same process — which also
      * proves the control plane consumes the queue it writes to.
+     *
+     * `past` is the gate a decision just settled. Without it this returns the
+     * instant it is called, having seen the run exactly where it already was.
      */
-    async function settle(api: Api, runId: string) {
+    async function settle(api: Api, runId: string, past?: string) {
       const deadline = Date.now() + 30_000;
       for (;;) {
         const run = await call(
@@ -246,7 +250,12 @@ describe.skipIf(!dockerAvailable)(
           `/v1/runs/${runId}`,
           "marketing-lead",
         );
-        if (SETTLED.has(run.body.status as string)) return run.body;
+        if (
+          SETTLED.has(run.body.status as string) &&
+          run.body.pendingApprovalId !== past
+        ) {
+          return run.body;
+        }
         if (Date.now() > deadline) {
           throw new Error(
             `Run ${runId} was still ${String(run.body.status)} after 30s:\n${api.output()}`,
@@ -365,9 +374,15 @@ describe.skipIf(!dockerAvailable)(
           "marketing-lead",
           { decision: "approve" },
         );
-        expect(decided.status).toBe(200);
-        expect(decided.body.status).toBe("SUCCEEDED");
-        expect(decided.body.performedEffects).toEqual(["send"]);
+        // Accepted and enqueued, like the start: the run has not advanced yet
+        // and the reply says so rather than reporting an outcome.
+        expect(decided.status).toBe(202);
+        expect(decided.body.status).toBe("AWAITING_APPROVAL");
+        expect(decided.body.performedEffects).toEqual([]);
+
+        const finished = await settle(second, runId, approvalId as string);
+        expect(finished.status).toBe("SUCCEEDED");
+        expect(finished.performedEffects).toEqual(["send"]);
 
         // What this process did *is* in its stream, so the empty reply above
         // was an honest absence rather than a route that never works.

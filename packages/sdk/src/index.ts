@@ -15,11 +15,13 @@ export {
   type ForgeClientOptions,
   type ForgeResult,
   type ForgeSessionClient,
+  type RunEventStream,
   type RunEventView,
   type RunStatus,
   type RunView,
   type SessionCredential,
   type SessionView,
   type StartRunInput,
+  type StreamRunEventsOptions,
   type WaitForRunOptions,
 } from "./client.js";

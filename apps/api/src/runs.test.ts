@@ -233,6 +233,65 @@ async function startRun(server: Server, payload: object = startBody) {
   return settle(server, response.json().runId as string);
 }
 
+/** `POST …/decision` and nothing more: the accepted record, not the outcome. */
+async function submit(
+  server: Server,
+  run: { runId: string; pendingApprovalId?: string },
+  payload: object,
+  headers: Record<string, string> = AUTH,
+) {
+  return server.inject({
+    method: "POST",
+    url: `/v1/runs/${run.runId}/approvals/${run.pendingApprovalId}/decision`,
+    headers,
+    payload,
+  });
+}
+
+/**
+ * Decide a gate and wait for the run to stop moving again.
+ *
+ * The decision route enqueues rather than walking (006 §10.3), so the reply is
+ * a run that has not advanced — still `AWAITING_APPROVAL`, still naming the
+ * gate just decided. `settle` alone would therefore return **immediately**,
+ * having observed the run exactly where it already was, and every assertion
+ * after it would be about a run nothing had happened to. So the condition is
+ * that the run has stopped *and* no longer names the gate this decision
+ * settled, which is true of all four outcomes: an approve finishes or reaches
+ * the next gate, a reject or a timeout fails, an edit names its successor.
+ */
+async function settlePast(
+  server: Server,
+  runId: string,
+  decided: string | undefined,
+  headers: Record<string, string> = AUTH,
+) {
+  for (let attempt = 0; attempt < 2_000; attempt += 1) {
+    const current = (
+      await server.inject({ method: "GET", url: `/v1/runs/${runId}`, headers })
+    ).json();
+    if (
+      SETTLED.has(current.status as string) &&
+      current.pendingApprovalId !== decided
+    ) {
+      return current;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error(`Run ${runId} never moved past ${decided}.`);
+}
+
+async function decideRun(
+  server: Server,
+  run: { runId: string; pendingApprovalId?: string },
+  payload: object,
+  headers: Record<string, string> = AUTH,
+) {
+  const response = await submit(server, run, payload, headers);
+  if (response.statusCode !== 202) return response.json();
+  return settlePast(server, run.runId, run.pendingApprovalId, headers);
+}
+
 /**
  * The routes with **no consumer bound**, so a run stops exactly where the
  * control plane leaves it. `createApiApp` binds one; this does not, which is
@@ -527,15 +586,8 @@ describe("control plane", () => {
     expect(pending.pending[0].nodeId).toBe("publish");
     expect(pending.pending[0].policyId).toBe("acme.marketing.external-publish");
 
-    const decided = await server.inject({
-      method: "POST",
-      url: `/v1/runs/${started.runId}/approvals/${started.pendingApprovalId}/decision`,
-      headers: AUTH,
-      payload: { decision: "approve" },
-    });
-    const run = decided.json();
+    const run = await decideRun(server, started, { decision: "approve" });
 
-    expect(decided.statusCode).toBe(200);
     expect(run.status).toBe("SUCCEEDED");
     expect(run.performedEffects).toEqual(["publish"]);
 
@@ -1042,12 +1094,7 @@ describe("the run event stream is the telemetry, not a second story", () => {
   test("the stream carries no prompt content and names no human", async () => {
     const server = app();
     const started = await startRun(server);
-    await server.inject({
-      method: "POST",
-      url: `/v1/runs/${started.runId}/approvals/${started.pendingApprovalId}/decision`,
-      headers: AUTH,
-      payload: { decision: "approve" },
-    });
+    await decideRun(server, started, { decision: "approve" });
 
     const events = (
       await server.inject({
@@ -1287,15 +1334,14 @@ describe("a role decides its own gates and no one else's", () => {
     const server = shared();
     const run = await gatedRun(server, "role-a", "sam-cred");
 
-    const decided = await server.inject({
-      method: "POST",
-      url: `/v1/runs/${run.runId}/approvals/${run.pendingApprovalId}/decision`,
-      headers: as("sam-cred"),
-      payload: { decision: "approve" },
-    });
+    const decided = await decideRun(
+      server,
+      run,
+      { decision: "approve" },
+      as("sam-cred"),
+    );
 
-    expect(decided.statusCode).toBe(200);
-    expect(decided.json().performedEffects).toEqual(["publish"]);
+    expect(decided.performedEffects).toEqual(["publish"]);
 
     const history = (
       await server.inject({
@@ -1401,7 +1447,11 @@ describe("every control-plane route is authenticated", () => {
 
   test("no route answers without a bearer token", async () => {
     const server = app();
-    const routes: readonly ["POST" | "GET" | "DELETE", string][] = [
+    const routes: readonly [
+      "POST" | "GET" | "DELETE",
+      string,
+      Record<string, string>?,
+    ][] = [
       ["POST", "/v1/workflows/compile"],
       ["POST", "/v1/runs"],
       ["GET", "/v1/runs"],
@@ -1409,6 +1459,10 @@ describe("every control-plane route is authenticated", () => {
       ["GET", "/v1/runs/run_1"],
       ["GET", "/v1/runs/run_1/approvals"],
       ["GET", "/v1/runs/run_1/events"],
+      // The stream is the same resource asked for differently, so it is the
+      // same route and the same check — but "the same" is a claim, and a
+      // representation nobody swept is exactly where an exemption would hide.
+      ["GET", "/v1/runs/run_1/events", { accept: "text/event-stream" }],
       ["POST", "/v1/runs/run_1/approvals/approval_1/decision"],
       // Sign-in is the one route that may be reached without a session,
       // because it is the route that establishes one. Reading or ending a
@@ -1418,11 +1472,15 @@ describe("every control-plane route is authenticated", () => {
       ["GET", "/health"],
     ];
 
-    for (const [method, url] of routes) {
-      const response = await server.inject({ method, url, payload: {} });
-      expect(`${method} ${url} -> ${response.statusCode}`).toBe(
-        `${method} ${url} -> 401`,
-      );
+    for (const [method, url, headers] of routes) {
+      const response = await server.inject({
+        method,
+        url,
+        payload: {},
+        ...(headers === undefined ? {} : { headers }),
+      });
+      const what = `${method} ${url} ${headers?.accept ?? ""}`.trim();
+      expect(`${what} -> ${response.statusCode}`).toBe(`${what} -> 401`);
     }
   });
 
@@ -1456,6 +1514,259 @@ describe("every control-plane route is authenticated", () => {
     });
     expect(login.statusCode).toBe(401);
     expect(login.headers["set-cookie"]).toBeUndefined();
+  });
+});
+
+/**
+ * The decision route's half of 006 §10.3. It used to walk the graph inside the
+ * request — every node after the gate, the sandbox lease, the model call and
+ * the dispatch, all inside an operator's click. It now does what `POST /v1/runs`
+ * does: records durably, enqueues, replies.
+ */
+describe("the control plane records the decision and enqueues the resume", () => {
+  test("the reply is 202 with the run still at its gate, and where to look", async () => {
+    // Bare: nothing consumes the queue, so what is asserted here is what the
+    // *request* did, rather than what the request plus a turn of the loop did.
+    const stack = acmeStack();
+    const server = app(stack);
+    const started = await startRun(server);
+
+    const bareServer = bare(stack);
+    const response = await submit(bareServer, started, { decision: "approve" });
+
+    expect(response.statusCode).toBe(202);
+    const run = response.json();
+    expect(run.status).toBe("AWAITING_APPROVAL");
+    expect(run.pendingApprovalId).toBe(started.pendingApprovalId);
+    expect(run.performedEffects).toEqual([]);
+    expect(response.headers.location).toBe(`/v1/runs/${started.runId}`);
+    // Nothing was walked on the request. With the old route all three of these
+    // would already be true by the time the response was written.
+    expect(stack.dispatched).toEqual([]);
+  });
+
+  test("the decision is durable before the reply, whoever walks the run", async () => {
+    const stack = acmeStack();
+    const started = await startRun(app(stack));
+
+    await submit(bare(stack), started, {
+      decision: "approve",
+    });
+
+    // Enqueueing without recording would hand the consumer a gate that still
+    // says PENDING, and `resume` would park the run straight back where it was.
+    const approval = await stack.approvals.get(started.pendingApprovalId);
+    expect(approval?.status).toBe("APPROVED");
+    expect(approval?.decidedBy).toBe("marketing-lead");
+  });
+
+  test("the resume is on the queue, naming the run and the gate decided", async () => {
+    const stack = acmeStack();
+    const server = app(stack);
+    const started = await startRun(server);
+
+    // Recording without enqueueing is the silent half: the gate would read
+    // APPROVED and the run would sit at AWAITING_APPROVAL forever. Subscribed
+    // *before* the decision, which also displaces the consumer that would
+    // otherwise walk the run — so what is seen here is the job itself.
+    const seen: object[] = [];
+    await stack.queue.subscribe(async (job) => {
+      seen.push(job);
+    });
+    await submit(server, started, { decision: "approve" });
+    await stack.drain();
+
+    expect(seen).toEqual([
+      {
+        type: "workflow.resume",
+        runId: started.runId,
+        approvalId: started.pendingApprovalId,
+        attempt: 1,
+      },
+    ]);
+  });
+
+  test("a consumer, and only a consumer, dispatches the approved effect", async () => {
+    const stack = acmeStack();
+    const server = app(stack);
+    const started = await startRun(server);
+
+    const accepted = (
+      await submit(server, started, { decision: "approve" })
+    ).json();
+    expect(accepted.status).toBe("AWAITING_APPROVAL");
+    expect(accepted.performedEffects).toEqual([]);
+
+    const finished = await settlePast(
+      server,
+      started.runId,
+      started.pendingApprovalId,
+    );
+    expect(finished.status).toBe("SUCCEEDED");
+    expect(finished.performedEffects).toEqual(["publish"]);
+    expect(stack.dispatched).toEqual(["slack.post"]);
+  });
+
+  test("the request returns while the walk after the gate is still blocked", async () => {
+    /**
+     * The same shape as the start route's latch, on the other side of the
+     * gate. The effect sink never answers until it is released; a route that
+     * walked the run would still be inside `perform` when this `await` was
+     * made, and this test would hang rather than fail — which is the honest
+     * shape, because "the operator's click is held open across the dispatch"
+     * *is* a hang.
+     */
+    let release: (() => void) | undefined;
+    const performed = new Promise<void>((settled) => {
+      release = settled;
+    });
+    let dispatching = false;
+
+    const stack = acmeStack({
+      effects: {
+        async perform() {
+          dispatching = true;
+          await performed;
+          return undefined;
+        },
+      },
+    });
+    const server = app(stack);
+    const started = await startRun(server);
+
+    const response = await submit(server, started, { decision: "approve" });
+    expect(response.statusCode).toBe(202);
+    expect(response.json().status).toBe("AWAITING_APPROVAL");
+
+    await settleTicks();
+    expect(dispatching).toBe(true);
+
+    release?.();
+    await stack.drain();
+    expect((await stack.runs.load(started.runId))?.record.status).toBe(
+      "SUCCEEDED",
+    );
+  });
+
+  test("a refused decision records nothing and enqueues nothing", async () => {
+    // Every way the route can say no, in one place: unauthenticated, not the
+    // gate's approver, and the right gate named under the wrong run. None of
+    // them may leave a durable decision or a job behind.
+    const stack = acmeStack({ rules: SEPARATION_RULES });
+    const server = createApiApp({
+      build: { version: "0.1.0", gitSha: "test", buildTime: "2026-01-01" },
+      dependencies: { queue: "healthy", persistence: "healthy" },
+      identity: createDevelopmentIdentity([
+        { subject: "sam@example.test", secret: "sam-cred", roles: ["role-a"] },
+        { subject: "ash@example.test", secret: "ash-cred", roles: ["role-b"] },
+      ]),
+      stack,
+    });
+
+    const gated = async () => {
+      const accepted = (
+        await server.inject({
+          method: "POST",
+          url: "/v1/runs",
+          headers: { authorization: "Bearer sam-cred" },
+          payload: bodyFor(WORKFLOW_A),
+        })
+      ).json();
+      for (let attempt = 0; attempt < 2_000; attempt += 1) {
+        const run = (
+          await server.inject({
+            method: "GET",
+            url: `/v1/runs/${accepted.runId}`,
+            headers: { authorization: "Bearer sam-cred" },
+          })
+        ).json();
+        if (SETTLED.has(run.status as string)) return run;
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      throw new Error(`Run ${accepted.runId} never settled.`);
+    };
+    const mine = await gated();
+    const other = await gated();
+
+    const refusals: readonly [string, number, object][] = [
+      ["no credential", 401, {}],
+      ["the wrong role", 403, { authorization: "Bearer ash-cred" }],
+    ];
+    for (const [why, code, headers] of refusals) {
+      const response = await server.inject({
+        method: "POST",
+        url: `/v1/runs/${mine.runId}/approvals/${mine.pendingApprovalId}/decision`,
+        headers: headers as Record<string, string>,
+        payload: { decision: "approve" },
+      });
+      expect(`${why} -> ${response.statusCode}`).toBe(`${why} -> ${code}`);
+    }
+
+    // And the gate named under a run it does not belong to.
+    const mismatched = await server.inject({
+      method: "POST",
+      url: `/v1/runs/${other.runId}/approvals/${mine.pendingApprovalId}/decision`,
+      headers: { authorization: "Bearer sam-cred" },
+      payload: { decision: "approve" },
+    });
+    expect(mismatched.statusCode).toBe(404);
+
+    expect((await stack.approvals.get(mine.pendingApprovalId))?.status).toBe(
+      "PENDING",
+    );
+    // Nothing reached the queue: the two runs' own execute jobs were consumed
+    // when they were started, so a resume here would be the only thing left.
+    const seen: { type: string }[] = [];
+    await stack.queue.subscribe(async (job) => {
+      seen.push(job);
+    });
+    await stack.drain();
+    expect(seen.filter((job) => job.type === "workflow.resume")).toEqual([]);
+  });
+
+  test("deciding twice enqueues one resume and dispatches once", async () => {
+    // `operationKey` is `resume:<run>:<approval>`, so a repeated decision is
+    // one operation. The effect ledger is the second guard, and neither is
+    // allowed to be the only one.
+    const stack = acmeStack();
+    const server = app(stack);
+    const started = await startRun(server);
+
+    await submit(server, started, { decision: "approve" });
+    await submit(server, started, { decision: "approve" });
+    const finished = await settlePast(
+      server,
+      started.runId,
+      started.pendingApprovalId,
+    );
+
+    expect(finished.status).toBe("SUCCEEDED");
+    expect(finished.performedEffects).toEqual(["publish"]);
+    expect(stack.dispatched).toEqual(["slack.post"]);
+  });
+
+  test("an edit is recorded and reissues its gate without a walk", async () => {
+    // An edit authorises nothing, so there is nothing for a consumer to do —
+    // but the route still behaves identically, because whether a decision
+    // advances a run is the runtime's to know and not the route's.
+    const stack = acmeStack();
+    const server = app(stack);
+    const started = await startRun(server);
+
+    const response = await submit(server, started, {
+      decision: "edit",
+      patch: { copy: "reworded" },
+    });
+    expect(response.statusCode).toBe(202);
+
+    const after = await settlePast(
+      server,
+      started.runId,
+      started.pendingApprovalId,
+    );
+    expect(after.status).toBe("AWAITING_APPROVAL");
+    expect(after.pendingApprovalId).not.toBe(started.pendingApprovalId);
+    expect(stack.dispatched).toEqual([]);
   });
 });
 
