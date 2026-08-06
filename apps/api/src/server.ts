@@ -5,6 +5,20 @@ import {
 } from "@forge/company";
 import { type ControlPlaneStack, createLocalStack } from "@forge/composition";
 import { createDurableStack } from "@forge/composition/durable";
+import { bindIntake } from "@forge/composition/intake-binding";
+
+/**
+ * Every channel a deployment serves must resolve, or a webhook that was
+ * configured answers 404 and looks like the sender's fault.
+ */
+const refuseIntake = (problems: readonly string[]): never => {
+  process.stderr.write(
+    `[forge-api] The company's "connectors" adapter could not be bound:\n` +
+      problems.map((problem) => `  - ${problem}\n`).join(""),
+  );
+  process.exit(1);
+};
+
 import { ANY_ROLE } from "@forge/ports";
 import {
   createDevelopmentIdentity,
@@ -190,6 +204,21 @@ const resolved = await policy();
 
 const controlPlane = await stack(resolved);
 
+/**
+ * The channels this control plane serves, from the company that named them
+ * and the environment that holds their secrets.
+ *
+ * The durable stack's own pool backs the ledger, so a fleet deduplicates. In
+ * memory mode there is no pool and the in-process ledger is used, which
+ * deduplicates for one process — correct for a development control plane that
+ * has already refused to be anything else.
+ */
+const intake = bindIntake(
+  resolved.adapters.connectors,
+  (controlPlane as { pool?: import("pg").Pool }).pool,
+  refuseIntake,
+);
+
 await startApi(
   {
     build: {
@@ -207,6 +236,10 @@ await startApi(
       persistence: "healthy",
     }),
     identity: createDevelopmentIdentity(directory()),
+    ...(intake === undefined ? {} : { intake }),
+    ...(process.env.FORGE_PUBLIC_URL === undefined
+      ? {}
+      : { publicUrl: process.env.FORGE_PUBLIC_URL }),
     stack: controlPlane,
   },
   port,

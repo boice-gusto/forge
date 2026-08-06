@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./durable": "./src/durable.ts"
+    "./durable": "./src/durable.ts",
+    "./intake-binding": "./src/intake-binding.ts"
   },
   "dependencies": {
     "@forge/approval-memory": "workspace:*",
@@ -33,7 +34,8 @@
     "@forge/observability": "workspace:*",
     "@forge/event-store-memory": "workspace:*",
     "@forge/event-store-postgres": "workspace:*",
-    "@forge/intake": "workspace:*"
+    "@forge/intake": "workspace:*",
+    "@forge/intake-postgres": "workspace:*"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^12.1.0",

@@ -16,12 +16,16 @@
     "@forge/queue-memory": "workspace:*",
     "@forge/company": "workspace:*",
     "@forge/sandbox-docker": "workspace:*",
-    "@forge/provider-anthropic": "workspace:*"
+    "@forge/provider-anthropic": "workspace:*",
+    "@forge/intake": "workspace:*",
+    "@forge/intake-postgres": "workspace:*",
+    "pg": "^8.22.0"
   },
   "devDependencies": {
     "@forge/store-conformance": "workspace:*",
     "@testcontainers/postgresql": "^12.1.0",
     "@testcontainers/redis": "^12.1.0",
-    "testcontainers": "^12.1.0"
+    "testcontainers": "^12.1.0",
+    "@types/pg": "^8.20.4"
   }
 }

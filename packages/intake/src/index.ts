@@ -1,4 +1,10 @@
 export {
+  bindConnectors,
+  type ConnectorBindingResult,
+  type ConnectorFactory,
+  type SecretLookup,
+} from "./binding.js";
+export {
   acceptDelivery,
   type Connector,
   type IntakeLedgerPort,

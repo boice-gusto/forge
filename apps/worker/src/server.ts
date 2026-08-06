@@ -5,6 +5,21 @@ import {
   type EffectSink,
   type TransformFn,
 } from "@forge/composition/durable";
+import { bindIntake } from "@forge/composition/intake-binding";
+
+/**
+ * Every channel a deployment serves must resolve, or a webhook that was
+ * configured answers 404 and looks like the sender's fault.
+ */
+const refuseIntake = (problems: readonly string[]): never => {
+  process.stderr.write(
+    `[forge-worker] The company's "connectors" adapter could not be bound:\n` +
+      problems.map((problem) => `  - ${problem}\n`).join(""),
+  );
+  process.exit(1);
+};
+
+import { createProgressAnnouncer } from "@forge/intake";
 import { createAnthropicProvider } from "@forge/provider-anthropic";
 import { createDockerSandbox } from "@forge/sandbox-docker";
 
@@ -301,10 +316,38 @@ const stack = await createDurableStack({
  * `@forge/composition` so that "what a `workflow.execute` job means" has one
  * answer rather than one per process that reads the queue.
  */
+/**
+ * The channels this worker can report back to.
+ *
+ * Bound from the same company adapter the control plane uses, and this is the
+ * half that was missing: in a real deployment the *worker* walks most runs, so
+ * a control plane that announces and a worker that does not means a webhook
+ * hears about the runs the API happened to pick up and nothing else. A run
+ * whose visibility depends on which process took it off the queue is the same
+ * class of failure as one whose *outcome* does.
+ */
+const intake = bindIntake(
+  deployment.adapters.connectors,
+  stack.pool,
+  refuseIntake,
+);
+
 const consumer = createRunConsumer({
   queue: stack.queue,
   host: runtimeHost(stack.runtime),
   observability: stack.observability,
+  ...(intake === undefined
+    ? {}
+    : {
+        progress: {
+          announcer: createProgressAnnouncer({
+            connectors: intake.connectors,
+          }),
+          runs: stack.runs,
+          runUrl: (runId: string) =>
+            `${process.env.FORGE_PUBLIC_URL ?? ""}/v1/runs/${runId}`,
+        },
+      }),
 });
 
 let closing = false;

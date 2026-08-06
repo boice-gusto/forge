@@ -1,6 +1,6 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 81 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 82 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
@@ -57,12 +57,10 @@ cannot drift apart without one of them failing.
 
 ## Next, in order
 
-1. **Phase 8, continued.** Intake, a durable ledger, two connectors, the route
-   and the publication path all exist and are wired: a run started by a webhook
-   tells its own thread where it got to, and a connector outage is proven
-   unable to cost anything but that notification. Still to come: a retry queue
-   for publications worth retrying, `apps/worker` binding the announcer as
-   `apps/api` does, and Buzz, which is deliberately out of scope for now.
+1. **A retry queue for publications worth retrying.** The announcer fails open
+   and does not retry, which is honest but means a Slack outage loses a
+   notification rather than deferring it.
+2. **Buzz**, deliberately out of scope for now.
 2. **A third cause for the `queue-bullmq` flake.** "Subscribing twice is
    refused" has now gone red three times. Two causes are found and fixed — a
    test budget shorter than the adapter's close budget, and a suite that

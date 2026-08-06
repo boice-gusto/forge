@@ -15,13 +15,16 @@
     "@forge/policy-memory": "workspace:*",
     "@forge/ports": "workspace:*",
     "@forge/types": "workspace:*",
-    "@forge/intake": "workspace:*"
+    "@forge/intake": "workspace:*",
+    "@forge/intake-postgres": "workspace:*",
+    "pg": "^8.22.0"
   },
   "devDependencies": {
     "@forge/store-conformance": "workspace:*",
     "@testcontainers/postgresql": "^12.1.0",
     "@testcontainers/redis": "^12.1.0",
     "testcontainers": "^12.1.0",
-    "@forge/connector-slack": "workspace:*"
+    "@forge/connector-slack": "workspace:*",
+    "@types/pg": "^8.20.4"
   }
 }

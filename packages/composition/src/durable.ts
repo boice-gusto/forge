@@ -149,6 +149,13 @@ export interface DurableStack extends ControlPlaneStack {
   readonly queue: QueuePort;
   readonly observability: ObservabilityPort;
   readonly runEvents: RunEventStorePort;
+  /**
+   * The connection this stack owns, for adapters a composition root binds
+   * beside it — the intake ledger is one. Exposed rather than reconstructed
+   * from a URL so a deployment has one pool and one place to size it, instead
+   * of a second one appearing the day somebody adds a second table.
+   */
+  readonly pool: pg.Pool;
   /** What the durable ledger says was dispatched for a run, in order. */
   dispatched(runId: string): Promise<readonly DispatchedEffect[]>;
   /**
@@ -302,6 +309,7 @@ export async function createDurableStack(
     queue,
     observability,
     runEvents,
+    pool,
     dispatched,
     resume: (runId) => runtime.resume(runId),
     settled: () => runEventRecorder.settled(),

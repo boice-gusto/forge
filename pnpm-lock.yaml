@@ -44,6 +44,9 @@ importers:
       '@forge/intake':
         specifier: workspace:*
         version: link:../../packages/intake
+      '@forge/intake-postgres':
+        specifier: workspace:*
+        version: link:../../packages/intake-postgres
       '@forge/policy-memory':
         specifier: workspace:*
         version: link:../../packages/policy-memory
@@ -56,6 +59,9 @@ importers:
       fastify:
         specifier: ^5.11.0
         version: 5.11.0
+      pg:
+        specifier: ^8.22.0
+        version: 8.22.0
       tsx:
         specifier: ^4.23.4
         version: 4.23.4
@@ -72,6 +78,9 @@ importers:
       '@testcontainers/redis':
         specifier: ^12.1.0
         version: 12.1.0
+      '@types/pg':
+        specifier: ^8.20.4
+        version: 8.20.4
       testcontainers:
         specifier: ^12.1.0
         version: 12.1.0
@@ -139,6 +148,12 @@ importers:
       '@forge/composition':
         specifier: workspace:*
         version: link:../../packages/composition
+      '@forge/intake':
+        specifier: workspace:*
+        version: link:../../packages/intake
+      '@forge/intake-postgres':
+        specifier: workspace:*
+        version: link:../../packages/intake-postgres
       '@forge/observability-memory':
         specifier: workspace:*
         version: link:../../packages/observability-memory
@@ -157,6 +172,9 @@ importers:
       fastify:
         specifier: ^5.11.0
         version: 5.11.0
+      pg:
+        specifier: ^8.22.0
+        version: 8.22.0
       tsx:
         specifier: ^4.23.4
         version: 4.23.4
@@ -170,6 +188,9 @@ importers:
       '@testcontainers/redis':
         specifier: ^12.1.0
         version: 12.1.0
+      '@types/pg':
+        specifier: ^8.20.4
+        version: 8.20.4
       testcontainers:
         specifier: ^12.1.0
         version: 12.1.0
@@ -377,6 +398,9 @@ importers:
       '@forge/intake':
         specifier: workspace:*
         version: link:../intake
+      '@forge/intake-postgres':
+        specifier: workspace:*
+        version: link:../intake-postgres
       '@forge/ir':
         specifier: workspace:*
         version: link:../ir
