@@ -1,6 +1,6 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 79 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 80 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
@@ -38,7 +38,7 @@ needs Docker, so it fails on its own terms rather than inside `verify`.
 | **Identity** | `IdentityPort` with a development binding, real role membership, and authority checked on the decision itself |
 | **Observability** | 011 taxonomy, OTLP export, one trace per run, redaction proved against the exporter |
 | **Extension** | Plugin SDK, company loader, packed public surface proven from outside the workspace |
-| **Intake (Phase 8, begun)** | `@forge/intake` — one canonical `WorkflowRequest` every channel produces, a connector contract that puts verification before deduplication before normalisation, and two conformance suites: one a connector proves itself against, one a ledger does. `@forge/connector-slack` implements the first; `@forge/intake-postgres` the second, so a fleet deduplicates rather than each process deduplicating for itself. `POST /v1/intake/:channel` turns a signed delivery into a run that stops at its gate like any other |
+| **Intake (Phase 8, begun)** | `@forge/intake` — one canonical `WorkflowRequest` every channel produces, a connector contract that puts verification before deduplication before normalisation, and two conformance suites: one a connector proves itself against, one a ledger does. `@forge/connector-slack` and `@forge/connector-jira` implement the first — two schemes that resemble each other in nothing but the shape they produce — and `@forge/intake-postgres` the second, so a fleet deduplicates rather than each process deduplicating for itself. `POST /v1/intake/:channel` turns a signed delivery into a run that stops at its gate like any other, and a `ProgressUpdate` has nowhere to put a payload, so a connector cannot say more back than a status and a link |
 | **Company packages** | `examples/acme`; `forge.gusto` G1–G5 on packed artifacts with no core source |
 
 Seven conformance suites — provider, store, queue, sandbox, policy,
@@ -57,11 +57,12 @@ cannot drift apart without one of them failing.
 
 ## Next, in order
 
-1. **Phase 8, continued.** Intake, a durable ledger, one connector and the
-   route all exist. Still to come: Jira and Buzz, redacted progress and
-   artifact summaries published *back* to the originating system, and the
-   outage property — a connector being down must not lose canonical Forge
-   state.
+1. **Phase 8, continued.** Intake, a durable ledger, two connectors, the route
+   and the publication path all exist, and a connector outage is proven unable
+   to cost anything but a notification. Still to come: wiring the announcer to
+   run transitions (nothing calls it yet — it is a capability, not a
+   behaviour), a retry queue for publications worth retrying, and Buzz, which
+   is deliberately out of scope for now.
 2. **A third cause for the `queue-bullmq` flake.** "Subscribing twice is
    refused" has now gone red three times. Two causes are found and fixed — a
    test budget shorter than the adapter's close budget, and a suite that

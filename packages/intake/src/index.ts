@@ -7,6 +7,14 @@ export {
 } from "./connector.js";
 export { createMemoryIntakeLedger } from "./ledger-memory.js";
 export {
+  canPublish,
+  createProgressAnnouncer,
+  type ProgressAnnouncer,
+  type ProgressPublisher,
+  type ProgressUpdate,
+  type PublishingConnector,
+} from "./progress.js";
+export {
   type Accepted,
   accept,
   type Outcome,

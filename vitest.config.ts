@@ -216,6 +216,17 @@ export default defineConfig({
           branches: 96,
           statements: 100,
         },
+        /**
+         * The second connector, held to the same shape as the first. Its
+         * uncovered branches are optional-chain defaults on tables a
+         * deployment supplies, not refusals — every refusal has a test.
+         */
+        "packages/connector-jira/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 85,
+          statements: 100,
+        },
         // The extension surface. Everything a company contributes passes
         // through here, so the floor is the full 100 on every metric.
         "packages/plugin-sdk/src/**": {
