@@ -1,4 +1,5 @@
 import type { ForgeJob } from "@forge/ports";
+import { QUEUE_ERRORS } from "@forge/ports";
 import { z } from "zod";
 
 /**
@@ -24,6 +25,12 @@ const jobSchema = z.discriminatedUnion("type", [
     type: z.literal("workflow.cancel"),
     runId: z.string().min(1),
   }),
+  z.object({
+    type: z.literal("connector.publish"),
+    runId: z.string().min(1),
+    channel: z.string().min(1),
+    attempt: z.number().int().positive(),
+  }),
 ]);
 
 /**
@@ -35,7 +42,7 @@ export function parseForgeJob(payload: unknown): ForgeJob {
   const parsed = jobSchema.safeParse(payload);
   if (!parsed.success) {
     throw new Error(
-      `FORGE_QUEUE_INVALID_JOB: ${parsed.error.issues
+      `${QUEUE_ERRORS.invalidJob}: ${parsed.error.issues
         .map((issue) => `${issue.path.join(".")} ${issue.message}`)
         .join("; ")}`,
     );
