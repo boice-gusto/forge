@@ -191,6 +191,31 @@ export default defineConfig({
           branches: 91,
           statements: 100,
         },
+        /**
+         * The intake layer, which is the only part of Forge with an
+         * unauthenticated caller on the other side of it. `signature.ts` and
+         * the ordering in `acceptDelivery` are the two things standing between
+         * a public endpoint and a run, so the floor is high and the branches
+         * are the metric that matters — every one of them is a refusal.
+         */
+        "packages/intake/src/**": {
+          lines: 97,
+          functions: 100,
+          branches: 92,
+          statements: 97,
+        },
+        /**
+         * A connector's uncovered arms are refusals nobody has sent yet, and
+         * a connector is where an attacker sends things. 100 on lines and
+         * statements; the one uncovered branch is an optional-chain default
+         * on a table a deployment supplies.
+         */
+        "packages/connector-slack/src/**": {
+          lines: 100,
+          functions: 100,
+          branches: 96,
+          statements: 100,
+        },
         // The extension surface. Everything a company contributes passes
         // through here, so the floor is the full 100 on every metric.
         "packages/plugin-sdk/src/**": {

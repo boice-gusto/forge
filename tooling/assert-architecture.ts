@@ -70,6 +70,25 @@ const PRIVATE_ADAPTER_PREFIXES = [
 ] as const;
 const FORGE_SCOPE = "@forge/";
 
+/**
+ * Intake adapters, which 015 Phase 8 requires the core to know nothing about.
+ *
+ * "Core contains no connector-specific imports" is that phase's exit criterion
+ * and it is the whole reason connectors are a separate layer: the moment the
+ * runtime, the compiler or the API imports one, "how a request arrives" starts
+ * having per-channel answers, and a second front door has been opened next to
+ * the one the invariant is enforced at. A composition root may bind them —
+ * that is what a composition root is for — and nothing else may name them.
+ */
+const CONNECTOR_PREFIX = "@forge/connector-";
+
+/**
+ * Where a connector may legitimately be named: the processes that compose a
+ * deployment, and `packages/composition`, which is core's own composition
+ * root and already reaches internals freely for the same reason.
+ */
+const COMPOSITION_ROOT = /(?:^|\/)(?:apps\/[^/]+|packages\/composition)\//;
+
 // Match `packages/` whether or not a leading segment precedes it, so the
 // rules keep firing regardless of repository layout. A path-shape change must
 // never be able to silently disable an architecture boundary.
@@ -154,6 +173,23 @@ export function assertArchitecture({
     PRIVATE_ADAPTER_PREFIXES.some((prefix) => importedPath.startsWith(prefix))
   ) {
     throw new Error("FORGE_PRIVATE_ADAPTER_IMPORT");
+  }
+
+  /**
+   * 015 Phase 8: the core does not know what a connector is.
+   *
+   * A connector may import the core — that is the direction the dependency is
+   * meant to run — and a composition root may import a connector, because
+   * binding one is what a deployment does. Anything else naming one means the
+   * core has grown a per-channel answer to "how does a request arrive", and
+   * the request shape stops being canonical the moment that is true.
+   */
+  if (
+    importedPath.startsWith(CONNECTOR_PREFIX) &&
+    !COMPOSITION_ROOT.test(sourcePath) &&
+    !sourcePath.includes("/connector-")
+  ) {
+    throw new Error("FORGE_CONNECTOR_IMPORT");
   }
 
   if (

@@ -435,6 +435,12 @@ importers:
 
   packages/config: {}
 
+  packages/connector-slack:
+    dependencies:
+      '@forge/intake':
+        specifier: workspace:*
+        version: link:../intake
+
   packages/engine-memory:
     dependencies:
       '@forge/compiler':
@@ -490,6 +496,12 @@ importers:
       testcontainers:
         specifier: ^12.1.0
         version: 12.1.0
+
+  packages/intake:
+    dependencies:
+      '@forge/ports':
+        specifier: workspace:*
+        version: link:../ports
 
   packages/ir:
     dependencies:

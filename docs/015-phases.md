@@ -410,6 +410,13 @@ Scenario-to-phase mapping: [016-demo-scenarios](./016-demo-scenarios.md) § “P
 
 ## Phase 8 — Connector Extensions
 
+> **Status: begun.** `@forge/intake` defines the canonical `WorkflowRequest`,
+> the connector contract, and the conformance suite; `@forge/connector-slack`
+> implements it and passes. The architecture check now refuses a connector
+> import from anywhere but a composition root, which is this phase's second
+> exit criterion enforced rather than promised. Not yet done: the intake route,
+> a durable intake ledger, further connectors, and the outage property.
+
 **Scope:** Add Jira, Slack, and Buzz only as thin intake/progress/artifact adapters after the CLI/API flagship workflow and canonical `WorkflowRequest` are production-evaluable.
 
 ### Deliverables

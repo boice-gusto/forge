@@ -249,6 +249,50 @@ describe("the repository obeys its own rules", () => {
     ).toBe(true);
   });
 
+  test("the core does not know what a connector is", () => {
+    /**
+     * 015 Phase 8's exit criterion, as a rule rather than a promise. A
+     * connector may import the core, and a composition root may bind a
+     * connector — that is what a composition root is for. Anything else
+     * naming one means the core has grown a per-channel answer to "how does a
+     * request arrive", and the canonical request shape stops being canonical
+     * the moment that is true.
+     */
+    expect(() =>
+      assertArchitecture({
+        sourcePath: "packages/runtime/src/runtime.ts",
+        importedPath: "@forge/connector-slack",
+      }),
+    ).toThrow("FORGE_CONNECTOR_IMPORT");
+
+    expect(() =>
+      assertArchitecture({
+        sourcePath: "packages/compiler/src/compile.ts",
+        importedPath: "@forge/connector-jira",
+      }),
+    ).toThrow("FORGE_CONNECTOR_IMPORT");
+
+    // The two places it is allowed, and the direction that is meant to work.
+    expect(() =>
+      assertArchitecture({
+        sourcePath: "apps/api/src/server.ts",
+        importedPath: "@forge/connector-slack",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertArchitecture({
+        sourcePath: "packages/composition/src/local.ts",
+        importedPath: "@forge/connector-slack",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertArchitecture({
+        sourcePath: "packages/connector-slack/src/connector.ts",
+        importedPath: "@forge/intake",
+      }),
+    ).not.toThrow();
+  });
+
   test("no import violates a layer boundary", () => {
     const violations: string[] = [];
 
