@@ -1,4 +1,8 @@
-import type { JsonValue } from "@forge/ports";
+import {
+  type JsonValue,
+  type RunStatus,
+  STOPPED_RUN_STATUSES,
+} from "@forge/ports";
 
 import { waitFor } from "./docker.js";
 import { type Api, OPERATORS, type Role } from "./processes.js";
@@ -57,24 +61,18 @@ export const startRun = (
  * run would drive the run past the thing under test before asserting on it.
  */
 /**
- * "Stopped", not "finished".
+ * "Stopped", not "finished", and the distinction is now named in one place.
  *
- * `AWAITING_APPROVAL` is in here because a run parked at a gate has stopped
- * moving, which is what most callers are waiting for. It is also a trap: call
- * this on a run that is *already* at a gate and it returns immediately, having
- * waited for a state the run never left. A test that then asserts on work an
- * enqueued job has yet to do is racing, and will mostly lose.
+ * `AWAITING_APPROVAL` counts as stopped because a run parked at a gate has
+ * stopped moving, which is what most callers here are waiting for. It is also
+ * a trap: call this on a run that is *already* at a gate and it returns
+ * immediately, having waited for a state the run never left. That made a
+ * working redrive look broken for a day.
  *
  * If what you need is "the decision was carried out", wait for that — the
- * effect settling, the status changing from the one you started in — and not
- * for this.
+ * effect settling, or the status leaving the one you started in.
  */
-const SETTLED = new Set([
-  "AWAITING_APPROVAL",
-  "SUCCEEDED",
-  "FAILED",
-  "CANCELLED",
-]);
+const SETTLED = STOPPED_RUN_STATUSES;
 
 export async function settle(
   api: Api,
@@ -87,7 +85,7 @@ export async function settle(
     async () => {
       const run = await call(api, "GET", `/v1/runs/${runId}`, "marketing-lead");
       last = run.body;
-      return SETTLED.has(String(run.body.status));
+      return SETTLED.has(run.body.status as RunStatus);
     },
     timeoutMs,
     25,

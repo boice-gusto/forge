@@ -6,7 +6,7 @@ import {
   type LocalStack,
   type LocalStackOptions,
 } from "@forge/composition";
-import { ANY_ROLE } from "@forge/ports";
+import { ANY_ROLE, type RunStatus, STOPPED_RUN_STATUSES } from "@forge/ports";
 import Fastify from "fastify";
 import { describe, expect, test } from "vitest";
 import { createRequestAuthenticator } from "./auth.js";
@@ -190,12 +190,8 @@ async function accept(server: Server, payload: object = startBody) {
  * assertion about a *gate* below unfalsifiable — it would drive the run past
  * the gate and then assert the gate was there.
  */
-const SETTLED = new Set([
-  "AWAITING_APPROVAL",
-  "SUCCEEDED",
-  "FAILED",
-  "CANCELLED",
-]);
+/** One definition, in `@forge/ports`. Six copies of this had drifted. */
+const SETTLED = STOPPED_RUN_STATUSES;
 
 /**
  * Reads the run until the consumer has taken it as far as it goes.
@@ -213,7 +209,7 @@ async function settle(server: Server, runId: string) {
         headers: AUTH,
       })
     ).json();
-    if (SETTLED.has(run.status as string)) return run;
+    if (SETTLED.has(run.status as RunStatus)) return run;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   throw new Error(`Run ${runId} never settled.`);
@@ -271,7 +267,7 @@ async function settlePast(
       await server.inject({ method: "GET", url: `/v1/runs/${runId}`, headers })
     ).json();
     if (
-      SETTLED.has(current.status as string) &&
+      SETTLED.has(current.status as RunStatus) &&
       current.pendingApprovalId !== decided
     ) {
       return current;
@@ -1541,7 +1537,7 @@ describe("a role decides its own gates and no one else's", () => {
           headers: as(credential),
         })
       ).json();
-      if (SETTLED.has(run.status as string)) return run;
+      if (SETTLED.has(run.status as RunStatus)) return run;
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
     throw new Error(`Run ${accepted.runId} never settled.`);
@@ -1922,7 +1918,7 @@ describe("the control plane records the decision and enqueues the resume", () =>
             headers: { authorization: "Bearer sam-cred" },
           })
         ).json();
-        if (SETTLED.has(run.status as string)) return run;
+        if (SETTLED.has(run.status as RunStatus)) return run;
         await new Promise((resolve) => setTimeout(resolve, 1));
       }
       throw new Error(`Run ${accepted.runId} never settled.`);

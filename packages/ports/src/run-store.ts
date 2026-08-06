@@ -37,6 +37,46 @@ export type RunStatus =
   | "FAILED"
   | "CANCELLED";
 
+/**
+ * A run that will not move again on its own.
+ *
+ * `AWAITING_APPROVAL` is **not** here, and that omission is the whole reason
+ * this constant exists. A parked run has stopped, but it has not finished —
+ * it moves the moment a human decides. Seven places in this repository had
+ * each written their own version of this set by hand, one of them was missing
+ * `CANCELLED`, and a helper that counted a gate as settled returned instantly
+ * on a run already at one, which made a working feature look broken for a day.
+ *
+ * If what you mean is "stopped for now", say {@link hasStopped}.
+ */
+export const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set([
+  "SUCCEEDED",
+  "FAILED",
+  "CANCELLED",
+]);
+
+/**
+ * A run that is not going to move without something outside it happening —
+ * terminal, or waiting on a human.
+ *
+ * The right thing to poll for when what you want is "has it stopped moving".
+ * The wrong thing to poll for after a decision, because a run at a gate
+ * already satisfies it: wait for the effect, the status change, or the
+ * approval to clear instead.
+ */
+export const STOPPED_RUN_STATUSES: ReadonlySet<RunStatus> = new Set([
+  ...TERMINAL_RUN_STATUSES,
+  "AWAITING_APPROVAL" as const,
+]);
+
+/** Finished, one way or another. Never true of a run parked at a gate. */
+export const isTerminalRun = (status: RunStatus): boolean =>
+  TERMINAL_RUN_STATUSES.has(status);
+
+/** Stopped for now, which includes parked at a gate. */
+export const hasStopped = (status: RunStatus): boolean =>
+  STOPPED_RUN_STATUSES.has(status);
+
 export interface RunRecord {
   readonly runId: string;
   readonly workflowId: string;

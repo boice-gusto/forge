@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type RunStatus, STOPPED_RUN_STATUSES } from "@forge/ports";
 
 import { containerRuntimeAvailable } from "@forge/store-conformance";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -207,12 +208,7 @@ describe.skipIf(!dockerAvailable)(
      * every assertion below is about a run parked at its *gate*, and a helper
      * that waited for a finished run would drive it past the thing under test.
      */
-    const SETTLED = new Set([
-      "AWAITING_APPROVAL",
-      "SUCCEEDED",
-      "FAILED",
-      "CANCELLED",
-    ]);
+    const SETTLED = STOPPED_RUN_STATUSES;
 
     const call = async (
       api: Api,
@@ -251,7 +247,7 @@ describe.skipIf(!dockerAvailable)(
           "marketing-lead",
         );
         if (
-          SETTLED.has(run.body.status as string) &&
+          SETTLED.has(run.body.status as RunStatus) &&
           run.body.pendingApprovalId !== past
         ) {
           return run.body;

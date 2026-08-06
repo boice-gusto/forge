@@ -71,6 +71,12 @@ export type {
   StoredArtifact,
   UnsettledEffect,
 } from "./run-store.js";
+export {
+  hasStopped,
+  isTerminalRun,
+  STOPPED_RUN_STATUSES,
+  TERMINAL_RUN_STATUSES,
+} from "./run-store.js";
 export type {
   SandboxExecResult,
   SandboxLease,

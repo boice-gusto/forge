@@ -3,6 +3,7 @@ import type {
   ForgeJob,
   ObservabilityPort,
   QueuePort,
+  RunStatus,
   RunStorePort,
 } from "@forge/ports";
 import type { Runtime } from "@forge/runtime";
@@ -25,18 +26,30 @@ import type { Runtime } from "@forge/runtime";
  * maps one job to one host call and reports where it landed.
  */
 
+/**
+ * What a host can report about a job it was handed.
+ *
+ * A run's status, or `UNKNOWN` — which is not a status and never appears on a
+ * record: it means the job named a run the store has never heard of. That
+ * answer was previously smuggled through a bare `string` return, where it
+ * looked exactly like a lifecycle state and nothing could tell them apart.
+ * Naming it is the difference between "this run failed" and "there is no such
+ * run", which are very different pages for somebody to be woken up by.
+ */
+export type HostOutcome = RunStatus | "UNKNOWN";
+
 export interface RunHost {
   /** Starts a run the control plane created. Returns its status. */
   execute(
     runId: string,
     workflowVersionId: string,
     attempt: number,
-  ): Promise<string>;
+  ): Promise<HostOutcome>;
   /**
    * Drives a run whose gate has been decided. The decision is already durable;
    * this only moves the resume off the request that made it.
    */
-  resume(runId: string, approvalId: string): Promise<string>;
+  resume(runId: string, approvalId: string): Promise<HostOutcome>;
   cancel(runId: string): Promise<void>;
 }
 

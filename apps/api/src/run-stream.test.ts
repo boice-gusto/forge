@@ -7,7 +7,7 @@ import {
   type LocalStack,
   type LocalStackOptions,
 } from "@forge/composition";
-import { ANY_ROLE } from "@forge/ports";
+import { ANY_ROLE, type RunStatus, STOPPED_RUN_STATUSES } from "@forge/ports";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { createDevelopmentIdentity } from "./identity-development.js";
@@ -205,7 +205,11 @@ async function getRun(origin: string, runId: string): Promise<ParkedRun> {
   ).json()) as ParkedRun;
 }
 
-const SETTLED = new Set(["AWAITING_APPROVAL", "SUCCEEDED", "FAILED"]);
+/**
+ * One definition, in `@forge/ports`. This copy was missing `CANCELLED` — the
+ * drift these constants exist to stop, sitting in the tree unnoticed.
+ */
+const SETTLED = STOPPED_RUN_STATUSES;
 
 interface ParkedRun {
   readonly runId: string;
@@ -219,7 +223,7 @@ async function startAndPark(origin: string): Promise<ParkedRun> {
   ).json()) as ParkedRun;
   for (let attempt = 0; attempt < 2_000; attempt += 1) {
     const run = await getRun(origin, accepted.runId);
-    if (SETTLED.has(run.status)) return run;
+    if (SETTLED.has(run.status as RunStatus)) return run;
     await new Promise((settle) => setTimeout(settle, 1));
   }
   throw new Error(`Run ${accepted.runId} never settled.`);

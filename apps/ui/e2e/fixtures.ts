@@ -1,3 +1,4 @@
+import { type RunStatus, TERMINAL_RUN_STATUSES } from "@forge/ports";
 import {
   test as base,
   expect,
@@ -134,11 +135,11 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((settle) => setTimeout(settle, ms));
 
 /** Where a run stops. Not `AWAITING_APPROVAL`: that is a run still waiting. */
-const TERMINAL: ReadonlySet<string> = new Set([
-  "SUCCEEDED",
-  "FAILED",
-  "CANCELLED",
-]);
+/**
+ * The browser's view of "finished", which is genuinely terminal rather than
+ * merely stopped: a run at a gate is exactly what these tests wait *at*.
+ */
+const TERMINAL: ReadonlySet<string> = TERMINAL_RUN_STATUSES;
 
 export const test = base.extend<{ forge: Forge }, { stack: Stack }>({
   stack: [
@@ -232,7 +233,7 @@ export const test = base.extend<{ forge: Forge }, { stack: Stack }>({
         const deadline = Date.now() + 30_000;
         for (;;) {
           const record = await call<RunRecord>("GET", `/v1/runs/${runId}`);
-          if (TERMINAL.has(record.status)) return record;
+          if (TERMINAL.has(record.status as RunStatus)) return record;
           if (Date.now() >= deadline) {
             throw new Error(
               `Run ${runId} was still ${record.status} after 30s; the decision never took effect.`,

@@ -1,8 +1,6 @@
 import { createHmac } from "node:crypto";
-
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-
 import { loadDeploymentPolicy } from "@forge/company";
 import {
   createLocalStack,
@@ -11,7 +9,7 @@ import {
 } from "@forge/composition";
 import { createSlackConnector } from "@forge/connector-slack";
 import { createMemoryIntakeLedger } from "@forge/intake";
-import { ANY_ROLE } from "@forge/ports";
+import { ANY_ROLE, type RunStatus, STOPPED_RUN_STATUSES } from "@forge/ports";
 import { describe, expect, test } from "vitest";
 
 import { createDevelopmentIdentity } from "./identity-development.js";
@@ -125,12 +123,7 @@ async function settle(
   server: ReturnType<typeof app>,
   runId: string,
 ): Promise<Record<string, unknown>> {
-  const STOPPED = new Set([
-    "AWAITING_APPROVAL",
-    "SUCCEEDED",
-    "FAILED",
-    "CANCELLED",
-  ]);
+  const STOPPED = STOPPED_RUN_STATUSES;
   for (let attempt = 0; attempt < 2_000; attempt += 1) {
     const run = (
       await server.inject({
@@ -139,7 +132,7 @@ async function settle(
         headers: AUTH,
       })
     ).json();
-    if (STOPPED.has(run.status as string)) return run;
+    if (STOPPED.has(run.status as RunStatus)) return run;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   throw new Error(`Run ${runId} never stopped.`);

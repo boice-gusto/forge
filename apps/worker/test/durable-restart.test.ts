@@ -227,7 +227,9 @@ describe.skipIf(!dockerAvailable)("a run survives a process restart", () => {
         async resume(runId: string) {
           const run = await stack.resume(runId);
           resumed.push(run);
-          return run?.status ?? "unknown";
+          // `UNKNOWN`, matching `HostOutcome`. This said "unknown" until the
+          // type was narrowed from `string`, and nothing could tell.
+          return run?.status ?? "UNKNOWN";
         },
         async cancel() {},
       },

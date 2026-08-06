@@ -1,3 +1,5 @@
+import type { RunStatus } from "@forge/ports";
+
 import type { Connector } from "./connector.js";
 import type { RequestOrigin } from "./request.js";
 
@@ -18,8 +20,12 @@ import type { RequestOrigin } from "./request.js";
 export interface ProgressUpdate {
   readonly origin: RequestOrigin;
   readonly runId: string;
-  /** The run's lifecycle status, verbatim from the record. */
-  readonly status: string;
+  /**
+   * The run's lifecycle status, verbatim from the record — and typed as such,
+   * so a connector rendering "SUCEEDED" into a Slack message is a compile
+   * error rather than a message somebody reads and believes.
+   */
+  readonly status: RunStatus;
   /** Present while a human is being waited on, so a connector can link to it. */
   readonly pendingApprovalId?: string | undefined;
   /**
