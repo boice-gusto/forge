@@ -1,4 +1,9 @@
-import { type ForgeJob, operationKey, type QueuePort } from "@forge/ports";
+import {
+  type ForgeJob,
+  operationKey,
+  QUEUE_ERRORS,
+  type QueuePort,
+} from "@forge/ports";
 import { Queue, Worker } from "bullmq";
 
 /** Long enough that a restarting Redis is listening again. */
@@ -128,7 +133,7 @@ export function createBullMqQueue(options: BullMqQueueOptions): QueuePort {
 
     async subscribe(handler) {
       if (worker !== undefined) {
-        throw new Error("FORGE_QUEUE_ALREADY_SUBSCRIBED");
+        throw new Error(QUEUE_ERRORS.alreadySubscribed);
       }
       attach = () => {
         const connection = connect();
