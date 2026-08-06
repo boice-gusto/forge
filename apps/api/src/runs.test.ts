@@ -1179,6 +1179,63 @@ describe("an action claimed and never carried out is not left for nobody to find
     expect(response.statusCode).toBe(500);
   });
 
+  test("redriving a run already at a gate is refused, not queued behind it", async () => {
+    /**
+     * Two pending approvals on one run is the state that once voided an
+     * operator's decision into a second gate. A redrive must not be a way back
+     * into it.
+     *
+     * This branch and the one below were consolidated onto `RUNTIME_ERRORS`
+     * during a duplication sweep, and sabotaging either code left every test
+     * green — nothing here exercised them. They were type-checked and
+     * unverified, which is the gap a rename would have walked straight
+     * through.
+     */
+    const stack = acmeStack();
+    const server = app(stack);
+    const started = await startRun(server);
+    await stack.runs.claimEffect({
+      runId: started.runId,
+      nodeId: "publish",
+      effect: "slack.post",
+      at: "2026-08-04T00:00:01.000Z",
+    });
+
+    // Still parked on the gate `startRun` left it at.
+    const response = await server.inject({
+      method: "POST",
+      url: `/v1/runs/${started.runId}/effects/publish/redrive`,
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe("FORGE_RUN_AWAITING_APPROVAL");
+  });
+
+  test("redriving a cancelled run is refused, so a recovery cannot reverse a stop", async () => {
+    // Carrying a gate sets a run RUNNING. On a cancelled run that would undo a
+    // human's decision to stop, as a side effect of a recovery.
+    const stack = acmeStack();
+    const server = app(stack);
+    const started = await startRun(server);
+    await stack.runs.claimEffect({
+      runId: started.runId,
+      nodeId: "publish",
+      effect: "slack.post",
+      at: "2026-08-04T00:00:01.000Z",
+    });
+    await stack.runtime.cancel(started.runId);
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/v1/runs/${started.runId}/effects/publish/redrive`,
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe("FORGE_RUN_NOT_REDRIVABLE");
+  });
+
   test("a redrive refuses an unauthenticated caller", async () => {
     // It is a request to have a side effect performed. Being unable to grant
     // that itself is not a reason to let anyone ask.

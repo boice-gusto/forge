@@ -1,4 +1,8 @@
-export type DependencyStatus = "healthy" | "degraded" | "unavailable";
+// One declaration, in `@forge/ports`. Imported for use here and re-exported
+// so this module's callers keep their import.
+import type { DependencyStatus } from "@forge/ports";
+
+export type { DependencyStatus };
 
 export interface BuildInfo {
   readonly version: string;

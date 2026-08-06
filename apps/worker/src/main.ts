@@ -1,6 +1,10 @@
 import Fastify, { type FastifyInstance } from "fastify";
 
-import { createWorkerHealth, type WorkerBuildInfo } from "./health.js";
+import {
+  createWorkerHealth,
+  type WorkerBuildInfo,
+  type WorkerDependencyStatus,
+} from "./health.js";
 
 export function createWorkerApp(
   build: WorkerBuildInfo,
@@ -11,9 +15,7 @@ export function createWorkerApp(
    * outage made real: the consumer's connection died and the probe never
    * noticed.
    */
-  dependencies: () => Promise<
-    Readonly<Record<string, "healthy" | "degraded" | "unavailable">>
-  >,
+  dependencies: () => Promise<Readonly<Record<string, WorkerDependencyStatus>>>,
 ): FastifyInstance {
   const app = Fastify({ logger: false });
   const health = async () => createWorkerHealth(build, await dependencies());
@@ -31,9 +33,7 @@ export function createWorkerApp(
 
 export async function startWorker(
   build: WorkerBuildInfo,
-  dependencies: () => Promise<
-    Readonly<Record<string, "healthy" | "degraded" | "unavailable">>
-  >,
+  dependencies: () => Promise<Readonly<Record<string, WorkerDependencyStatus>>>,
   port = 3102,
 ): Promise<void> {
   await createWorkerApp(build, dependencies).listen({

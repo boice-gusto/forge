@@ -1,4 +1,8 @@
-export type WorkerDependencyStatus = "healthy" | "degraded" | "unavailable";
+// One declaration, in `@forge/ports`. The local alias stays because the
+// worker's callers use it; the values are no longer a second opinion.
+import type { DependencyStatus } from "@forge/ports";
+
+export type WorkerDependencyStatus = DependencyStatus;
 
 export interface WorkerBuildInfo {
   readonly version: string;

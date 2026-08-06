@@ -14,7 +14,8 @@
     "@forge/observability": "workspace:*",
     "@forge/sdk": "workspace:*",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "@forge/ports": "workspace:*"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.0",

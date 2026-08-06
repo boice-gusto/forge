@@ -1,8 +1,9 @@
 import { redact } from "@forge/observability";
+import type { DependencyStatus } from "@forge/ports";
 
 export interface LocalDependency {
   readonly name: string;
-  readonly status: "healthy" | "degraded" | "unavailable";
+  readonly status: DependencyStatus;
   readonly detail?: string;
 }
 

@@ -34,8 +34,15 @@ import { startWorker } from "./main.js";
  * process doing no work is worse than a red one.
  */
 
+/**
+ * Read once: the health snapshot reports this and the policy loader resolves
+ * the company package against it, and a deployment where those two disagree is
+ * one whose probe names a version it is not running.
+ */
+const forgeVersion = process.env.FORGE_VERSION ?? "0.1.0";
+
 const build = {
-  version: process.env.FORGE_VERSION ?? "0.1.0",
+  version: forgeVersion,
   gitSha: process.env.FORGE_GIT_SHA ?? "local",
   buildTime: process.env.FORGE_BUILD_TIME ?? new Date().toISOString(),
 };
@@ -92,7 +99,7 @@ const deployment =
     : await loadDeploymentPolicy({
         root: companyRoot,
         hostCapabilities: csv(process.env.FORGE_HOST_CAPABILITIES ?? ""),
-        forgeVersion: process.env.FORGE_VERSION ?? "0.1.0",
+        forgeVersion,
       });
 
 /**
@@ -196,17 +203,14 @@ const boundTransforms = deployment.adapters.transforms;
  * real, and refuses if it cannot. Profiles come from the deployment operator,
  * as the sandbox images do: an author names an alias, never an image.
  */
-const sandboxProfiles = csv(process.env.FORGE_SANDBOX_PROFILES ?? "");
+const declaredProfiles = process.env.FORGE_SANDBOX_PROFILES;
+const sandboxProfiles = csv(declaredProfiles ?? "");
 const sandboxImage = process.env.FORGE_SANDBOX_IMAGE;
-const sandboxMemoryMb = Number.parseInt(
-  process.env.FORGE_SANDBOX_MEMORY_MB ?? "512",
-  10,
-);
+const declaredMemoryMb = process.env.FORGE_SANDBOX_MEMORY_MB;
+const sandboxMemoryMb = Number.parseInt(declaredMemoryMb ?? "512", 10);
+const mockSandbox = process.env.FORGE_WORKER_MOCK_SANDBOX === "1";
 
-if (
-  sandboxProfiles.length > 0 &&
-  process.env.FORGE_WORKER_MOCK_SANDBOX !== "1"
-) {
+if (sandboxProfiles.length > 0 && !mockSandbox) {
   if (sandboxImage === undefined) {
     process.stderr.write(
       "[forge-worker] FORGE_SANDBOX_PROFILES names profiles but " +
@@ -220,16 +224,14 @@ if (
   }
   if (!Number.isInteger(sandboxMemoryMb) || sandboxMemoryMb <= 0) {
     process.stderr.write(
-      `[forge-worker] FORGE_SANDBOX_MEMORY_MB must be a positive integer; got ${process.env.FORGE_SANDBOX_MEMORY_MB}.\n`,
+      `[forge-worker] FORGE_SANDBOX_MEMORY_MB must be a positive integer; got ${declaredMemoryMb}.\n`,
     );
     process.exit(1);
   }
 }
 
 const realSandbox =
-  sandboxProfiles.length > 0 &&
-  sandboxImage !== undefined &&
-  process.env.FORGE_WORKER_MOCK_SANDBOX !== "1"
+  sandboxProfiles.length > 0 && sandboxImage !== undefined && !mockSandbox
     ? createDockerSandbox({
         profiles: Object.fromEntries(
           sandboxProfiles.map((profile) => [
@@ -275,7 +277,8 @@ if (!mockProvider && process.env.ANTHROPIC_API_KEY === undefined) {
   );
   process.exit(1);
 }
-if (!mockProvider && process.env.FORGE_MODEL === undefined) {
+const model = process.env.FORGE_MODEL;
+if (!mockProvider && model === undefined) {
   process.stderr.write(
     "[forge-worker] FORGE_MODEL is required: which model answers an agent " +
       "step is a deployment's decision, not a default this binary picks.\n",
@@ -283,15 +286,15 @@ if (!mockProvider && process.env.FORGE_MODEL === undefined) {
   process.exit(1);
 }
 
+const declaredMaxTokens = process.env.FORGE_MODEL_MAX_TOKENS;
+
 const provider = mockProvider
   ? undefined
   : createAnthropicProvider({
-      model: process.env.FORGE_MODEL as string,
-      ...(process.env.FORGE_MODEL_MAX_TOKENS === undefined
+      model: model as string,
+      ...(declaredMaxTokens === undefined
         ? {}
-        : {
-            maxTokens: Number.parseInt(process.env.FORGE_MODEL_MAX_TOKENS, 10),
-          }),
+        : { maxTokens: Number.parseInt(declaredMaxTokens, 10) }),
     });
 
 const stack = await createDurableStack({
@@ -306,9 +309,7 @@ const stack = await createDurableStack({
   ...(boundEffects === undefined
     ? {}
     : { effects: effectSinkFrom(boundEffects) }),
-  ...(process.env.FORGE_SANDBOX_PROFILES === undefined
-    ? {}
-    : { sandboxProfiles: csv(process.env.FORGE_SANDBOX_PROFILES) }),
+  ...(declaredProfiles === undefined ? {} : { sandboxProfiles }),
 });
 
 /**

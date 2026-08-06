@@ -10,6 +10,7 @@ import {
   type ApprovalDecision,
   type JsonValue,
   RUN_STORE_ERRORS,
+  RUNTIME_ERRORS,
   type RunStatus,
 } from "@forge/ports";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -575,16 +576,16 @@ export function registerRunRoutes(
           return reply.code(404).send({ status: "not_found" });
         }
         /**
-         * The store's codes come from `@forge/ports`; the two the runtime
-         * raises on its own are spelled here because they are the runtime's,
-         * not a store's. Three packages agree on these strings, and a rename
-         * that missed one would turn a 409 into an unhandled 500.
+         * Both sets come from `@forge/ports`, store's and runtime's alike.
+         * Three packages agree on these strings, and spelling them here meant
+         * a rename on either side turned a 409 into an unhandled 500 rather
+         * than failing to compile.
          */
         const code = [
           RUN_STORE_ERRORS.effectSettled,
           RUN_STORE_ERRORS.effectNotClaimed,
-          "FORGE_RUN_AWAITING_APPROVAL",
-          "FORGE_RUN_NOT_REDRIVABLE",
+          RUNTIME_ERRORS.awaitingApproval,
+          RUNTIME_ERRORS.notRedrivable,
         ].find((known) => message.startsWith(known));
         if (code === undefined) throw error;
         return reply.code(409).send({ status: "conflict", code, message });

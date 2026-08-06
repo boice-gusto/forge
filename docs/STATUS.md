@@ -146,6 +146,26 @@ nothing go red, and then writing the fixture that could tell the difference.
 The route now keeps the raw string in its own Fastify plugin scope, and a
 signed pretty-printed body is a test.
 
+### A job kind the wire schema had never heard of
+
+The duplication sweep found a live bug, and not by looking for one.
+
+`connector.publish` — the retry job that carries a progress notification — was
+added to the `ForgeJob` union and never to the BullMQ wire schema. On the
+memory queue it worked, which is what every test used. On Redis, which is what
+a deployment uses, `parseForgeJob` rejected every one of them as
+`FORGE_QUEUE_INVALID_JOB`: notifications would have failed in production and
+nowhere else.
+
+It survived because the schema's round-trip test enumerates job kinds **by
+hand**. A kind added to the union and forgotten in the schema passes it. The
+test is being made exhaustive by construction, so the next omission is a
+compile error rather than a production one.
+
+Worth recording as its own lesson: the union and the schema are two spellings
+of the same fact, which is exactly what this sweep was looking for — and the
+one place a *type* could not catch it, because Zod's schema is a value.
+
 ### What a sweep for duplication actually found
 
 Measured rather than guessed at: every string literal appearing in two or more

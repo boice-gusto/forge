@@ -167,10 +167,9 @@ async function stack(rules: DeploymentPolicy): Promise<ControlPlaneStack> {
   // What this deployment can actually isolate. A workflow naming a profile
   // that is absent stops rather than running with less isolation than it
   // declared, so a host serving a company declares that company's profiles.
+  const declared = process.env.FORGE_SANDBOX_PROFILES;
   const sandboxProfiles =
-    process.env.FORGE_SANDBOX_PROFILES === undefined
-      ? {}
-      : { sandboxProfiles: roleList(process.env.FORGE_SANDBOX_PROFILES) };
+    declared === undefined ? {} : { sandboxProfiles: roleList(declared) };
   const shared = {
     rules: rules.rules,
     grants: rules.grants,
@@ -219,6 +218,8 @@ const intake = bindIntake(
   refuseIntake,
 );
 
+const publicUrl = process.env.FORGE_PUBLIC_URL;
+
 await startApi(
   {
     build: {
@@ -237,9 +238,7 @@ await startApi(
     }),
     identity: createDevelopmentIdentity(directory()),
     ...(intake === undefined ? {} : { intake }),
-    ...(process.env.FORGE_PUBLIC_URL === undefined
-      ? {}
-      : { publicUrl: process.env.FORGE_PUBLIC_URL }),
+    ...(publicUrl === undefined ? {} : { publicUrl }),
     stack: controlPlane,
   },
   port,
