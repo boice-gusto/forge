@@ -24,7 +24,7 @@ describe("worker health", () => {
         gitSha: "testsha",
         buildTime: "2026-08-02T00:00:00.000Z",
       },
-      { queue: "healthy" },
+      async () => ({ queue: "healthy" }),
     );
 
     const response = await app.inject({ method: "GET", url: "/health/ready" });

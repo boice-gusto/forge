@@ -156,6 +156,8 @@ async function stack(rules: DeploymentPolicy): Promise<ControlPlaneStack> {
 
 const resolved = await policy();
 
+const controlPlane = await stack(resolved);
+
 await startApi(
   {
     build: {
@@ -163,9 +165,17 @@ await startApi(
       gitSha: process.env.FORGE_GIT_SHA ?? "local",
       buildTime: process.env.FORGE_BUILD_TIME ?? new Date().toISOString(),
     },
-    dependencies: { queue: "healthy", persistence: "healthy" },
+    // The queue's own answer, per probe. A control plane that cannot reach
+    // its queue accepts runs it will never advance, and saying "healthy"
+    // while that is true is how a fleet stays green through an outage.
+    dependencies: async () => ({
+      queue: (await controlPlane.queue.health()).available
+        ? "healthy"
+        : "unavailable",
+      persistence: "healthy",
+    }),
     identity: createDevelopmentIdentity(directory()),
-    stack: await stack(resolved),
+    stack: controlPlane,
   },
   port,
 );

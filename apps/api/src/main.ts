@@ -23,7 +23,14 @@ import { registerRunRoutes } from "./runs.js";
 
 export interface ApiOptions {
   readonly build: BuildInfo;
-  readonly dependencies: Readonly<Record<string, DependencyStatus>>;
+  /**
+   * Asked per request, not captured at boot. A hard-coded `healthy` answers
+   * 200 while the process consumes nothing — a Redis outage killed a
+   * consumer's connection and the probe never noticed.
+   */
+  readonly dependencies:
+    | Readonly<Record<string, DependencyStatus>>
+    | (() => Promise<Readonly<Record<string, DependencyStatus>>>);
   /**
    * The bound identity provider. There is no default and no fallback: a
    * control plane that cannot tell two callers apart has no boundary, and the
@@ -50,8 +57,14 @@ export function createApiApp(options: ApiOptions): FastifyInstance {
     identity: options.identity,
     sessions,
   });
-  const snapshot = () =>
-    createHealthSnapshot("forge-api", options.build, options.dependencies);
+  const snapshot = async () =>
+    createHealthSnapshot(
+      "forge-api",
+      options.build,
+      typeof options.dependencies === "function"
+        ? await options.dependencies()
+        : options.dependencies,
+    );
 
   app.addHook("onRequest", async (_request, reply) => {
     reply.header("X-Forge-Version", options.build.version);
@@ -65,14 +78,14 @@ export function createApiApp(options: ApiOptions): FastifyInstance {
     service: "forge-api",
   }));
   app.get("/health/ready", async (_request, reply) => {
-    const health = snapshot();
+    const health = await snapshot();
     return reply.code(health.status === "healthy" ? 200 : 503).send(health);
   });
   app.get("/health", async (request, reply) => {
     if ((await authenticate(request)) === undefined) {
       return reply.code(401).send({ status: "unauthorized" });
     }
-    return reply.send(snapshot());
+    return reply.send(await snapshot());
   });
 
   const stack = options.stack ?? createLocalStack();

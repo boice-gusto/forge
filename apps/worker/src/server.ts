@@ -115,4 +115,14 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
 
 await consumer.start();
-await startWorker(build, port);
+// Asked on every probe: the queue's own answer, plus whether this process is
+// still subscribed. A worker whose consumer connection died is not ready, and
+// nothing else in the deployment can tell.
+await startWorker(
+  build,
+  async () => ({
+    queue: (await stack.queue.health()).available ? "healthy" : "unavailable",
+    persistence: "healthy",
+  }),
+  port,
+);
