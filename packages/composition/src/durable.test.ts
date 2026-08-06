@@ -79,6 +79,27 @@ describe("the durable stack reads its connection details from the environment", 
  */
 const dockerAvailable = await containerRuntimeAvailable("composition-durable");
 
+/** No gate and no effect: this one exists to exercise the transform table. */
+const TRANSFORMED = {
+  id: "durable.transformed",
+  version: "1.0.0",
+  sideEffects: [],
+  nodes: [
+    { id: "intake", kind: "input", schemaRef: "s@1" },
+    {
+      id: "shape",
+      kind: "transform",
+      transformRef: "shape@1",
+      reads: { node: "intake" },
+    },
+    { id: "done", kind: "output", schemaRef: "s@1", reads: { node: "shape" } },
+  ],
+  edges: [
+    { from: "intake", to: "shape" },
+    { from: "shape", to: "done" },
+  ],
+};
+
 const GATED = {
   id: "durable.control-plane",
   version: "1.0.0",
@@ -182,6 +203,37 @@ describe.skipIf(!dockerAvailable)(
       });
 
       expect(run.status).toBe("AWAITING_APPROVAL");
+    }, 60_000);
+
+    test("a transform table given to this stack is the one a node computes with", async () => {
+      /**
+       * The mapping from a company's `Record<ref, fn>` to the runtime's
+       * `(ref) => fn` lives in this file, and `apps/worker` is what depends on
+       * it. The equivalent for `createLocalStack` was proven; this one was
+       * not, and the two are separate lines that can drift.
+       *
+       * A transform that records being asked, so "the table was reachable" is
+       * asserted from the far side rather than from the run's status.
+       */
+      const asked: string[] = [];
+      const stack = await durable({
+        sandboxProfiles: ["docker", "gusto-research"],
+        transforms: {
+          "shape@1": (input) => {
+            asked.push(JSON.stringify(input));
+            return { shaped: true };
+          },
+        },
+      });
+
+      const run = await stack.runtime.start({
+        artifact: artifactOf(TRANSFORMED),
+        payload: { body: "the copy" },
+      });
+
+      expect(`${run.status}: ${JSON.stringify(run)}`).toContain("SUCCEEDED");
+      expect(asked).toEqual(['{"body":"the copy"}']);
+      expect(run.result).toEqual({ shaped: true });
     }, 60_000);
 
     test("an injected sandbox is the one a run gets, not the simulated default", async () => {

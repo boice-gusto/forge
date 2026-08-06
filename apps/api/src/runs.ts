@@ -318,6 +318,10 @@ export function registerRunRoutes(
     });
   });
 
+  /** What an operator gets without asking, and the most they can ask for. */
+  const DEFAULT_UNSETTLED = 100;
+  const MAX_UNSETTLED = 1_000;
+
   /**
    * Actions this deployment claimed and was never seen to finish.
    *
@@ -339,12 +343,47 @@ export function registerRunRoutes(
    * at. Authenticated for the same reason `GET /v1/runs/:runId` is: it names
    * effects and the runs they belong to.
    */
-  app.get("/v1/effects/unsettled", async (request, reply) => {
-    if ((await options.authenticate(request)) === undefined) {
-      return reply.code(401).send({ status: "unauthorized" });
-    }
-    return reply.send({ unsettled: await stack.runs.listUnsettled() });
-  });
+  app.get<{ Querystring: { limit?: string } }>(
+    "/v1/effects/unsettled",
+    async (request, reply) => {
+      if ((await options.authenticate(request)) === undefined) {
+        return reply.code(401).send({ status: "unauthorized" });
+      }
+
+      /**
+       * Bounded, and the bound is visible in the response.
+       *
+       * The day this list is long is the day an outage made it long — the one
+       * day an operator most needs the page to load, and the one day an
+       * unbounded query is slowest. `truncated` is there because a page that
+       * silently stops at a hundred reads as "a hundred outstanding", and the
+       * difference between that and "at least a hundred" is the difference
+       * between a bad morning and an incident.
+       */
+      const requested = Number.parseInt(request.query.limit ?? "", 10);
+      if (request.query.limit !== undefined && !Number.isInteger(requested)) {
+        return reply
+          .code(400)
+          .send({ status: "bad_request", code: "LIMIT_NOT_A_NUMBER" });
+      }
+      const limit = Math.min(
+        Math.max(
+          Number.isInteger(requested) ? requested : DEFAULT_UNSETTLED,
+          0,
+        ),
+        MAX_UNSETTLED,
+      );
+
+      // One more than asked for, so "there are others" is a fact rather than
+      // an inference from a full page.
+      const found = await stack.runs.listUnsettled(limit + 1);
+      return reply.send({
+        unsettled: found.slice(0, limit),
+        limit,
+        truncated: found.length > limit,
+      });
+    },
+  );
 
   /**
    * Ask for an action nobody can account for to be performed again.

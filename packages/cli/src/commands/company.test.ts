@@ -26,7 +26,7 @@ describe("forge company inspect", () => {
     expect(payload.policyPacks).toEqual(["acme.marketing.publish"]);
     // Acme binds both because a worker refuses to start without somewhere for
     // a gated action to land, and Acme is the example a worker is run against.
-    expect(payload.adapters).toEqual(["notification", "effects"]);
+    expect(payload.adapters).toEqual(["notification", "effects", "transforms"]);
   });
 
   test("grants only what the host offers and the company asked for", async () => {

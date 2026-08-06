@@ -61,6 +61,7 @@ describe("the control plane's policy comes from the company package", () => {
     expect(Object.keys(policy.adapters).sort()).toEqual([
       "effects",
       "notification",
+      "transforms",
     ]);
     // Resolved to the module itself, not to its name.
     expect(

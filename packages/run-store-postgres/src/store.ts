@@ -232,7 +232,7 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
       }
     },
 
-    async listUnsettled() {
+    async listUnsettled(limit) {
       const { rows } = await pool.query<{
         run_id: string;
         node_id: string;
@@ -242,7 +242,9 @@ export function createPostgresRunStore(pool: Pool): RunStorePort {
         `select run_id, node_id, effect, dispatched_at
            from forge_run_effect
           where settled_at is null
-          order by dispatched_at, seq`,
+          order by dispatched_at, seq
+          limit $1`,
+        [Math.max(0, limit)],
       );
       return rows.map((row) => ({
         runId: row.run_id,

@@ -23,6 +23,10 @@
       "effects": {
         "binding": "./adapters/notification.ts",
         "configRef": "config/notification"
+      },
+      "transforms": {
+        "binding": "./adapters/transforms.ts",
+        "configRef": "config/transforms"
       }
     },
     "capabilities": ["repo.read", "docs.write", "slack.write"],

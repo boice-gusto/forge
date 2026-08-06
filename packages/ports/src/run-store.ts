@@ -276,6 +276,16 @@ export interface RunStorePort {
    * The estate-wide question, asked without knowing a run id, because nobody
    * knows to go looking at the run this happened to. An operator reads this;
    * nothing acts on it (see {@link UnsettledEffect}).
+   *
+   * `limit` is required rather than optional, and there is no "all". The day
+   * this matters is the day an outage has left thousands outstanding — the one
+   * day an operator most needs the page to load, and the one day an unbounded
+   * query is slowest. A caller that has to name a number cannot forget to.
+   *
+   * Oldest first, so the bound keeps the least explained rather than an
+   * arbitrary slice: an action outstanding for a week is a worse fact than one
+   * outstanding for a minute, and a page that dropped the old ones to show the
+   * new would hide exactly the entries worth acting on.
    */
-  listUnsettled(): Promise<readonly UnsettledEffect[]>;
+  listUnsettled(limit: number): Promise<readonly UnsettledEffect[]>;
 }

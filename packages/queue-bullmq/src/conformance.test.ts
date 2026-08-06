@@ -1,3 +1,4 @@
+import type { QueuePort } from "@forge/ports";
 import { describeQueueConformance } from "@forge/queue-conformance";
 import { containerRuntimeAvailable } from "@forge/store-conformance";
 import type { StartedRedisContainer } from "@testcontainers/redis";
@@ -34,11 +35,32 @@ describe.skipIf(!dockerAvailable)("queue-bullmq", () => {
   let container: StartedRedisContainer;
   let queues = 0;
 
+  /** Every adapter this file creates, so teardown can close all of them. */
+  const opened: QueuePort[] = [];
+  const track = (queue: QueuePort): QueuePort => {
+    opened.push(queue);
+    return queue;
+  };
+
   beforeAll(async () => {
     container = await new RedisContainer(REDIS_IMAGE).start();
   }, CONTAINER_START_TIMEOUT_MS);
 
   afterAll(async () => {
+    /**
+     * Closed before the container stops, and that order is the whole point.
+     *
+     * The suite used to leak every queue it made: live ioredis clients, still
+     * subscribed, retrying against a server that had just been taken away.
+     * That was silently tolerable until the adapter learned to *reattach* a
+     * worker after Redis gives up — at which point teardown started spinning
+     * up new workers against a stopped container and the connection errors
+     * surfaced as unhandled, attributed to whichever test ran last.
+     *
+     * A leaked adapter in a test is the same leak it would be in a process.
+     * The reconnect did not cause this; it made it audible.
+     */
+    await Promise.all(opened.splice(0).map((queue) => queue.close()));
     await container?.stop();
   });
 
@@ -116,11 +138,11 @@ describe.skipIf(!dockerAvailable)("queue-bullmq", () => {
       const url = container.getConnectionUrl();
 
       return {
-        queue: createBullMqQueue({ url, name }),
+        queue: track(createBullMqQueue({ url, name })),
         // A second client onto the same Redis queue shares nothing but Redis,
         // which is exactly what a second worker process has.
         async peer() {
-          return createBullMqQueue({ url, name });
+          return track(createBullMqQueue({ url, name }));
         },
       };
     },

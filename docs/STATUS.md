@@ -1,6 +1,6 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 75 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 77 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
@@ -31,7 +31,7 @@ needs Docker, so it fails on its own terms rather than inside `verify`.
 | **Optimistic concurrency** | `RunStorePort.update()` presents the revision it read. A stale write is refused rather than applied, and the runtime cedes to whoever got there first instead of failing a job |
 | **Lost effects are findable, and recoverable** | An action claimed and never seen to finish is reported at `GET /v1/effects/unsettled`, and `POST /v1/runs/:runId/effects/:nodeId/redrive` opens a *gate* on performing it again — it never performs it |
 | **A worker binds real things, or refuses to start** | The company's effect sink, a Docker sandbox for the profiles it declares, and a real model. Each was a stand-in wired into the production composition root |
-| **Adapters resolve at boot** | A company's adapter modules are imported when the deployment starts, not at the first gated action |
+| **Adapters resolve at boot** | A company's adapter modules are imported when the deployment starts, not at the first gated action — the effect sink, the transform table, and anything else a company binds |
 | **Policy** | OPA Wasm behind `PolicyPort` (ADR-007), Rego compiled ahead of time and committed. Policy resolves from the deployment's company package, never from a request |
 | **Provider** | `@forge/provider-anthropic` on the real SDK with an injectable transport; retryable classification is table-driven |
 | **Sandbox** | A scope the work runs inside, with a Docker adapter: no host mounts, zero capabilities, non-root, read-only rootfs |
@@ -51,15 +51,12 @@ cannot drift apart without one of them failing.
 | **No LangGraph engine** | ADR-002, deliberately amended rather than left open. The engine carries Forge's own semantics — sandbox scoping, arm pruning, the data plane's short-circuit — and moving those into a vendor's execution model would put the invariants beyond this repository's tests |
 | **Two concurrent walks in one process still share a `RunState`** | The queue delivers once, so this needs a redelivery *and* a coincidence. Reads no longer touch it, which was the reachable half |
 | **No deadline on enqueue** | A job that is never taken is indistinguishable from one taken slowly |
-| **`GET /v1/effects/unsettled` is unbounded** | Every outstanding action in the estate, no paging. Fine while the answer is "none"; wrong the day an outage makes it thousands |
-| **No transform table from the company package** | `createDurableStack` takes one; nothing resolves one from an adapter binding |
 | **Four `forge.gusto` scenarios are `todo`** | Held open by a test that goes red the day the API stops ignoring `environment`, so they cannot rot quietly |
 | **Phase 8 not started** | Phase 7 is done and found four production defects; 8 is next |
 
 ## Next, in order
 
-1. **A transform table from the company package**, resolved the way adapters now are.
-2. **Phase 8.**
+1. **Phase 8.**
 
 ---
 

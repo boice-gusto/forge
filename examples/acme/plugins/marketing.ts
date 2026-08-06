@@ -79,6 +79,18 @@ const plugin: ForgePlugin = {
       binding: "./adapters/notification.ts",
       configRef: "config/notification",
     });
+
+    /**
+     * What a `transform` node computes with. Not a refusal if absent — a
+     * company may have no transform nodes — but resolved at boot when it is
+     * here, so a table that does not load is a boot failure rather than a run
+     * that stops halfway naming a `transformRef` nobody can supply.
+     */
+    context.adapters.add({
+      id: "transforms",
+      binding: "./adapters/transforms.ts",
+      configRef: "config/transforms",
+    });
   },
 };
 

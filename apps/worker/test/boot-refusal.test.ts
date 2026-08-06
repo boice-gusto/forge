@@ -18,6 +18,9 @@ const SERVER = fileURLToPath(new URL("../src/server.ts", import.meta.url));
 const NO_EFFECTS = fileURLToPath(
   new URL("./fixtures/no-effects", import.meta.url),
 );
+const BAD_TRANSFORMS = fileURLToPath(
+  new URL("./fixtures/bad-transforms", import.meta.url),
+);
 
 /** Present and unreachable. The refusals under test all precede any connect. */
 const UNREACHABLE = {
@@ -193,6 +196,27 @@ describe("a worker refuses to start rather than run without something", () => {
 
     expect(code).toBe(1);
     expect(output).toContain("FORGE_MODEL is required");
+  }, 40_000);
+
+  test("a transform table with a non-function entry is a refusal, and names it", async () => {
+    /**
+     * Not a refusal for *missing* transforms — a company may have no transform
+     * nodes, and the runtime already stops a run loudly, naming the ref it
+     * could not resolve. A table that is present and wrong is different: a
+     * `transformRef` resolving to a string throws deep inside a walk, behind
+     * whatever gates came before it, and the message there says nothing about
+     * which entry or which company package.
+     */
+    const { code, output } = await boot({
+      ...UNREACHABLE,
+      FORGE_COMPANY: BAD_TRANSFORMS,
+      FORGE_WORKER_NO_EFFECTS: "1",
+    });
+
+    expect(code).toBe(1);
+    expect(output).toContain("acme.marketing.broken");
+    // And only the broken one, so the message points somewhere.
+    expect(output).not.toContain("acme.marketing.headline");
   }, 40_000);
 
   test("a deployment that really is not meant to act can say so", async () => {

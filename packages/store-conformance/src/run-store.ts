@@ -559,7 +559,7 @@ function describeSettlement(harness: RunStoreConformanceHarness): void {
       await claim(handle.store, "publish", "2026-08-04T00:00:01.000Z");
 
       const peer = await handle.peer();
-      expect(await peer.listUnsettled()).toEqual([
+      expect(await peer.listUnsettled(100)).toEqual([
         {
           runId: CONFORMANCE_RUN_ID,
           nodeId: "publish",
@@ -580,7 +580,7 @@ function describeSettlement(harness: RunStoreConformanceHarness): void {
       );
 
       const peer = await handle.peer();
-      expect(await peer.listUnsettled()).toEqual([]);
+      expect(await peer.listUnsettled(100)).toEqual([]);
       expect((await peer.load(CONFORMANCE_RUN_ID))?.effects[0]).toMatchObject({
         dispatchedAt: "2026-08-04T00:00:01.000Z",
         settledAt: "2026-08-04T00:00:02.000Z",
@@ -594,7 +594,7 @@ function describeSettlement(harness: RunStoreConformanceHarness): void {
       await claim(handle.store, "earlier", "2026-08-04T00:00:01.000Z");
 
       expect(
-        (await (await handle.peer()).listUnsettled()).map(
+        (await (await handle.peer()).listUnsettled(100)).map(
           (entry) => entry.nodeId,
         ),
       ).toEqual(["earlier", "later"]);
@@ -639,12 +639,42 @@ function describeSettlement(harness: RunStoreConformanceHarness): void {
       ).rejects.toThrow("FORGE_EFFECT_NOT_CLAIMED");
     });
 
+    test("the bound keeps the oldest, because those are the least explained", async () => {
+      /**
+       * A page that dropped the old ones to show the new would hide exactly
+       * the entries worth acting on: an action outstanding for a week is a
+       * worse fact than one outstanding for a minute. The bound exists because
+       * the day this list is long is the day an outage made it long — the one
+       * day an operator most needs it to load.
+       */
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+      await claim(handle.store, "oldest", "2026-08-04T00:00:01.000Z");
+      await claim(handle.store, "middle", "2026-08-04T00:00:02.000Z");
+      await claim(handle.store, "newest", "2026-08-04T00:00:03.000Z");
+
+      const peer = await handle.peer();
+      expect(
+        (await peer.listUnsettled(2)).map((entry) => entry.nodeId),
+      ).toEqual(["oldest", "middle"]);
+    });
+
+    test("a bound of zero is honoured rather than read as no bound", async () => {
+      // The reading that turns a paging bug into an unbounded query, on the
+      // one code path where the list is expected to be enormous.
+      const handle = await harness.create();
+      await handle.store.create(CONFORMANCE_RUN);
+      await claim(handle.store, "publish", "2026-08-04T00:00:01.000Z");
+
+      expect(await handle.store.listUnsettled(0)).toEqual([]);
+    });
+
     test("a store with nothing outstanding reports nothing", async () => {
       // Guards the four above: a list that always came back empty would pass
       // "drops off the list" and prove nothing.
       const { store } = await harness.create();
 
-      expect(await store.listUnsettled()).toEqual([]);
+      expect(await store.listUnsettled(100)).toEqual([]);
     });
   });
 }

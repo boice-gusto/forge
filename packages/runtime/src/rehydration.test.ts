@@ -754,7 +754,7 @@ describe("an action nobody can account for is redriven only by a decision", () =
     const { run, finished } = await lost(forge);
 
     expect(finished?.status).toBe("FAILED");
-    expect(await forge.runs.listUnsettled()).toEqual([
+    expect(await forge.runs.listUnsettled(100)).toEqual([
       {
         runId: run.runId,
         nodeId: "publish",
@@ -775,7 +775,7 @@ describe("an action nobody can account for is redriven only by a decision", () =
     expect(parkedAgain.pendingApprovalId).toBeDefined();
     // Nothing has been performed, and the claim is still exactly where it was.
     expect(third.acted).toEqual([]);
-    expect(await forge.runs.listUnsettled()).toHaveLength(1);
+    expect(await forge.runs.listUnsettled(100)).toHaveLength(1);
   });
 
   test("the new gate binds the same action, so it cannot authorise another", async () => {
@@ -818,7 +818,7 @@ describe("an action nobody can account for is redriven only by a decision", () =
     expect(finished.status).toBe("SUCCEEDED");
     expect(third.acted).toEqual([DRAFT_ONE]);
     // Accounted for now, and only once.
-    expect(await forge.runs.listUnsettled()).toEqual([]);
+    expect(await forge.runs.listUnsettled(100)).toEqual([]);
     expect((await forge.runs.load(run.runId))?.effects).toHaveLength(1);
   });
 
@@ -837,7 +837,7 @@ describe("an action nobody can account for is redriven only by a decision", () =
     );
 
     expect(third.acted).toEqual([]);
-    expect(await forge.runs.listUnsettled()).toHaveLength(1);
+    expect(await forge.runs.listUnsettled(100)).toHaveLength(1);
   });
 
   test("the decision carries even when another process is the one that resumes", async () => {
@@ -865,7 +865,7 @@ describe("an action nobody can account for is redriven only by a decision", () =
     expect(resuming.acted).toEqual([DRAFT_ONE]);
     expect(asking.acted).toEqual([]);
     expect(finished?.status).toBe("SUCCEEDED");
-    expect(await forge.runs.listUnsettled()).toEqual([]);
+    expect(await forge.runs.listUnsettled(100)).toEqual([]);
   });
 
   test("an action that settles while the gate is open is not performed again", async () => {

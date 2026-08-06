@@ -325,4 +325,4 @@ export async function createDurableStack(
  * `@forge/runtime` for a type would put a process entry point on the wrong
  * side of the layering the architecture check enforces.
  */
-export type { EffectSink };
+export type { EffectSink, TransformFn };

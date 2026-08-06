@@ -3,6 +3,7 @@ import { createRunConsumer, runtimeHost } from "@forge/composition";
 import {
   createDurableStack,
   type EffectSink,
+  type TransformFn,
 } from "@forge/composition/durable";
 import { createAnthropicProvider } from "@forge/provider-anthropic";
 import { createDockerSandbox } from "@forge/sandbox-docker";
@@ -123,6 +124,49 @@ if (boundEffects === undefined && process.env.FORGE_WORKER_NO_EFFECTS !== "1") {
 }
 
 /**
+ * What a `transform` node computes with.
+ *
+ * Bound if the company offers one, and — unlike the effect sink — *not* a
+ * refusal when it does not. A company may simply have no transform nodes, and
+ * the failure mode if it has one and this is missing is already loud: the
+ * runtime stops the run naming the `transformRef` it could not resolve. That
+ * is a bad place to find out, but it is not a silent one, and inventing a
+ * refusal for a table nobody may need would make every company declare an
+ * empty adapter to start a worker.
+ *
+ * A table that is present and wrong is a different matter. A `transformRef`
+ * resolving to something that is not a function would throw deep inside a
+ * walk, so the shape is checked here, where the message can say which entry.
+ */
+function transformsFrom(bound: unknown): Record<string, TransformFn> {
+  const candidate =
+    (bound as { default?: unknown; transforms?: unknown })?.default ??
+    (bound as { transforms?: unknown })?.transforms;
+  if (typeof candidate !== "object" || candidate === null) {
+    process.stderr.write(
+      '[forge-worker] The company\'s "transforms" adapter resolved to ' +
+        "something that is not a table. Export a record of transformRef to " +
+        "function as the module's default, or as `transforms`.\n",
+    );
+    process.exit(1);
+  }
+  const table = candidate as Record<string, unknown>;
+  const notFunctions = Object.keys(table).filter(
+    (ref) => typeof table[ref] !== "function",
+  );
+  if (notFunctions.length > 0) {
+    process.stderr.write(
+      `[forge-worker] These entries in the company's "transforms" table are ` +
+        `not functions, so a node naming one would fail mid-walk: ${notFunctions.join(", ")}.\n`,
+    );
+    process.exit(1);
+  }
+  return table as Record<string, TransformFn>;
+}
+
+const boundTransforms = deployment.adapters.transforms;
+
+/**
  * The isolation a `sandbox` node actually gets.
  *
  * `createDurableStack` defaults to the in-memory adapter, which simulates a
@@ -240,6 +284,9 @@ const stack = await createDurableStack({
   rules: deployment.rules,
   grants: deployment.grants,
   ...(realSandbox === undefined ? {} : { sandbox: realSandbox }),
+  ...(boundTransforms === undefined
+    ? {}
+    : { transforms: transformsFrom(boundTransforms) }),
   environment: "production",
   ...(boundEffects === undefined
     ? {}

@@ -161,7 +161,7 @@ export function createMemoryRunStore(): RunStorePort {
       claimed.settledAt ??= at;
     },
 
-    async listUnsettled() {
+    async listUnsettled(limit) {
       return [...runs.entries()]
         .flatMap(([runId, stored]) =>
           stored.effects
@@ -173,7 +173,8 @@ export function createMemoryRunStore(): RunStorePort {
               claimedAt: effect.dispatchedAt,
             })),
         )
-        .sort((left, right) => left.claimedAt.localeCompare(right.claimedAt));
+        .sort((left, right) => left.claimedAt.localeCompare(right.claimedAt))
+        .slice(0, Math.max(0, limit));
     },
   };
 }

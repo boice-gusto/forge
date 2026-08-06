@@ -1031,6 +1031,61 @@ describe("an action claimed and never carried out is not left for nobody to find
     expect(response.json().unsettled).toEqual([]);
   });
 
+  test("the report is bounded, and says so rather than looking complete", async () => {
+    /**
+     * A page that silently stops at its limit reads as "this many
+     * outstanding". The difference between that and "at least this many" is
+     * the difference between a bad morning and an incident, and the day the
+     * list is long is the day an outage made it long.
+     */
+    const stack = acmeStack();
+    const server = app(stack);
+    const started = await startRun(server);
+    for (const nodeId of ["a", "b", "c"]) {
+      await stack.runs.claimEffect({
+        runId: started.runId,
+        nodeId,
+        effect: "slack.post",
+        at: `2026-08-04T00:00:0${nodeId === "a" ? 1 : nodeId === "b" ? 2 : 3}.000Z`,
+      });
+    }
+
+    const page = await server.inject({
+      method: "GET",
+      url: "/v1/effects/unsettled?limit=2",
+      headers: AUTH,
+    });
+
+    expect(page.statusCode).toBe(200);
+    expect(page.json().limit).toBe(2);
+    expect(page.json().truncated).toBe(true);
+    // Oldest first, so a bound keeps the least explained rather than a slice.
+    expect(
+      page.json().unsettled.map((entry: { nodeId: string }) => entry.nodeId),
+    ).toEqual(["a", "b"]);
+
+    const whole = await server.inject({
+      method: "GET",
+      url: "/v1/effects/unsettled",
+      headers: AUTH,
+    });
+    expect(whole.json().truncated).toBe(false);
+    expect(whole.json().unsettled).toHaveLength(3);
+  });
+
+  test("a limit that is not a number is refused rather than ignored", async () => {
+    // Ignoring it would serve a default under a query string that asked for
+    // something else, which is the reading that hides a paging bug.
+    const response = await app().inject({
+      method: "GET",
+      url: "/v1/effects/unsettled?limit=lots",
+      headers: AUTH,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().code).toBe("LIMIT_NOT_A_NUMBER");
+  });
+
   test("a redrive opens a gate rather than performing the action", async () => {
     /**
      * The recovery, and the shape of it is the whole point. An operator can
@@ -1064,7 +1119,7 @@ describe("an action claimed and never carried out is not left for nobody to find
     expect(response.json().status).toBe("AWAITING_APPROVAL");
     expect(response.json().pendingApprovalId).toBeDefined();
     // Still unaccounted for: asking is not doing.
-    expect(await stack.runs.listUnsettled()).toHaveLength(1);
+    expect(await stack.runs.listUnsettled(100)).toHaveLength(1);
   });
 
   test("redriving an action that completed is refused, not offered for approval", async () => {
