@@ -34,9 +34,6 @@ const storeThresholds = storesRequired
         branches: 75,
         statements: 93,
       },
-      // Not 100: the probe's "no runtime reachable" catch cannot execute in a
-      // run that requires a runtime, and these floors only apply in that run.
-      // The decision it guards is tested separately as a pure function.
       // Redaction and the fail-open wrapper are the last place a payload can
       // be stopped before it leaves the process, so the floor is 100 — but
       // `run-events.ts` reaches its last paths only through the
@@ -98,6 +95,9 @@ const storeThresholds = storesRequired
         branches: 70,
         statements: 88,
       },
+      // Not 100: the probe's "no runtime reachable" catch cannot execute in a
+      // run that requires a runtime, and these floors only apply in that run.
+      // The decision it guards is tested separately as a pure function.
       "packages/store-conformance/src/**": {
         lines: 99,
         functions: 100,

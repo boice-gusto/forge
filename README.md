@@ -6,9 +6,11 @@ Forge is a typed engineering-workflow platform. It compiles versioned workflow a
 
 ## Start here
 
-Read the [Master Specification](./forge/docs/MASTER_SPEC.md) before writing product code. It links the handbook, accepted ADRs, research evidence, Phase −1 vision validation, and the phased implementation plan.
+Read the [Master Specification](./docs/MASTER_SPEC.md) before writing product code. It links the handbook, accepted ADRs, research evidence, Phase −1 vision validation, and the phased implementation plan.
 
-Current status: **Phase −1 / Phase 0 documentation and decisions**. Runtime code has not started.
+Current status: **phases 0–8 built**. [`docs/STATUS.md`](./docs/STATUS.md) is
+the ledger — what exists, what does not, and why. Where it and the phase plan
+disagree, STATUS.md is the one that was checked against the repository.
 
 ## Repository family
 
@@ -19,7 +21,7 @@ Current status: **Phase −1 / Phase 0 documentation and decisions**. Runtime co
 | [`forge.gusto`](./forge.gusto/) | Gusto workflows, policies, prompts, service catalog, sandbox profiles | Forge framework code |
 | [`forge.buzz`](./forge.buzz/) | Buzz intake/identity/progress/artifact translation and Buzz E2E | workflow durability, provider execution, sandbox lifecycle, generic policy |
 
-Extensions depend on public Forge SDKs only. Forge never imports an extension. See [ADR-008](./forge/docs/adrs/008-extension-repository-topology.md).
+Extensions depend on public Forge SDKs only. Forge never imports an extension. See [ADR-008](./docs/adrs/008-extension-repository-topology.md).
 
 ## Flagship V1 proof
 
@@ -41,7 +43,7 @@ The proof includes follow-up resume, a denied security action, human approval, a
 
 ## Development status
 
-This parent workspace is the Forge Git repository. The extension folders are independent Git repositories and are intentionally ignored here. See the [phased plan](./forge/docs/superpowers/plans/2026-08-02-forge-phased-program.md) for the next executable work.
+This parent workspace is the Forge Git repository. The extension folders are independent Git repositories and are intentionally ignored here. See the [phased plan](./docs/superpowers/plans/2026-08-02-forge-phased-program.md) for the next executable work.
 
 ---
 
@@ -60,6 +62,9 @@ Generic AI workflow runtime and SDKs.
 
 Agent guidelines: [`AGENT.md`](./AGENT.md) / [`CLAUDE.md`](./CLAUDE.md).
 
-## Packages (not yet implemented)
+## Packages
 
-See [004-architecture.md](./docs/004-architecture.md) for the `@forge/*` package map. Directories under `packages/` and `apps/` will be created in Phase 1.
+`ls packages` is the map. [004-architecture.md](./docs/004-architecture.md)
+describes the intended layering, and names several packages that were never
+built under those names — the layering held, the names did not. Read the
+directory, not the document, for what exists.

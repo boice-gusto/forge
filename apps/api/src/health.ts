@@ -19,7 +19,7 @@ export interface HealthSnapshot {
   readonly dependencies: Readonly<Record<string, DependencyStatus>>;
 }
 
-export function readinessStatus(
+function readinessStatus(
   dependencies: Readonly<Record<string, DependencyStatus>>,
 ): "healthy" | "unready" {
   return Object.values(dependencies).every((status) => status === "healthy")

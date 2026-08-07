@@ -17,13 +17,15 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 export function signatureMatches(input: {
   readonly body: string;
   readonly secret: string;
+  /**
+   * The digest alone. A sender's prefix — Slack's `v0=`, Jira's `sha256=` —
+   * is the connector's to strip, because only the connector knows its scheme.
+   */
   readonly presented: string | undefined;
-  /** Prefixed by some senders, e.g. Slack's `v0=`. Compared verbatim. */
-  readonly algorithm?: "sha256";
 }): boolean {
   if (input.presented === undefined || input.presented === "") return false;
 
-  const expected = createHmac(input.algorithm ?? "sha256", input.secret)
+  const expected = createHmac("sha256", input.secret)
     .update(input.body, "utf8")
     .digest("hex");
 

@@ -11,8 +11,12 @@ import {
   jsonResult,
 } from "../output.js";
 
+// Relative to this file: src/commands → src → cli → packages → repo root.
+// It used to climb one further and come back down through a literal `forge/`,
+// which resolved only because the checkout happens to sit in a directory of
+// that name — a clone anywhere else broke `forge dev up`.
 const LOCAL_COMPOSE_FILE = fileURLToPath(
-  new URL("../../../../../forge/infra/local/compose.yaml", import.meta.url),
+  new URL("../../../../infra/local/compose.yaml", import.meta.url),
 );
 const LOCAL_SERVICES = ["redis", "postgres", "otel"] as const;
 const executeFile = promisify(execFile);

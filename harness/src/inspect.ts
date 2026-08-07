@@ -136,14 +136,15 @@ export class Inspector {
     }));
   }
 
-  /**
-   * A run whose approved effect was claimed and never carried out.
-   *
-   * There is no product surface for this. It is the signature a crash between
-   * the durable claim and the action leaves behind, and an operator who cannot
-   * see it has a run that will sit at RUNNING forever with a human's decision
-   * spent on nothing.
-   */
+  /** When each of one run's effects was dispatched, and when it settled. */
+  async settlement(runId: string): Promise<unknown> {
+    const { rows } = await this.pool.query(
+      `select node_id, dispatched_at, settled_at from forge_run_effect where run_id = $1`,
+      [runId],
+    );
+    return rows;
+  }
+
   /**
    * Runs holding an action claimed and never settled.
    *
@@ -153,14 +154,6 @@ export class Inspector {
    * their own completion, and which now reports a false positive for any
    * action that legitimately produces nothing.
    */
-  async settlement(runId: string): Promise<unknown> {
-    const { rows } = await this.pool.query(
-      `select node_id, dispatched_at, settled_at from forge_run_effect where run_id = $1`,
-      [runId],
-    );
-    return rows;
-  }
-
   async unsettled(): Promise<readonly string[]> {
     const { rows } = await this.pool.query<{ run_id: string }>(
       `select distinct run_id from forge_run_effect where settled_at is null`,
@@ -168,6 +161,14 @@ export class Inspector {
     return rows.map((row) => row.run_id);
   }
 
+  /**
+   * A run whose approved effect was claimed and never carried out.
+   *
+   * There is no product surface for this. It is the signature a crash between
+   * the durable claim and the action leaves behind, and an operator who cannot
+   * see it has a run that will sit at RUNNING forever with a human's decision
+   * spent on nothing.
+   */
   async claimedButUnperformed(): Promise<readonly string[]> {
     const { rows } = await this.pool.query<{ run_id: string }>(
       `select distinct e.run_id

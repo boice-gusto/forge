@@ -314,11 +314,6 @@ const stack = await createDurableStack({
 });
 
 /**
- * The same consumer the control plane runs, on the same queue. It lives in
- * `@forge/composition` so that "what a `workflow.execute` job means" has one
- * answer rather than one per process that reads the queue.
- */
-/**
  * The channels this worker can report back to.
  *
  * Bound from the same company adapter the control plane uses, and this is the

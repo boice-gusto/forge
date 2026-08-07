@@ -134,7 +134,6 @@ interface Stack {
 const sleep = (ms: number): Promise<void> =>
   new Promise((settle) => setTimeout(settle, ms));
 
-/** Where a run stops. Not `AWAITING_APPROVAL`: that is a run still waiting. */
 /**
  * The browser's view of "finished", which is genuinely terminal rather than
  * merely stopped: a run at a gate is exactly what these tests wait *at*.

@@ -199,22 +199,6 @@ export function registerRunRoutes(
   const { stack } = options;
 
   /**
-   * A connector's endpoint (015 Phase 8).
-   *
-   * Deliberately *not* behind `authenticate`. The caller is Slack, or Jira, or
-   * a Buzz relay — none of them holds a Forge credential, and demanding one
-   * would mean handing an operator's token to a third party. Authentication
-   * here is the connector's signature check, which establishes the *sending
-   * system*; it says nothing about whether the run may happen, and nothing
-   * downstream treats it as if it did. Policy still decides, gates still open,
-   * and the origin is recorded so an audit can say which webhook asked.
-   *
-   * The reply is deliberately uninformative. Everything on the other side is
-   * untrusted, and telling a forged signature why it failed is telling an
-   * attacker how to succeed — so `UNVERIFIED` is a bare 401, and every other
-   * refusal is a 202 that promises nothing.
-   */
-  /**
    * What an untrusted caller is told, and how little of it.
    *
    * `UNVERIFIED` is a bare 401: telling a forged signature *why* it failed is
@@ -256,6 +240,18 @@ export function registerRunRoutes(
       },
     );
 
+    /**
+     * A connector's endpoint (015 Phase 8).
+     *
+     * Deliberately *not* behind `authenticate`. The caller is Slack, or Jira,
+     * or a Buzz relay — none of them holds a Forge credential, and demanding
+     * one would mean handing an operator's token to a third party.
+     * Authentication here is the connector's signature check, which establishes
+     * the *sending system*; it says nothing about whether the run may happen,
+     * and nothing downstream treats it as if it did. Policy still decides,
+     * gates still open, and the origin is recorded so an audit can say which
+     * webhook asked.
+     */
     scoped.post<{ Params: { channel: string } }>(
       "/v1/intake/:channel",
       async (request, reply) => {

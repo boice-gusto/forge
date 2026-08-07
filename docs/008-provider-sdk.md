@@ -326,4 +326,4 @@ When provider implementation is complete for Phase 2+, **done** means:
 - [006 — Runtime](./006-runtime.md) — orchestrates provider during agent IR nodes
 - [010 — Sandbox](./010-sandbox.md) — workspace `cwd` for provider sessions
 - [007 — Workflow Compiler](./007-workflow-compiler.md) — agent nodes compiled from manifests
-- [PACKAGE-EVIDENCE](../research/PACKAGE-EVIDENCE.md) — version and adopt decisions
+- [PACKAGE-EVIDENCE](./research/PACKAGE-EVIDENCE.md) — version and adopt decisions

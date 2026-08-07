@@ -87,10 +87,12 @@ export interface ProgressAnnouncer {
  *   happens loses a notification; the canonical state is untouched, and an
  *   operator reading `GET /v1/runs` sees what an operator should.
  *
- * What this deliberately does *not* do is retry. A retry queue for
- * notifications is a real thing to want and a real thing to build — with its
- * own durability, its own backpressure and its own ordering — and pretending
- * to have one by looping here would give the appearance without any of it.
+ * What this deliberately does *not* do is retry. Looping here would be a retry
+ * queue without durability, backpressure or ordering — the appearance of one
+ * without any of it. There is a real one: the consumer in `@forge/composition`
+ * re-enqueues a `connector.publish` job with backoff when `announce` reports
+ * the update did not land, which is why the answer is a boolean rather than
+ * nothing.
  */
 export function createProgressAnnouncer(options: {
   readonly connectors: Readonly<Record<string, Connector>>;

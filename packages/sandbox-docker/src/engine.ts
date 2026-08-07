@@ -6,7 +6,7 @@ import { request as httpRequest } from "node:http";
  *
  * Directly, rather than through `dockerode` or Testcontainers: 010 §7 is
  * explicit that Testcontainers is a CI harness and not the production sandbox
- * orchestrator, and the five calls below do not justify a client library.
+ * orchestrator, and the seven calls below do not justify a client library.
  * Nothing outside this package may import it either way (010 §13).
  */
 

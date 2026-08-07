@@ -54,13 +54,6 @@ export const startRun = (
   });
 
 /**
- * The statuses at which the queue owes the run nothing.
- *
- * Not "terminal", and the distinction is the whole point: every scenario here
- * is about a run parked at its *gate*, and a helper that waited for a finished
- * run would drive the run past the thing under test before asserting on it.
- */
-/**
  * "Stopped", not "finished", and the distinction is now named in one place.
  *
  * `AWAITING_APPROVAL` counts as stopped because a run parked at a gate has

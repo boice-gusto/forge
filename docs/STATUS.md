@@ -1,16 +1,16 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 90 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 97 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
 was checked against the repository.
 
-**Scale:** 41 packages, 3 apps, 1,350 unit tests (98.7% statements / 91.3%
-branches) plus 24 resilience scenarios against real containers. Ten CI steps —
-`lint`, `typecheck`, `test`, `test:coverage`, `test:packaging`,
-`test:architecture`, `test:security`, `security:secrets`, `security:licenses`,
-`measure:phase1` — and a separate `resilience` job, which costs minutes and
+**Scale:** 45 packages, 3 apps, 1,500 unit tests (98.45% statements / 91.15%
+branches, measured with `FORGE_REQUIRE_STORES=1`, which is what CI runs) plus 24 resilience scenarios against real containers. Twelve CI steps in `verify` — `lint`, `typecheck`, `test`, `test:coverage`,
+`test:packaging`, `test:architecture`, `test:security`, `security:secrets`,
+`security:licenses`, `measure:phase1`, and the UI's `test:e2e` and
+`typecheck:e2e` — plus a separate `resilience` job, which costs minutes and
 needs Docker, so it fails on its own terms rather than inside `verify`.
 
 ---
@@ -53,7 +53,6 @@ cannot drift apart without one of them failing.
 | **Two concurrent walks in one process still share a `RunState`** | The queue delivers once, so this needs a redelivery *and* a coincidence. Reads no longer touch it, which was the reachable half |
 | **No deadline on enqueue** | A job that is never taken is indistinguishable from one taken slowly |
 | **Four `forge.gusto` scenarios are `todo`** | Held open by a test that goes red the day the API stops ignoring `environment`, so they cannot rot quietly |
-| **Phase 8 not started** | Phase 7 is done and found four production defects; 8 is next |
 
 ## Next, in order
 

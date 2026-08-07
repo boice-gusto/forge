@@ -1,9 +1,9 @@
 # @forge/store-conformance
 
-One executable contract for `CheckpointStorePort` and `ApprovalPort`, run by
-every adapter that claims to implement them. The same idea as
-`@forge/provider-conformance`, applied to the two stores that hold the run's
-safety state.
+One executable contract for `CheckpointStorePort`, `ApprovalPort` and
+`RunStorePort`, run by every adapter that claims to implement them. The same
+idea as `@forge/provider-conformance`, applied to the three stores that hold
+the run's safety state.
 
 Two adapters that pass this are behaviourally indistinguishable, which is the
 only useful sense in which a Postgres approval store can be swapped for the

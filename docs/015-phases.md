@@ -21,11 +21,11 @@
 > | 1 Monorepo skeleton | met | — |
 > | 2 Providers, sandboxes & compiler | met | ADR-002's LangGraph engine is not built — see below. ADR-003 and ADR-005 are implemented, ADR-005 by amendment |
 > | 3 Policies & human gates | met | ADR-007 implemented as OPA Wasm. The gate-bypass suite is green and the approval binding is proven across processes |
-> | 4 Acme demo & operator UI | met | Playwright is not set up; the UI is covered by Vitest instead, and is inside the coverage floors rather than excluded from them |
+> | 4 Acme demo & operator UI | met | Playwright is set up: three specs under `apps/ui/e2e`, run in CI. The UI also sits inside the coverage floors rather than excluded from them |
 > | 5 Gusto company package | met | G1–G5 pass; four scenarios are `todo` and held open by a test that goes red when the API stops ignoring `environment` |
 > | 6 UI hardening, observability & G3–G5 | met | The north-star claim is demonstrated as **two deployments of one binary**, not one process serving two companies — see G5 and 009 §16 |
-> | 7 Production readiness | **not started** | Load, chaos and DR are untouched. Durability, identity, isolation and telemetry are in place, which is the precondition |
-> | 8 Connector extensions | **not started** | — |
+> | 7 Production readiness | met | `harness/` — load, chaos and disaster recovery on real containers, 24 scenarios in their own CI job. It found four production defects; see STATUS.md |
+> | 8 Connector extensions | met, one deliverable waived | Intake, two connectors, a durable dedup ledger, the route and the publication path. The `forge.buzz` demo is **not** built — deliberately, and recorded as future work rather than done |
 >
 > **ADR-002 is deliberately unmet.** The engine was to be LangGraph behind
 > `GraphEnginePort`. `@forge/engine-memory` is the implementation instead, and
@@ -410,7 +410,8 @@ Scenario-to-phase mapping: [016-demo-scenarios](./016-demo-scenarios.md) § “P
 
 ## Phase 8 — Connector Extensions
 
-> **Status: deliverables met.** Buzz is deliberately not built — see
+> **Status: deliverables met, with one waived.** The Buzz demo (below) is not
+> built, so this phase is complete except for that deliverable — see
 > `STATUS.md` under *Possible future work*; the connector contract is what
 > would make it cheap.
 >

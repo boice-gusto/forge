@@ -34,9 +34,6 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm test:coverage
-      # Packs the public surface and uses it from a throwaway project with no
-      # access to this repository. A company package in a sibling repo depends
-      # on exactly this, and nothing else proves it works.
       # Browsers are downloaded on demand and cached, never committed.
       - uses: actions/cache@v4
         with:
@@ -45,6 +42,9 @@ jobs:
       - run: pnpm --filter @forge/ui exec playwright install --with-deps chromium
       - run: pnpm --filter @forge/ui test:e2e
       - run: pnpm --filter @forge/ui typecheck:e2e
+      # Packs the public surface and uses it from a throwaway project with no
+      # access to this repository. A company package in a sibling repo depends
+      # on exactly this, and nothing else proves it works.
       - run: pnpm test:packaging
       - run: pnpm test:architecture
       - run: pnpm test:security
