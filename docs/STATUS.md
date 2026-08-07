@@ -1,6 +1,6 @@
 # Status
 
-**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 97 commits ahead of `main`
+**Updated:** 2026-08-06 · branch `feat/ports-roles-capability` · 98 commits ahead of `main`
 
 What is actually built, what is not, and why. [015-phases.md](./015-phases.md) is
 the plan; this is the ledger. Where the two disagree, this file is the one that
@@ -12,6 +12,12 @@ branches, measured with `FORGE_REQUIRE_STORES=1`, which is what CI runs) plus 24
 `security:licenses`, `measure:phase1`, and the UI's `test:e2e` and
 `typecheck:e2e` — plus a separate `resilience` job, which costs minutes and
 needs Docker, so it fails on its own terms rather than inside `verify`.
+
+> **Nine open defects, seven of them proved with failing tests:**
+> [docs/review/](./review/). They are not fixed. The worst records an action
+> in the audit trail that never happened; the next-worst means a webhook
+> cannot work against Postgres at all. Read that file before trusting the
+> table below.
 
 ---
 

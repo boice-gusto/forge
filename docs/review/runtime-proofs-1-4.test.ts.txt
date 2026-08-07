@@ -1,0 +1,310 @@
+import { createMemoryApprovalStore } from "@forge/approval-memory";
+import { createMemoryCheckpointStore } from "@forge/checkpoint-memory";
+import { compileWorkflow } from "@forge/compiler";
+import { createMemoryGraphEngine } from "@forge/engine-memory";
+import { createMemoryObservability } from "@forge/observability-memory";
+import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
+import {
+  createSequentialIds,
+  type JsonValue,
+  type RunStorePort,
+} from "@forge/ports";
+import { createMockProvider } from "@forge/provider-mock";
+import { createMemoryRunStore } from "@forge/run-store-memory";
+import { createMemorySandbox } from "@forge/sandbox";
+import { describe, expect, test } from "vitest";
+
+import { createRuntime, type SealedArtifact } from "./runtime.js";
+
+const RULES: readonly PolicyRule[] = [
+  {
+    id: "acme.publish.external",
+    action: "slack.post",
+    environment: "production",
+    decision: "require-approval",
+    reason: "External publication is a human call.",
+    approvers: ["marketing-lead"],
+  },
+  {
+    id: "acme.payments",
+    action: "payments.transfer",
+    environment: "production",
+    decision: "require-approval",
+    reason: "Money is a human call.",
+    approvers: ["finance-lead"],
+  },
+];
+
+/**
+ * Nothing downstream reads what the tool produced, which is the common shape:
+ * "send the notification" is usually the last thing a workflow does.
+ */
+const source = {
+  id: "acme.publish",
+  version: "1.0.0",
+  sideEffects: ["slack.post"],
+  nodes: [
+    { id: "intake", kind: "input", schemaRef: "in@1" },
+    { id: "draft", kind: "agent", promptRef: "p@1", retry: { maxAttempts: 3 } },
+    {
+      id: "gate",
+      kind: "approval",
+      gateSchemaRef: "g@1",
+      gates: ["publish"],
+    },
+    { id: "publish", kind: "tool", skillRef: "t@1", effect: "slack.post" },
+    { id: "result", kind: "output", schemaRef: "out@1" },
+  ],
+  edges: [
+    { from: "intake", to: "draft" },
+    { from: "draft", to: "gate" },
+    { from: "gate", to: "publish" },
+    { from: "publish", to: "result" },
+  ],
+} as const;
+
+function artifact(): SealedArtifact {
+  const compiled = compileWorkflow(source);
+  if (!compiled.ok) throw new Error(JSON.stringify(compiled.diagnostics));
+  return {
+    workflowId: compiled.value.ir.workflowId,
+    fingerprint: compiled.value.fingerprint,
+    ir: compiled.value.ir,
+  };
+}
+
+function world() {
+  const clock = { now: () => new Date("2026-08-04T00:00:00.000Z") };
+  const ids = createSequentialIds();
+  const approvals = createMemoryApprovalStore(clock, ids);
+  const checkpoints = createMemoryCheckpointStore();
+  const runs = createMemoryRunStore();
+
+  function start(options: {
+    runs?: RunStorePort;
+    sink?: (
+      runId: string,
+      nodeId: string,
+      effect: string,
+      input: JsonValue | undefined,
+    ) => Promise<JsonValue | undefined>;
+  } = {}) {
+    const dispatched: { effect: string; input: JsonValue | undefined }[] = [];
+    const runtime = createRuntime({
+      engine: createMemoryGraphEngine(),
+      policy: createMemoryPolicy({ rules: RULES, grants: ["slack.write"] }),
+      approvals,
+      provider: createMockProvider({
+        providerId: "mock",
+        events: [{ type: "completed" }],
+      }),
+      sandbox: createMemorySandbox({ profiles: ["docker"], available: true }),
+      observability: createMemoryObservability(),
+      panel: { standing: [], summonable: [], quorum: 0.5 },
+      effects: {
+        async perform(runId, nodeId, effect, input) {
+          dispatched.push({ effect, input });
+          if (options.sink !== undefined) {
+            return options.sink(runId, nodeId, effect, input);
+          }
+          return undefined;
+        },
+      },
+      checkpoints,
+      runs: options.runs ?? runs,
+      clock,
+      ids,
+      actor: "svc.forge.worker",
+      environment: "production",
+      approvalTtlMs: 7 * 24 * 60 * 60 * 1000,
+    });
+    return { runtime, dispatched };
+  }
+
+  return { start, runs, approvals, ids };
+}
+
+describe("PROOF 1: a retryable tool failure is retried into a no-op", () => {
+  test("the run reports SUCCEEDED even though the action threw and never happened", async () => {
+    const forge = world();
+    const attempts: string[] = [];
+    const first = forge.start({
+      sink: async (_runId, nodeId) => {
+        attempts.push(nodeId);
+        throw new Error("the API returned 500");
+      },
+    });
+
+    const run = await first.runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    expect(run.status).toBe("AWAITING_APPROVAL");
+
+    const done = await first.runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    const persisted = await forge.runs.load(run.runId);
+
+    // What the system should say: the action failed and the run did not succeed.
+    expect({
+      status: done.status,
+      sinkCalls: attempts.length,
+      settledAt: persisted?.effects[0]?.settledAt,
+      performedEffects: done.performedEffects,
+    }).toEqual({
+      status: "FAILED",
+      sinkCalls: 1,
+      settledAt: undefined,
+      performedEffects: ["publish"],
+    });
+  });
+});
+
+describe("PROOF 2: the effect dispatched is never checked against the effect approved", () => {
+  /** A store that hands back a different IR under the same fingerprint. */
+  const substituting = (inner: RunStorePort): RunStorePort => ({
+    ...inner,
+    async load(runId) {
+      const persisted = await inner.load(runId);
+      if (persisted === undefined) return undefined;
+      const ir = persisted.artifact.ir as unknown as {
+        nodes: { id: string; effect?: string }[];
+      };
+      return {
+        ...persisted,
+        artifact: {
+          ...persisted.artifact,
+          // Only the action changes. workflowId, fingerprint, the run record
+          // and the approval row are all untouched.
+          ir: {
+            ...ir,
+            nodes: ir.nodes.map((node) =>
+              node.id === "publish"
+                ? { ...node, effect: "payments.transfer" }
+                : node,
+            ),
+          } as unknown as JsonValue,
+        },
+      };
+    },
+  });
+
+  test("a swapped artifact under an unchanged fingerprint performs the swapped action", async () => {
+    const forge = world();
+    const first = forge.start();
+    const run = await first.runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const approvalId = run.pendingApprovalId as string;
+    const approval = await forge.approvals.get(approvalId);
+    expect(approval?.effect).toBe("slack.post");
+
+    // A human approves "slack.post" at node publish, under this fingerprint.
+    await forge.approvals.decide(
+      approvalId,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    // A second worker re-enters the run and reads the artifact back out.
+    const second = forge.start({ runs: substituting(forge.runs) });
+    const finished = await second.runtime.resume(run.runId);
+
+    expect({
+      approvedEffect: approval?.effect,
+      dispatched: second.dispatched.map((entry) => entry.effect),
+      status: finished?.status,
+    }).toEqual({
+      approvedEffect: "slack.post",
+      // The binding is meant to cover run + node + effect + fingerprint.
+      dispatched: [],
+      status: "FAILED",
+    });
+  });
+});
+
+describe("PROOF 3: an edit's patch reaches nothing", () => {
+  test("approving the reissued gate performs the unamended action", async () => {
+    const forge = world();
+    const first = forge.start();
+    const run = await first.runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+      payload: { copy: "the original wording" },
+    });
+
+    const edited = await first.runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "edit", patch: { copy: "the amended wording" } },
+      "marketing-lead",
+    );
+    const reissued = await forge.approvals.get(
+      edited.pendingApprovalId as string,
+    );
+    const original = await forge.approvals.get(
+      run.pendingApprovalId as string,
+    );
+
+    expect({
+      // The reissued gate is byte-identical in everything that binds it.
+      sameBinding: reissued?.effectHash === original?.effectHash,
+      // And the patch is stored nowhere a resume could read it.
+      patchAnywhere: JSON.stringify(
+        await forge.approvals.listByRun(run.runId),
+      ).includes("amended"),
+    }).toEqual({ sameBinding: false, patchAnywhere: true });
+  });
+});
+
+describe("PROOF 4: a redrive can double-dispatch an action that is merely slow", () => {
+  test("an in-flight claim is indistinguishable from a lost one, and nothing bounds it", async () => {
+    const forge = world();
+    let release: (() => void) | undefined;
+    const hanging = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const first = forge.start({
+      sink: async () => {
+        await hanging;
+        return { ok: true };
+      },
+    });
+    const run = await first.runtime.start({
+      artifact: artifact(),
+      capabilities: ["slack.write"],
+    });
+    const walking = first.runtime.decide(
+      run.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+    // Let the walk reach the sink and block there.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(first.dispatched).toHaveLength(1);
+
+    // An operator reads the unsettled report — which lists this claim the
+    // instant it is taken, with no age floor — and redrives it.
+    const unsettled = await forge.runs.listUnsettled(10);
+    const second = forge.start();
+    const gated = await second.runtime.redrive(run.runId, "publish");
+    await second.runtime.decide(
+      gated.pendingApprovalId as string,
+      { kind: "approve" },
+      "marketing-lead",
+    );
+
+    release?.();
+    await walking.catch(() => undefined);
+
+    expect({
+      unsettledImmediately: unsettled.length,
+      totalDispatches: first.dispatched.length + second.dispatched.length,
+    }).toEqual({ unsettledImmediately: 0, totalDispatches: 1 });
+  });
+});

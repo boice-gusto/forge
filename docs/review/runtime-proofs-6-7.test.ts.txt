@@ -1,0 +1,192 @@
+import { createMemoryApprovalStore } from "@forge/approval-memory";
+import { createMemoryCheckpointStore } from "@forge/checkpoint-memory";
+import { compileWorkflow } from "@forge/compiler";
+import { createMemoryGraphEngine } from "@forge/engine-memory";
+import { composePanel, resolveVerdict } from "@forge/panel";
+import { createMemoryObservability } from "@forge/observability-memory";
+import { createMemoryPolicy, type PolicyRule } from "@forge/policy-memory";
+import {
+  createSequentialIds,
+  type PersistedRun,
+  type RunStorePort,
+} from "@forge/ports";
+import { createMockProvider } from "@forge/provider-mock";
+import { createMemoryRunStore } from "@forge/run-store-memory";
+import { createMemorySandbox } from "@forge/sandbox";
+import type { Role } from "@forge/types";
+import { describe, expect, test } from "vitest";
+
+import { createRuntime, type SealedArtifact } from "./runtime.js";
+
+const RULES: readonly PolicyRule[] = [
+  {
+    id: "acme.publish.external",
+    action: "slack.post",
+    environment: "production",
+    decision: "require-approval",
+    reason: "External publication is a human call.",
+    approvers: ["marketing-lead"],
+  },
+];
+
+const source = {
+  id: "acme.publish",
+  version: "1.0.0",
+  sideEffects: ["slack.post"],
+  nodes: [
+    { id: "intake", kind: "input", schemaRef: "in@1" },
+    { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["publish"] },
+    { id: "publish", kind: "tool", skillRef: "t@1", effect: "slack.post" },
+  ],
+  edges: [
+    { from: "intake", to: "gate" },
+    { from: "gate", to: "publish" },
+  ],
+} as const;
+
+function artifact(): SealedArtifact {
+  const compiled = compileWorkflow(source);
+  if (!compiled.ok) throw new Error(JSON.stringify(compiled.diagnostics));
+  return {
+    workflowId: compiled.value.ir.workflowId,
+    fingerprint: compiled.value.fingerprint,
+    ir: compiled.value.ir,
+  };
+}
+
+describe("PROOF 6: two workers on one execute job open two gates", () => {
+  test("the loser's approval is orphaned, PENDING, and individually spendable", async () => {
+    const clock = { now: () => new Date("2026-08-04T00:00:00.000Z") };
+    const ids = createSequentialIds();
+    const approvals = createMemoryApprovalStore(clock, ids);
+    const checkpoints = createMemoryCheckpointStore();
+    const runs = createMemoryRunStore();
+
+    const start = (store: RunStorePort) => {
+      const dispatched: string[] = [];
+      return {
+        dispatched,
+        runtime: createRuntime({
+          engine: createMemoryGraphEngine(),
+          policy: createMemoryPolicy({ rules: RULES, grants: [] }),
+          approvals,
+          provider: createMockProvider({
+            providerId: "mock",
+            events: [{ type: "completed" }],
+          }),
+          sandbox: createMemorySandbox({
+            profiles: ["docker"],
+            available: true,
+          }),
+          observability: createMemoryObservability(),
+          panel: { standing: [], summonable: [], quorum: 0.5 },
+          effects: {
+            async perform(_r, _n, effect) {
+              dispatched.push(effect);
+              return undefined;
+            },
+          },
+          checkpoints,
+          runs: store,
+          clock,
+          ids,
+          actor: "svc.forge.worker",
+          environment: "production",
+          approvalTtlMs: 7 * 24 * 60 * 60 * 1000,
+        }),
+      };
+    };
+
+    // The control plane creates the run and enqueues `workflow.execute`.
+    const control = start(runs);
+    const run = await control.runtime.create({
+      artifact: artifact(),
+      capabilities: [],
+    });
+
+    /**
+     * A run left RUNNING by a process that died mid-walk — the case `resume`
+     * handles with no status write before the walk, so the revision is only
+     * presented at the *end*, after the gate has already been opened.
+     */
+    await runs.update({ ...run, status: "RUNNING" }, 1);
+    const snapshot = (await runs.load(run.runId)) as PersistedRun;
+
+    // Worker one takes the redelivered job and parks the run at its gate.
+    const workerOne = start(runs);
+    const parked = await workerOne.runtime.resume(run.runId);
+    expect(parked?.status).toBe("AWAITING_APPROVAL");
+
+    // Worker two took the same delivery and is still holding the pre-park view.
+    const workerTwo = start({
+      ...runs,
+      async load() {
+        return snapshot;
+      },
+    });
+    await workerTwo.runtime.resume(run.runId);
+
+    const pending = await approvals.getPending(run.runId);
+    // The orphan — the gate the run does not name — is spent on its own.
+    const orphan = pending.find(
+      (entry) => entry.approvalId !== parked?.pendingApprovalId,
+    );
+    const after =
+      orphan === undefined
+        ? undefined
+        : await workerOne.runtime.decide(
+            orphan.approvalId,
+            { kind: "reject", reason: "not this one" },
+            "marketing-lead",
+          );
+
+    expect({
+      pendingGates: pending.length,
+      // Bound identically, so each one moves the run on its own.
+      bindings: new Set(pending.map((entry) => entry.effectHash)).size,
+      afterRejectingTheOrphan: after?.status,
+      liveGateStillPending: (await approvals.get(
+        parked?.pendingApprovalId as string,
+      ))?.status,
+    }).toEqual({
+      pendingGates: 1,
+      bindings: 1,
+      afterRejectingTheOrphan: undefined,
+      liveGateStillPending: "PENDING",
+    });
+  });
+});
+
+describe("PROOF 7: a panel shrinks silently when its definition names a role the workflow does not declare", () => {
+  test("a typo in one standing role halves the quorum with nothing said", () => {
+    const roles: Record<string, Role> = {
+      writer: {
+        version: "1.0.0",
+        capabilities: { requires: [], forbids: [] },
+        review: { weight: 1, blocking: false },
+      },
+      security: {
+        version: "1.0.0",
+        capabilities: { requires: [], forbids: [] },
+        review: { weight: 1, blocking: false },
+      },
+    };
+
+    const configured = composePanel(
+      roles,
+      { standing: ["writer", "security"], summonable: [], quorum: 1 },
+      { paths: [] },
+    );
+    const typo = composePanel(
+      roles,
+      { standing: ["writer", "secuirty"], summonable: [], quorum: 1 },
+      { paths: [] },
+    );
+
+    expect({
+      configured: resolveVerdict(configured, { writer: "pass" }).verdict,
+      // One misspelled role and the remaining reviewer now carries the panel.
+      typo: resolveVerdict(typo, { writer: "pass" }).verdict,
+    }).toEqual({ configured: "review", typo: "review" });
+  });
+});

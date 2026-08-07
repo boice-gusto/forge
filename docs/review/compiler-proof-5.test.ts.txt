@@ -1,0 +1,57 @@
+import { describe, expect, test } from "vitest";
+
+import { compileWorkflow } from "./compiler.js";
+
+const role = {
+  version: "1.0.0",
+  capabilities: { requires: [], forbids: [] },
+  review: { weight: 1, blocking: false },
+} as const;
+
+const base = {
+  id: "acme.publish",
+  version: "1.0.0",
+  sideEffects: ["slack.post"],
+  grantedCapabilities: [],
+  nodes: [
+    { id: "intake", kind: "input", schemaRef: "in@1" },
+    { id: "gate", kind: "approval", gateSchemaRef: "g@1", gates: ["publish"] },
+    { id: "publish", kind: "tool", skillRef: "t@1", effect: "slack.post" },
+  ],
+  edges: [
+    { from: "intake", to: "gate" },
+    { from: "gate", to: "publish" },
+  ],
+} as const;
+
+function fingerprintOf(source: unknown): string {
+  const compiled = compileWorkflow(source);
+  if (!compiled.ok) throw new Error(JSON.stringify(compiled.diagnostics));
+  return compiled.value.fingerprint;
+}
+
+describe("PROOF 5: the artifact fingerprint is not canonical", () => {
+  test("declaring the same two roles in the other order changes the fingerprint", () => {
+    const alphabetical = fingerprintOf({
+      ...base,
+      roles: { alpha: role, beta: role },
+    });
+    const reversed = fingerprintOf({
+      ...base,
+      roles: { beta: role, alpha: role },
+    });
+
+    // sideEffects, grantedCapabilities, nodes and edges are all canonicalised
+    // before hashing. `roles` is not, and JSON.stringify preserves key order.
+    expect(alphabetical).toBe(reversed);
+  });
+
+  test("node ordering uses localeCompare, which is not a byte order", () => {
+    // The IR is sorted with `left.id.localeCompare(right.id)`. That is the
+    // host's collation, not a codepoint order, so two hosts configured
+    // differently can hash the same source to different fingerprints.
+    expect(["b", "A"].sort((l, r) => l.localeCompare(r))).toEqual(
+      ["b", "A"].sort(),
+    );
+  });
+});
