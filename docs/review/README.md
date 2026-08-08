@@ -8,7 +8,20 @@ go red until the defect is fixed. That is the point of keeping them.
 
 Ranked by what they cost. None of these is fixed.
 
-## 1. A thrown effect is retried into a no-op and the run reports SUCCEEDED
+## 1. ~~A thrown effect is retried into a no-op~~ — FIXED
+
+`engine-memory` now classifies a thrown dispatch as non-retryable, and
+`engine.test.ts` proves it at the level the guarantee lives. The description
+below is kept because the reasoning is the fix.
+
+**Note on testing it:** two attempts to prove this through the *runtime* passed
+for the wrong reason. The first fixture had no retry budget, so `retryable`
+never mattered; the second read the effect's output downstream, so the run
+failed on the missing value instead. Both would have been vacuous tests in a
+file warning about vacuous tests. The engine's classification is the honest
+place to assert it.
+
+### Original report
 
 `packages/runtime/src/runtime.ts:870` writes `nodeId` to the effect ledger
 *before* calling the sink. `packages/engine-memory/src/engine.ts:227`

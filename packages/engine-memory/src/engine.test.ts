@@ -682,3 +682,78 @@ describe("a sandbox node scopes what the graph reaches from it", () => {
     expect(trace.log).not.toContain("perform act inside=true");
   });
 });
+
+describe("a dispatched effect that throws is not offered for retry", () => {
+  const SOURCE = {
+    id: "acme.dispatch",
+    version: "1.0.0",
+    sideEffects: ["slack.post"],
+    nodes: [
+      { id: "intake", kind: "input", schemaRef: "s@1" },
+      // The compiler refuses a declared side effect with no gate in front of
+      // it, so the fixture has one even though this test never reaches it.
+      {
+        id: "gate",
+        kind: "approval",
+        gateSchemaRef: "g@1",
+        gates: ["publish"],
+      },
+      {
+        id: "publish",
+        kind: "tool",
+        skillRef: "t@1",
+        effect: "slack.post",
+        retry: { maxAttempts: 3 },
+      },
+      { id: "done", kind: "output", schemaRef: "s@1" },
+    ],
+    edges: [
+      { from: "intake", to: "gate" },
+      { from: "gate", to: "publish" },
+      { from: "publish", to: "done" },
+    ],
+  };
+
+  test("the failure is reported as final, whatever the node's retry budget says", async () => {
+    /**
+     * An agent may be asked again; a dispatched effect may not. The runtime
+     * writes the effect claim *before* calling the sink, so by the time a
+     * throw is caught the action is already claimed — a retry re-walks, finds
+     * the node in the effect ledger, and returns having done nothing. The run
+     * then reaches its output and reports SUCCEEDED with the effect listed in
+     * `performedEffects`.
+     *
+     * That is an audit trail recording a customer-visible action that never
+     * happened, and it is the worst outcome this system can produce. Marking
+     * the failure retryable never made the retry work — nothing can, the claim
+     * is spent — it only converted a hard failure into a false success.
+     *
+     * Asserted here rather than through the runtime because the runtime's
+     * fixtures all read the effect's output, so the missing value fails those
+     * runs for an unrelated reason and hides this entirely. The engine's
+     * classification is where the guarantee actually lives.
+     */
+    const compiled = compileWorkflow(SOURCE);
+    if (!compiled.ok) throw new Error("Fixture must compile.");
+    const engine = createMemoryGraphEngine();
+    const plan = await engine.materialize(compiled.value.ir);
+
+    const result = await engine.execute(
+      plan,
+      {
+        ...context([]),
+        perform: async () => {
+          throw new Error("the API returned 500");
+        },
+      },
+      new Set(["publish"]),
+      store(),
+    );
+
+    expect(result).toMatchObject({
+      kind: "failed",
+      nodeId: "publish",
+      retryable: false,
+    });
+  });
+});

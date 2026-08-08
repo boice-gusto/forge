@@ -223,7 +223,28 @@ async function toolStep(
     await context.perform(node.id, node.effect, input);
     return "continue";
   } catch (error) {
-    return failed(node.id, messageOf(error), true);
+    /**
+     * **Not retryable, and that is the whole point of this line.**
+     *
+     * An agent may be asked again; a dispatched effect may not. The claim is
+     * written before the sink is called, so by the time this catch runs the
+     * action is already claimed — a retry re-walks, finds the node in the
+     * effect ledger, and returns without doing anything. The run then reaches
+     * its output and reports SUCCEEDED with the effect listed in
+     * `performedEffects`.
+     *
+     * That is the worst outcome this system can produce: an audit trail
+     * recording a customer-visible action that never happened. Marking it
+     * retryable did not make the retry work — nothing can make it work, since
+     * the claim is spent — it only converted a hard failure into a false
+     * success.
+     *
+     * So the run fails, the claim stays unsettled, and it surfaces in
+     * `GET /v1/effects/unsettled` where a human can decide to redrive it. That
+     * is the recovery path this system already has, and it is gated, which a
+     * silent retry is not.
+     */
+    return failed(node.id, messageOf(error), false);
   }
 }
 
