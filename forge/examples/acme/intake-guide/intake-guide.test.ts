@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 
 describe("intake guide", () => {
   it("presents every intake-to-merge stage as an explanatory slide", async () => {
-    const html = await readFile(new URL("./index.html", import.meta.url), "utf8");
+    const html = await readFile(
+      new URL("./index.html", import.meta.url),
+      "utf8",
+    );
 
     expect(html).toContain('class="deck"');
     expect(html.match(/class="slide(?: |\")/g)?.length).toBeGreaterThanOrEqual(
