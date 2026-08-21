@@ -47,6 +47,98 @@ function hasCycle(nodes: readonly IrNode[], edges: readonly IrEdge[]): boolean {
   return nodes.some((node) => visit(node.id));
 }
 
+/** Can `target` be reached from `from` without entering any blocked node? */
+function reachableAvoiding(
+  from: string,
+  target: string,
+  adjacency: ReadonlyMap<string, readonly string[]>,
+  blocked: ReadonlySet<string>,
+): boolean {
+  if (blocked.has(from)) return false;
+  const seen = new Set([from]);
+  const queue: string[] = [from];
+  while (queue.length > 0) {
+    const id = queue.shift() as string;
+    if (id === target) return true;
+    for (const next of adjacency.get(id) ?? []) {
+      if (seen.has(next) || blocked.has(next)) continue;
+      seen.add(next);
+      queue.push(next);
+    }
+  }
+  return false;
+}
+
+type ApprovalNode = Extract<IrNode, { kind: "approval" }>;
+type ToolNode = Extract<IrNode, { kind: "tool" }>;
+
+/**
+ * Every side effect must sit behind an approval that names it.
+ *
+ * A generic approval earlier in the graph does not authorise an unrelated
+ * effect later — the gate binds to the action, exactly as the runtime binds a
+ * decision to a run and an argument hash (006 §6.4).
+ */
+function checkSideEffects(
+  nodes: readonly IrNode[],
+  edges: readonly IrEdge[],
+  declaredEffects: readonly string[],
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const declared = new Set(declaredEffects);
+
+  const adjacency = new Map<string, string[]>(
+    nodes.map((node) => [node.id, [] as string[]]),
+  );
+  for (const edge of edges) adjacency.get(edge.from)?.push(edge.to);
+
+  const entry = nodes.find((node) => node.kind === "input") ?? nodes[0];
+  const approvals = nodes.filter(
+    (node): node is ApprovalNode => node.kind === "approval",
+  );
+  const effects = nodes.filter(
+    (node): node is ToolNode =>
+      node.kind === "tool" && node.effect !== undefined,
+  );
+
+  for (const node of effects) {
+    const effect = node.effect as string;
+    if (!declared.has(effect)) {
+      diagnostics.push({
+        code: "WF_UNDECLARED_EFFECT",
+        message: `Effect "${effect}" is not listed in sideEffects.`,
+        path: ["nodes", node.id],
+      });
+    }
+
+    const gates = approvals.filter((approval) =>
+      approval.gates.includes(node.id),
+    );
+    if (gates.length === 0) {
+      diagnostics.push({
+        code: "WF_MISSING_APPROVAL",
+        message: `No approval node declares "${node.id}" in its gates.`,
+        path: ["nodes", node.id],
+      });
+      continue;
+    }
+
+    const gateIds = new Set(gates.map((gate) => gate.id));
+    if (
+      entry !== undefined &&
+      reachableAvoiding(entry.id, node.id, adjacency, gateIds)
+    ) {
+      diagnostics.push({
+        code: "WF_MISSING_APPROVAL",
+        message: `A path reaches side effect "${node.id}" without passing its approval gate.`,
+        path: ["nodes", node.id],
+      });
+    }
+  }
+
+  return diagnostics;
+}
+
 export function compileWorkflow(source: unknown): WorkflowCompilation {
   const parsed = WorkflowSourceSchema.safeParse(source);
   if (!parsed.success)
@@ -73,9 +165,18 @@ export function compileWorkflow(source: unknown): WorkflowCompilation {
     return diagnostic("WF_CYCLE", "Workflow graph must be acyclic.", ["edges"]);
   }
 
+  const effectDiagnostics = checkSideEffects(
+    parsed.data.nodes,
+    parsed.data.edges,
+    parsed.data.sideEffects,
+  );
+  if (effectDiagnostics.length > 0)
+    return { ok: false, diagnostics: effectDiagnostics };
+
   const ir: ForgeIr = {
     workflowId: parsed.data.id,
     workflowVersion: parsed.data.version,
+    sideEffects: [...parsed.data.sideEffects].sort(),
     nodes: [...parsed.data.nodes].sort((left, right) =>
       left.id.localeCompare(right.id),
     ),
